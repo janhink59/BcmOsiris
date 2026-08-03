@@ -1,2 +1,3 @@
 F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
 
+table_*.sql
