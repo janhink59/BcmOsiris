@@ -1,20 +1,23 @@
--- =============================================================================
--- Tabulka: asset_class (T¯Ìdy aktiv)
--- Popis:	Hierarchick˝ ËÌselnÌk pro klasifikaci aktiv v modulu CRMM.
---			UrËuje strukturu (nap¯. UmÌstÏnÌ -> Budova -> MÌstnost), 
---			definuje koncovÈ uzly a umoûÚuje dÏdÏnÌ rolÌ editor˘.
--- Architektura: RAC (Record & Access Control) + SSC (SchvalovacÌ cyklus)
+Ôªø-- =============================================================================
+-- Tabulka: asset_class (T≈ô√≠dy aktiv)
+-- Popis:	Hierarchick√Ω ƒç√≠seln√≠k pro klasifikaci aktiv v modulu CRMM.
+--			Urƒçuje strukturu (nap≈ô. Um√≠stƒõn√≠ -> Budova -> M√≠stnost), 
+--			definuje koncov√© uzly a umo≈æ≈àuje dƒõdƒõn√≠ rol√≠ editor≈Ø.
+-- Architektura: RAC (Record & Access Control) + SSC (Schvalovac√≠ cyklus)
 -- =============================================================================
 
+-- Upozornƒõn√≠: P≈ô√≠kaz DROP TABLE IF EXISTS vy≈æaduje SQL Server 2016 a novƒõj≈°√≠.
+-- Zpƒõtn√° kompatibilita DB CL110 se zde nevy≈æaduje.
 DROP TABLE IF EXISTS asset_class;
+GO
 
 CREATE TABLE asset_class (
 	-- -------------------------------------------------------------------------
-	-- StandardnÌ RAC a SSC sloupce (dle domluven˝ch konvencÌ)
+	-- Standardn√≠ RAC a SSC sloupce (dle domluven√Ωch konvenc√≠)
 	-- -------------------------------------------------------------------------
 	uuid uuid NOT NULL,
-	object_owner uuid NOT NULL DEFAULT CAST(0x00 AS uuid),
-	original uuid NOT NULL DEFAULT CAST(0x00 AS uuid),
+	object_owner uuid NOT NULL DEFAULT 0x00,
+	original uuid NOT NULL DEFAULT 0x00,
 	record_type varchar(1) NOT NULL DEFAULT 'A',
 	approval_status varchar(1) NOT NULL DEFAULT 'A',
 	inactive bit NOT NULL DEFAULT 0,
@@ -26,7 +29,7 @@ CREATE TABLE asset_class (
 	template uuid NULL,
 	
 	-- -------------------------------------------------------------------------
-	-- SpoleËnÈ textovÈ vlastnosti (podpora UTF-8)
+	-- Spoleƒçn√© textov√© vlastnosti (podpora UTF-8)
 	-- -------------------------------------------------------------------------
 	caption varchar(200) NOT NULL DEFAULT '',
 	shortname varchar(40) NOT NULL DEFAULT '',
@@ -36,42 +39,56 @@ CREATE TABLE asset_class (
 	help_text varchar(max) NOT NULL DEFAULT '',
 	
 	-- -------------------------------------------------------------------------
-	-- AuditnÌ stopy (uuid vazby, bez denormalizovan˝ch jmen)
+	-- Auditn√≠ stopy (uuid vazby, bez denormalizovan√Ωch jmen)
 	-- -------------------------------------------------------------------------
-	date_created datetime2 NOT NULL DEFAULT sysutcdatetime(),
-	who_created uuid NOT NULL DEFAULT CAST(0x00 AS uuid),
-	date_modified datetime2 NOT NULL DEFAULT sysutcdatetime(),
-	who_modified uuid NOT NULL DEFAULT CAST(0x00 AS uuid),
+	date_created datetime NOT NULL DEFAULT getdate(),
+	who_created uuid NOT NULL DEFAULT 0x00,
+	date_modified datetime NOT NULL DEFAULT getdate(),
+	who_modified uuid NOT NULL DEFAULT 0x00,
 
 	-- -------------------------------------------------------------------------
-	-- SpecifickÈ sloupce pro asset_class (T¯Ìdy aktiv CRMM)
+	-- Specifick√© sloupce pro asset_class (T≈ô√≠dy aktiv CRMM a Stromov√° struktura)
 	-- -------------------------------------------------------------------------
-	parent_uuid uuid NULL,				-- Hierarchick˝ odkaz na nad¯Ìzenou t¯Ìdu (tvorba stromu)
-	is_end_node bit NOT NULL DEFAULT 0,	-- P¯Ìznak koncovÈho uzlu (pouze k tÏmto lze v·zat konkrÈtnÌ aktiva)
-	editor_role_uuid uuid NULL,			-- Odkaz na tabulku role: Role opr·vnÏn· k editaci aktiv v tÈto t¯ÌdÏ (dÏdÌ se do pod¯Ìzen˝ch)
+	
+	-- Hierarchick√Ω odkaz na nad≈ô√≠zenou t≈ô√≠du. Slou≈æ√≠ k prim√°rn√≠mu udr≈æov√°n√≠ s√©mantick√© 
+	-- struktury stromu a p≈ôesun≈Øm vƒõtv√≠ bez vyvol√°n√≠ lavinov√Ωch updat≈Ø v konceptech.
+	parent_uuid uuid NULL,
+	
+	-- Textov√Ω kl√≠ƒç pro rychl√© t≈ô√≠dƒõn√≠ a ƒçten√≠ struktury stromu na frontendu.
+	sort_code varchar(200) NOT NULL DEFAULT '',
+	
+	-- P≈ô√≠znak koncov√©ho uzlu. Dle striktn√≠ch pravidel mohou b√Ωt aktiva v√°z√°na pouze na 
+	-- uzly, kter√© maj√≠ is_leaf = 1. Pokud klient pod tento uzel p≈ôid√° vlastn√≠ vƒõtev, 
+	-- je nutn√© toto dynamicky o≈°et≈ôit ve View nebo prov√©st aplikaƒçn√≠ migraci.
+	is_leaf bit NOT NULL DEFAULT 0,
+	
+	-- Odkaz na roli. Definuje, kter√° role je opr√°vnƒõn√° k editaci aktiv v t√©to t≈ô√≠dƒõ. 
+	-- Tato vlastnost se m≈Ø≈æe dƒõdit do pod≈ô√≠zen√Ωch t≈ô√≠d (uzl≈Ø).
+	editor_role_uuid uuid NULL,
 
 	CONSTRAINT pk_asset_class PRIMARY KEY (uuid)
 );
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajiötÏnÌ RAC architektury
+-- Indexy pro zaji≈°tƒõn√≠ RAC architektury
 -- -----------------------------------------------------------------------------
--- Unik·tnÌ aktivnÌ z·znam pro vlastnÌka a origin·l
+
+-- Zaji≈°tƒõn√≠ unik√°tnosti aktivn√≠ho z√°znamu (Active) pro dan√©ho vlastn√≠ka a origin√°l.
 CREATE UNIQUE INDEX uq_asset_class_active 
 	ON asset_class(original, object_owner) 
 	WHERE record_type = 'A' AND removed = 0;
 GO
 
--- Unik·tnÌ jazykov· verze pro vlastnÌka, origin·l a jazyk
+-- Zaji≈°tƒõn√≠ unik√°tnosti jazykov√Ωch verz√≠ (Language) pro dan√©ho vlastn√≠ka a origin√°l.
 CREATE UNIQUE INDEX uq_asset_class_language 
 	ON asset_class(original, object_owner, language) 
 	WHERE record_type = 'L' AND removed = 0;
 GO
 
 -- -----------------------------------------------------------------------------
--- InicializaËnÌ systÈmov˝ z·znam (0x00)
--- Nutn˝ pro bezproblÈmovÈ fungov·nÌ cross join˘ a skl·d·nÌ systÈmov˝ch dat
+-- Inicializaƒçn√≠ syst√©mov√Ω z√°znam (0x00)
+-- Nutn√Ω pro bezprobl√©mov√© fungov√°n√≠ cross join≈Ø a skl√°d√°n√≠ syst√©mov√Ωch dat.
 -- -----------------------------------------------------------------------------
 INSERT INTO asset_class (
 	uuid, 
@@ -82,16 +99,18 @@ INSERT INTO asset_class (
 	caption, 
 	shortname, 
 	description_text,
-	is_end_node
+	is_leaf,
+	sort_code
 ) VALUES (
-	CAST(0x00 AS uuid), 
-	CAST(0x00 AS uuid), 
-	CAST(0x00 AS uuid), 
+	0x00, 
+	0x00, 
+	0x00, 
 	'A', 
 	'A', 
-	'Ko¯enov· t¯Ìda aktiv', 
+	'Ko≈ôenov√° t≈ô√≠da aktiv', 
 	'ROOT', 
-	'V˝chozÌ systÈmov˝ uzel pro hierarchii t¯Ìd aktiv.',
-	0
+	'V√Ωchoz√≠ syst√©mov√Ω uzel pro hierarchii t≈ô√≠d aktiv.',
+	0,
+	'000'
 );
 GO

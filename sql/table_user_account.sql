@@ -1,138 +1,140 @@
---------------------------------------------------------------------------------
--- Tabulka: user_account
--- Popis:   Evidence u�ivatelsk�ch ��t� s podporou multi-tenancy, RAC a SSC
---------------------------------------------------------------------------------
+﻿-- =============================================================================
+-- Tabulka: user_account (Uživatelské účty)
+-- Popis:	Evidence uživatelských účtů s plnou podporou multi-tenancy, RAC a SSC.
+--			Udržuje lokální politiky, identifikátory a slouží jako cíl pro 
+--			propojení externích identit (IdP) v rámci SSO přihlašování.
+-- Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
+-- =============================================================================
 
-if object_id('user_account') is null
-begin
-	create table user_account(
-		---------------------------------------
-		-- standard RAC & SSC columns
-		---------------------------------------
-		uuid uuid not null,
-		object_owner uuid default 0x00 not null,
-		original uuid default 0x00 not null,
-		record_type varchar(1) default 'A' not null,
-		approval_status varchar(1) default 'A' not null,
-		inactive bit default 0 not null,
-		removed bit default 0 not null,
-		language varchar(2) default 'en' not null,
-		valid_from date default '1970-01-01' not null,
-		valid_to date null,
-		is_template bit default 0 not null,
-		template uuid null,
-		caption varchar(200) default '' not null,
-		shortname varchar(40) default '' not null,
-		external_code varchar(200) default '' not null,
-		instance_class_name varchar(80) default '' not null,
-		description_text varchar(max) default '' not null,
-		help_text varchar(max) default '' not null,
-		date_created datetime default getdate() not null,
-		who_created uuid default 0x00 not null,
-		date_modified datetime default getdate() not null,
-		who_modified uuid default 0x00 not null,
+DROP TABLE IF EXISTS user_account;
+GO
 
-		---------------------------------------
-		-- specific user_account columns
-		---------------------------------------
-		-- Authentication & Identity
-		login_name varchar(100) default '' not null,
-		email varchar(200) default '' not null,
-		password_hash varchar(255) default '' not null,
-		user_title_before varchar(40) default '' not null,
-		first_name varchar(100) default '' not null,
-		last_name varchar(100) default '' not null,
-		user_title_after varchar(40) default '' not null,
-		phone varchar(50) default '' not null,
-		mobile varchar(50) default '' not null,
-		
-		-- Organization & Department structure
-		department_name varchar(150) default '' not null,
-		job_title varchar(150) default '' not null,
-		manager_uuid uuid null,
+CREATE TABLE user_account (
+	-- -------------------------------------------------------------------------
+	-- Standardní RAC a SSC sloupce
+	-- -------------------------------------------------------------------------
+	uuid uuid NOT NULL,
+	object_owner uuid NOT NULL DEFAULT 0x00,
+	original uuid NOT NULL DEFAULT 0x00,
+	record_type varchar(1) NOT NULL DEFAULT 'A',
+	approval_status varchar(1) NOT NULL DEFAULT 'A',
+	inactive bit NOT NULL DEFAULT 0,
+	removed bit NOT NULL DEFAULT 0,
+	language varchar(2) NOT NULL DEFAULT 'cs',
+	valid_from date NOT NULL DEFAULT '1970-01-01',
+	valid_to date NULL,
+	is_template bit NOT NULL DEFAULT 0,
+	template uuid NULL,
+	
+	-- -------------------------------------------------------------------------
+	-- Společné textové vlastnosti (podpora UTF-8)
+	-- -------------------------------------------------------------------------
+	caption varchar(200) NOT NULL DEFAULT '',
+	shortname varchar(40) NOT NULL DEFAULT '',
+	external_code varchar(200) NOT NULL DEFAULT '',
+	instance_class_name varchar(80) NOT NULL DEFAULT '',
+	description_text varchar(max) NOT NULL DEFAULT '',
+	help_text varchar(max) NOT NULL DEFAULT '',
+	
+	-- -------------------------------------------------------------------------
+	-- Auditní stopy (výhradně uuid odkazy bez denormalizovaných jmen)
+	-- -------------------------------------------------------------------------
+	date_created datetime NOT NULL DEFAULT getdate(),
+	who_created uuid NOT NULL DEFAULT 0x00,
+	date_modified datetime NOT NULL DEFAULT getdate(),
+	who_modified uuid NOT NULL DEFAULT 0x00,
 
-		-- Security & Auth properties
-		is_system_admin bit default 0 not null,
-		require_password_change bit default 0 not null,
-		failed_login_attempts int default 0 not null,
-		locked_until datetime null,
-		last_login_date datetime null,
-		last_password_change datetime null,
-		mfa_enabled bit default 0 not null,
-		mfa_secret varchar(100) default '' not null,
-		note varchar(max) default '' not null,
+	-- -------------------------------------------------------------------------
+	-- Specifické byznys sloupce uživatele (Autentizace a Identita)
+	-- -------------------------------------------------------------------------
+	login_name varchar(100) NOT NULL DEFAULT '',
+	email varchar(200) NOT NULL DEFAULT '',
+	password_hash varchar(255) NOT NULL DEFAULT '',
+	
+	-- Řízení bezpečnostních politik pro SSO / Lokální přihlášení
+	allow_local_login bit NOT NULL DEFAULT 1,
+	is_system_admin bit NOT NULL DEFAULT 0,
+	require_password_change bit NOT NULL DEFAULT 0,
+	failed_login_attempts int NOT NULL DEFAULT 0,
+	locked_until datetime NULL,
+	last_login_date datetime NULL,
+	last_password_change datetime NULL,
+	mfa_enabled bit NOT NULL DEFAULT 0,
+	mfa_secret varchar(100) NOT NULL DEFAULT '',
+	
+	-- Osobní a kontaktní údaje
+	user_title_before varchar(40) NOT NULL DEFAULT '',
+	first_name varchar(100) NOT NULL DEFAULT '',
+	last_name varchar(100) NOT NULL DEFAULT '',
+	user_title_after varchar(40) NOT NULL DEFAULT '',
+	phone varchar(50) NOT NULL DEFAULT '',
+	mobile varchar(50) NOT NULL DEFAULT '',
+	
+	-- Organizační struktura uživatele (volné vazby)
+	department_name varchar(150) NOT NULL DEFAULT '',
+	job_title varchar(150) NOT NULL DEFAULT '',
+	manager_uuid uuid NULL,
+	note varchar(max) NOT NULL DEFAULT '',
 
-		constraint pk_user_account primary key (uuid)
-	)
-end
-go
+	CONSTRAINT pk_user_account PRIMARY KEY (uuid)
+);
+GO
 
----------------------------------------
--- Indexes for RAC architecture
----------------------------------------
+-- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC architektury
+-- -----------------------------------------------------------------------------
 
--- Unique active record per owner/original
-if not exists (select 1 from sys.indexes where name = 'uq_user_account_active' and object_id = object_id('user_account'))
-begin
-	create unique index uq_user_account_active 
-		on user_account(original, object_owner) 
-		where record_type = 'A'
-end
-go
+-- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál.
+CREATE UNIQUE INDEX uq_user_account_active 
+	ON user_account(original, object_owner) 
+	WHERE record_type = 'A' AND removed = 0;
+GO
 
--- Unique language version per owner/original/language
-if not exists (select 1 from sys.indexes where name = 'uq_user_account_language' and object_id = object_id('user_account'))
-begin
-	create unique index uq_user_account_language 
-		on user_account(original, object_owner, language) 
-		where record_type = 'L'
-end
-go
+-- Zajištění unikátnosti jazykových verzí (Language) pro daného vlastníka a originál.
+CREATE UNIQUE INDEX uq_user_account_language 
+	ON user_account(original, object_owner, language) 
+	WHERE record_type = 'L' AND removed = 0;
+GO
 
--- Unique active login_name per object_owner
-if not exists (select 1 from sys.indexes where name = 'uq_user_account_login' and object_id = object_id('user_account'))
-begin
-	create unique index uq_user_account_login 
-		on user_account(login_name, object_owner) 
-		where record_type = 'A' and inactive = 0 and removed = 0
-end
-go
+-- Zajištění unikátnosti přihlašovacího jména v rámci jednoho tenanta (organizace).
+-- Jméno nesmí kolidovat mezi aktivními uživateli.
+CREATE UNIQUE INDEX uq_user_account_login 
+	ON user_account(login_name, object_owner) 
+	WHERE record_type = 'A' AND inactive = 0 AND removed = 0;
+GO
 
----------------------------------------
--- Seed: System User Account (0x00)
----------------------------------------
-
-if not exists (select 1 from user_account where original = 0x00000000000000000000000000000000 and record_type = 'A')
-begin
-	insert into user_account (
-		uuid,
-		object_owner,
-		original,
-		record_type,
-		approval_status,
-		caption,
-		shortname,
-		description_text,
-		login_name,
-		email,
-		first_name,
-		last_name,
-		is_system_admin
-	)
-	values (
-		0x00000000000000000000000000000000,
-		0x00000000000000000000000000000000,
-		0x00000000000000000000000000000000,
-		'A',
-		'A',
-		'System Administrator',
-		'admin',
-		'System master user account',
-		'system',
-		'system@localhost',
-		'System',
-		'Administrator',
-		1
-	)
-end
-go
+-- -----------------------------------------------------------------------------
+-- Inicializační systémový záznam (0x00)
+-- -----------------------------------------------------------------------------
+INSERT INTO user_account (
+	uuid,
+	object_owner,
+	original,
+	record_type,
+	approval_status,
+	caption,
+	shortname,
+	description_text,
+	login_name,
+	email,
+	first_name,
+	last_name,
+	is_system_admin,
+	allow_local_login
+) VALUES (
+	0x00,
+	0x00,
+	0x00,
+	'A',
+	'A',
+	'System Administrator',
+	'admin',
+	'Systémový master uživatelský účet.',
+	'system',
+	'system@localhost',
+	'System',
+	'Administrator',
+	1,
+	1
+);
+GO

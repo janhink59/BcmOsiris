@@ -1,108 +1,116 @@
-if object_id('organization') is null
-begin
-	create table organization(
-		---------------------------------------
-		-- standard RAC & SSC columns
-		---------------------------------------
-		uuid uuid not null,
-		object_owner uuid default 0x00 not null,
-		original uuid default 0x00 not null,
-		record_type varchar(1) default 'A' not null,
-		approval_status varchar(1) default 'A' not null,
-		inactive bit default 0 not null,
-		removed bit default 0 not null,
-		language varchar(2) default 'en' not null,
-		valid_from date default '1970-01-01' not null,
-		valid_to date null,
-		is_template bit default 0 not null,
-		template uuid null,
-		caption varchar(200) default '' not null,
-		shortname varchar(40) default '' not null,
-		external_code varchar(200) default '' not null,
-		instance_class_name varchar(80) default '' not null,
-		description_text varchar(max) default '' not null,
-		help_text varchar(max) default '' not null,
-		date_created datetime default getdate() not null,
-		who_created uuid default 0x00 not null,
-		date_modified datetime default getdate() not null,
-		who_modified uuid default 0x00 not null,
+-- =============================================================================
+-- Tabulka: organization (Organizace)
+-- Popis:	Základní kámen multi-tenantní architektury CRMM. Definuje jednotlivé 
+--			klienty (tenanty) v systému. Vlastníkem (object_owner) systémového 
+--			záznamu je 0x00, ostatní záznamy organizací vlastní samy sebe.
+-- Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
+-- =============================================================================
 
-		---------------------------------------
-		-- specific organization columns
-		---------------------------------------
-		note varchar(max) default '' not null,
-		login_disabled bit default 0 not null,
-		login_domain varchar(200) default '' not null,
-		licence_level tinyint default 0 not null,
-		register_id bigint default 0 null,
-		tax_id varchar(40) default '' not null,
-		invoice_info varchar(max) default '' not null,
-		
-		-- address
-		address_name varchar(100) default '' not null,
-		address_street varchar(100) default '' not null,
-		address_city varchar(100) default '' not null,
-		address_zip varchar(10) default '' not null,
-		address_state varchar(40) default '' not null,
-		www_address varchar(200) default '' not null,
+DROP TABLE IF EXISTS organization;
+GO
 
-		-- logo media
-		logo_data varbinary(max) null,
-		logo_filename varchar(255) default '' not null,
-		logo_mime_type varchar(100) default '' not null,
+CREATE TABLE organization (
+	-- -------------------------------------------------------------------------
+	-- Standardní RAC a SSC sloupce
+	-- -------------------------------------------------------------------------
+	uuid uuid NOT NULL,
+	object_owner uuid NOT NULL DEFAULT 0x00,
+	original uuid NOT NULL DEFAULT 0x00,
+	record_type varchar(1) NOT NULL DEFAULT 'A',
+	approval_status varchar(1) NOT NULL DEFAULT 'A',
+	inactive bit NOT NULL DEFAULT 0,
+	removed bit NOT NULL DEFAULT 0,
+	language varchar(2) NOT NULL DEFAULT 'cs',
+	valid_from date NOT NULL DEFAULT '1970-01-01',
+	valid_to date NULL,
+	is_template bit NOT NULL DEFAULT 0,
+	template uuid NULL,
+	
+	-- -------------------------------------------------------------------------
+	-- Společné textové vlastnosti (vždy varchar s plnou podporou UTF-8)
+	-- -------------------------------------------------------------------------
+	caption varchar(200) NOT NULL DEFAULT '',
+	shortname varchar(40) NOT NULL DEFAULT '',
+	external_code varchar(200) NOT NULL DEFAULT '',
+	instance_class_name varchar(80) NOT NULL DEFAULT '',
+	description_text varchar(max) NOT NULL DEFAULT '',
+	help_text varchar(max) NOT NULL DEFAULT '',
+	
+	-- -------------------------------------------------------------------------
+	-- Auditní stopy (výhradně uuid odkazy bez denormalizovaných jmen)
+	-- -------------------------------------------------------------------------
+	date_created datetime NOT NULL DEFAULT getdate(),
+	who_created uuid NOT NULL DEFAULT 0x00,
+	date_modified datetime NOT NULL DEFAULT getdate(),
+	who_modified uuid NOT NULL DEFAULT 0x00,
 
-		constraint pk_organization primary key (uuid)
-	)
-end
-go
+	-- -------------------------------------------------------------------------
+	-- Specifické byznys sloupce organizace
+	-- -------------------------------------------------------------------------
+	note varchar(max) NOT NULL DEFAULT '',
+	login_disabled bit NOT NULL DEFAULT 0,
+	
+	-- Detekce domovského SSO tenanta v multi-tenantním prostředí (pro IdP)
+	login_domain varchar(200) NOT NULL DEFAULT '',		
+	
+	licence_level tinyint NOT NULL DEFAULT 0,
+	register_id bigint NULL DEFAULT 0,
+	tax_id varchar(40) NOT NULL DEFAULT '',
+	invoice_info varchar(max) NOT NULL DEFAULT '',
+	
+	-- Adresní údaje
+	address_name varchar(100) NOT NULL DEFAULT '',
+	address_street varchar(100) NOT NULL DEFAULT '',
+	address_city varchar(100) NOT NULL DEFAULT '',
+	address_zip varchar(10) NOT NULL DEFAULT '',
+	address_state varchar(40) NOT NULL DEFAULT '',
+	www_address varchar(200) NOT NULL DEFAULT '',
 
----------------------------------------
--- Indexes for RAC architecture
----------------------------------------
+	-- Média a logotyp
+	logo_data varbinary(max) NULL,
+	logo_filename varchar(255) NOT NULL DEFAULT '',
+	logo_mime_type varchar(100) NOT NULL DEFAULT '',
 
--- Unique active record per owner/original
-if not exists (select 1 from sys.indexes where name = 'uq_organization_active' and object_id = object_id('organization'))
-begin
-	create unique index uq_organization_active 
-		on organization(original, object_owner) 
-		where record_type = 'A'
-end
-go
+	CONSTRAINT pk_organization PRIMARY KEY (uuid)
+);
+GO
 
--- Unique language version per owner/original/language
-if not exists (select 1 from sys.indexes where name = 'uq_organization_language' and object_id = object_id('organization'))
-begin
-	create unique index uq_organization_language 
-		on organization(original, object_owner, language) 
-		where record_type = 'L'
-end
-go
+-- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC architektury
+-- -----------------------------------------------------------------------------
 
----------------------------------------
--- Seed: System Organization (0x00)
----------------------------------------
+-- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál
+CREATE UNIQUE INDEX uq_organization_active 
+	ON organization(original, object_owner) 
+	WHERE record_type = 'A' AND removed = 0;
+GO
 
-if not exists (select 1 from organization where original = 0x00000000000000000000000000000000 and record_type = 'A')
-begin
-	insert into organization (
-		uuid,
-		object_owner,
-		original,
-		record_type,
-		approval_status,
-		caption,
-		shortname,
-		description_text
-	)
-	values (
-		0x00000000000000000000000000000000,
-		0x00000000000000000000000000000000,
-		0x00000000000000000000000000000000,
-		'A',
-		'A',
-		'System',
-		'SYS',
-		'System master organization'
-	)
-end
-go
+-- Zajištění unikátnosti jazykových verzí (Language) pro daného vlastníka a originál
+CREATE UNIQUE INDEX uq_organization_language 
+	ON organization(original, object_owner, language) 
+	WHERE record_type = 'L' AND removed = 0;
+GO
+
+-- -----------------------------------------------------------------------------
+-- Inicializační systémový záznam (0x00)
+-- -----------------------------------------------------------------------------
+INSERT INTO organization (
+	uuid,
+	object_owner,
+	original,
+	record_type,
+	approval_status,
+	caption,
+	shortname,
+	description_text
+) VALUES (
+	0x00,
+	0x00,
+	0x00,
+	'A',
+	'A',
+	'System',
+	'SYS',
+	'Systémová master organizace.'
+);
+GO
