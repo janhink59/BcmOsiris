@@ -90,12 +90,12 @@ BEGIN
 	) VALUES (
 		NEWID(),
 		'20260804',
-		'admin@tvoje-domena.cz',
-		'', -- Ponecháno prázdné, doplní se při prvním spuštění / bootstrapu
+		'hink@rac.cz',
+		'', -- Ponecháno prázdné, doplní se při aktivaci systému
 		'sandbox.smtp.mailtrap.io', -- Nultý bod: Vývojový SMTP server
 		2525,                       -- Nultý bod: Port pro Mailtrap
 		'Ramses Enterprise ISMS',
-		'noreply@tvoje-domena.cz'
+		'noreply@rac.cz'
 	);
 END
 GO

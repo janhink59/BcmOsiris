@@ -67,3 +67,10 @@
 * V multi-tenantním prostředí se detekce domovského SSO tenanta provádí primárně podle e-mailové domény klienta (např. sloupec login_domain v tabulce organization).
 * Propojení mezi IdP (externí službou) a lokálním účtem se udržuje ve specializované vazební tabulce (např. user_external_identity), která napojuje identifikátory z IdP (např. provider_name a provider_user_id) na klíč original z tabulky user_account. I tato tabulka striktně podléhá pravidlům RAC a SSC.
 * Tabulka účtů nebo organizací umožňuje definovat bezpečnostní politiky, například zneplatnit lokální přihlašování jménem a heslem (příznak allow_local_login) ve prospěch vynucení externí autentizace či vícefaktorového ověření.
+
+8. Práce s databází v PHP (RamsesLib)
+* Pro přístup k databázi je striktně zakázáno používat PDO nebo nativní funkce (mssql_*, sqlsrv_*) napřímo.
+* Namísto toho se využívají globální proměnné ($dbms, $dbconnection, $dbquery) a funkce z knihovny RamsesLib.
+* Provedení dotazu se realizuje pomocí funkce sqlrun($cmd).
+* Zpracování výsledků se realizuje funkcí fetch(), případně sqlarray() nebo sqlfirstrow().
+* Parametrizace dotazů (ochrana proti SQL injection) se neprovádí pomocí bindování objektu, ale sanitizací PHP proměnných před vložením do stringu dotazu (např. pomocí funkcí charliteral(), intliteral(), guidliteral(), případně stripsl()).
