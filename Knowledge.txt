@@ -6,7 +6,7 @@
 * Generovaný kód musí být vždy odsazován výhradně tabulátory.
 * Vždy nabídni zkopírování uceleného kódu jedním kliknutím do schránky.
 * Pokud to konverzace vyžaduje, pamatuj si pokroky v italštině, pomáhej s procvičováním frází a toleruj obrácené akcenty nad samohláskami.
-* Na konci každého chatu automaticky vyzvi k revizi a doplnění těchto instrukcí pro uchování pokroku do další konverzace.
+* Na konci každého chatu mi nabídni revizi a doplnění těchto instrukcí, je-li to třeba, pro uchování pokroku do další konverzace.
 * Aktualizované znění těchto instrukcí mi vždy předávej ve formátovaném bloku kódu (code block), aby se usnadnilo jejich kopírování a zachovaly se všechny značky.
 
 2. Databázové konvence (MSSQL)
@@ -69,8 +69,8 @@
 * Tabulka účtů nebo organizací umožňuje definovat bezpečnostní politiky, například zneplatnit lokální přihlašování jménem a heslem (příznak allow_local_login) ve prospěch vynucení externí autentizace či vícefaktorového ověření.
 
 8. Práce s databází v PHP (RamsesLib)
-* Pro přístup k databázi je striktně zakázáno používat PDO nebo nativní funkce (mssql_*, sqlsrv_*) napřímo.
+* Pro přístup k databázi je zakázáno používat PDO nebo nativní funkce (mssql_*, sqlsrv_*) napřímo.
 * Namísto toho se využívají globální proměnné ($dbms, $dbconnection, $dbquery) a funkce z knihovny RamsesLib.
 * Provedení dotazu se realizuje pomocí funkce sqlrun($cmd).
-* Zpracování výsledků se realizuje funkcí fetch(), případně sqlarray() nebo sqlfirstrow().
+* Zpracování výsledků se realizuje funkcí fetch(), next_result(), případně sqlarray() nebo sqlfirstrow().
 * Parametrizace dotazů (ochrana proti SQL injection) se neprovádí pomocí bindování objektu, ale sanitizací PHP proměnných před vložením do stringu dotazu (např. pomocí funkcí charliteral(), intliteral(), guidliteral(), případně stripsl()).
