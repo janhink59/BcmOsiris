@@ -1,9 +1,7 @@
 <?php
 
-/* Výchozí konfigurační hodnoty, které jsou zde jen pro informaci AI pro vývoj.
-	Tento soubor se neinkluduje.
-	Inkluduje se modifikovaný název takto:
-	
+/* Výchozí konfigurační hodnoty.
+	Vzápětí se inkluduje ostrý konfigurační soubor, který výchozí hodnoty přepíše
 	$CONFIG_SERVER_NAME=explode(':',$_SERVER['HTTP_HOST'])[0];
 	require_once "config_{$CONFIG_SERVER_NAME}.php";
 */
@@ -26,3 +24,12 @@ $smtp_sender_name = 'RAMSES ISMS';
 // Ochrana proti spamu při testování. 
 // Pokud je vyplněno, všechny e-maily jdou na tuto adresu. Pro produkci nech prázdné ('').
 $smtp_forward = 'jan.hink@tvojedomena.cz';
+
+// 1. Načtení konfigurace a knihoven, specifické pro aktuální instanci serveru
+
+$CONFIG_SERVER_NAME=explode(':',$_SERVER['HTTP_HOST'])[0];
+require_once "config_{$CONFIG_SERVER_NAME}.php";
+
+// Načtení společných knihoven
+require_once 'RamsesLib.php';
+require_once 'send_global_mail.php';
