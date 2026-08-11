@@ -3,41 +3,18 @@
  * =============================================================================
  * Stránka: password_reset.php
  * Účel: Univerzální stránka pro vyžádání obnovy hesla komukoliv.
- * 
- * Vliv a kontext:
- * - Skript je nezávislý na index.php. Načítá pouze config.php a RamsesLib.php.
- * - Formulář umožňuje uživateli zadat svůj e-mail (nebo login_name).
- * - Skript vyhledá aktivního uživatele v user_account, vygeneruje token
- *   a uloží ho do activation_token.
- * - Načte SMTP konfiguraci z lokálního souboru config.php (přes globální proměnné).
- * - Pokud je definována proměnná $smtp_forward, přesměruje e-mail na tuto 
- *   testovací adresu.
  * =============================================================================
  */
 
 declare(strict_types=1);
 
-// Načtení Composer autoloaderu (pokud používáš Composer)
-// require_once 'vendor/autoload.php';
+// Vynucení UTF-8 kódování hlavičkou pro jistotu
+header('Content-Type: text/html; charset=utf-8');
 
-// Pokud nepoužíváš Composer, includuj PHPMailer ručně:
-/*
-require_once 'PHPMailer/src/Exception.php';
-require_once 'PHPMailer/src/PHPMailer.php';
-require_once 'PHPMailer/src/SMTP.php';
-*/
-
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-
-// 1. Načtení konfigurace a knihoven
-$CONFIG_SERVER_NAME=explode(':',$_SERVER['HTTP_HOST'])[0];
-require_once "config_{$CONFIG_SERVER_NAME}.php";
-require_once 'RamsesLib.php';
-
-// Globální proměnné z RamsesLib a configu
-global $dbms, $dbconnection, $charset;
-global $smtp_server, $smtp_port, $smtp_user, $smtp_password, $smtp_sender, $smtp_sender_name, $smtp_forward;
+// 1. Načtení konfigurace
+// Soubor config.php automaticky natahuje RamsesLib.php, send_global_mail.php 
+// a inicializuje připojení k databázi.
+require_once "config.php";
 
 $messageHtml = '';
 $isPost = ($_SERVER['REQUEST_METHOD'] === 'POST');
@@ -53,7 +30,15 @@ if ($isPost) {
 		// Bezpečná sanitizace pro SQL
 		$safeInput = charliteral($rawInput, 200);
 
-		// Hledáme jakéhokoliv aktivního uživatele buď podle e-mailu nebo podle login_name
+		// Zjištění e-mailu pro sysadmina z tabulky system_constant (nultý bod / break-glass)
+		$sysadminEmail = '';
+		$sqlSysAdmin = "SELECT sysadmin_email FROM system_constant";
+		$sysAdminRow = sqlfirstrow($sqlSysAdmin);
+		if ($sysAdminRow && !empty(trim((string)$sysAdminRow['sysadmin_email']))) {
+			$sysadminEmail = trim((string)$sysAdminRow['sysadmin_email']);
+		}
+
+		// Hledáme aktivního uživatele v user_account
 		$sqlUser = "
 			SELECT original, login_name, first_name, last_name, email 
 			FROM user_account 
@@ -62,16 +47,34 @@ if ($isPost) {
 				AND inactive = 0 
 				AND removed = 0
 		";
-		
 		$userRow = sqlfirstrow($sqlUser);
 
-		if (!$userRow || empty(trim((string)$userRow['email']))) {
+		$userEmail = '';
+		$loginName = '';
+		$userId = '';
+
+		if ($userRow) {
+			$userId = trim((string)$userRow['original']);
+			$loginName = trim((string)$userRow['login_name']);
+			
+			// Pokud systém identifikuje účet jako systémového admina (0x00), 
+			// přesměrujeme e-mail na záchrannou adresu z tabulky system_constant.
+			if ($userId === '00000000-0000-0000-0000-000000000000' || $userId === '0x00') {
+				$userEmail = $sysadminEmail;
+			} else {
+				$userEmail = trim((string)$userRow['email']);
+			}
+		} elseif (!empty($sysadminEmail) && strcasecmp($rawInput, $sysadminEmail) === 0) {
+			// Uživatel zadal e-mail odpovídající sysadminovi, i když účet 'system' primárně 
+			// používá 'system@localhost'. Provedeme fallback na záchranný přístup.
+			$userId = '0x00';
+			$loginName = 'System Admin';
+			$userEmail = $sysadminEmail;
+		}
+
+		if (empty($userEmail)) {
 			$messageHtml = "<div style='color: red; font-weight: bold;'>Účet s tímto jménem či e-mailem nebyl nalezen, nebo nemá e-mail nastaven.</div>";
 		} else {
-			$userEmail = trim($userRow['email']);
-			$loginName = trim($userRow['login_name']);
-			$userId = $userRow['original'];
-			
 			// Generování tokenu (32 bytů = 64 hex znaků)
 			try {
 				$plainToken = bin2hex(random_bytes(32));
@@ -84,15 +87,16 @@ if ($isPost) {
 			$expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours'));
 			$tokenUuid = newid(); 
 
-			// Sanitizace dat pro uložení do transakční tabulky
+			// Sanitizace dat pro uložení do transakční tabulky activation_token
 			$safeTokenUuid = guidliteral($tokenUuid);
 			$safeHash = charliteral($tokenHash, 255);
 			$safePurpose = charliteral('PASSWORD_RESET', 50); 
 			$safeExpires = dateliteral($expiresAt);
 			$safeIp = charliteral(get_client_ip_path(), 200);
-			$safeUserId = guidliteral($userId);
+			$safeUserId = ($userId === '0x00') ? '0x00' : guidliteral($userId);
 
 			// Vložení do databáze (záznam nepodléhá SSC)
+			// Kód je plně kompatibilní s DB-compatibility 110 (SQL Server 2012)
 			$sqlInsert = "
 				INSERT INTO activation_token (
 					uuid, token_hash, token_purpose, user_account, 
@@ -109,79 +113,39 @@ if ($isPost) {
 				fatal_error("Chyba DB", "Uložení tokenu selhalo.");
 			}
 
-			if (empty($smtp_server)) {
-				fatal_error("Chyba konfigurace", "SMTP server není nastaven v config.php.");
-			}
-
 			// Sestavení URL pro odkaz (včetně detekce HTTPS)
 			$protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443 ? "https://" : "http://";
-			$baseUrl = $protocol . $_SERVER['HTTP_HOST'] . dirname($_SERVER['REQUEST_URI']) . '/';
+			$baseUrl = $protocol . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['REQUEST_URI']), '/\\') . '/';
 			
 			$activationLink = $baseUrl . "password_reset.php?token=" . urlencode($plainToken) . "&purpose=PASSWORD_RESET";
 
-			// Příprava e-mailu pomocí PHPMailer
-			$mail = new PHPMailer(true);
+			// Příprava HTML e-mailu.
+			$mailSubject = "Obnova hesla v systému RAMSES";
+			$mailBody = "
+				<div style='font-family: Arial, sans-serif;'>
+					<p>Dobrý den,</p>
+					<p>byl vyžádán odkaz pro nastavení nového hesla k vašemu účtu <strong>" . htmlspecialchars($loginName) . "</strong>.</p>
+					<p>Pro nastavení hesla klikněte na odkaz níže:</p>
+					<p><a href='" . htmlspecialchars($activationLink) . "'>" . htmlspecialchars($activationLink) . "</a></p>
+					<p>Odkaz platí 24 hodin.</p>
+					<p>Pokud jste akci nevyžádali, ignorujte prosím tento e-mail.</p>
+				</div>
+			";
 
-			try {
-				// Nastavení SMTP serveru
-				$mail->isSMTP();
-				$mail->Host = trim((string)$smtp_server);
-				$mail->Port = (int)$smtp_port;
-				
-				// Zpracování autentizace z config.php
-				$smtpUsername = trim((string)$smtp_user);
-				if (!empty($smtpUsername)) {
-					$mail->SMTPAuth = true;
-					$mail->Username = $smtpUsername;
-					$mail->Password = trim((string)$smtp_password);
-				} else {
-					$mail->SMTPAuth = false;
-				}
-				
-				$mail->CharSet = 'UTF-8';
-				$mail->setFrom(trim((string)$smtp_sender), trim((string)$smtp_sender_name));
-				
-				// Logika přesměrování (Forward) pro testování
-				$mailBodyPrefix = "";
-				if (!empty(trim((string)$smtp_forward))) {
-					$actualRecipient = trim((string)$smtp_forward);
-					$mail->Subject = "[TEST FORWARD] Obnova hesla v systému RAMSES";
-					
-					$mailBodyPrefix = "=========================================\n"
-									. "UPOZORNĚNÍ PRO TESTOVÁNÍ:\n"
-									. "Tento e-mail byl přesměrován na testovací adresu.\n"
-									. "Původní příjemce: {$userEmail}\n"
-									. "=========================================\n\n";
-				} else {
-					$actualRecipient = $userEmail;
-					$mail->Subject = "Obnova hesla v systému RAMSES";
-				}
-				
-				$mail->addAddress($actualRecipient);
-
-				$mail->Body = $mailBodyPrefix 
-							. "Dobrý den,\n\n"
-							. "byl vyžádán odkaz pro nastavení nového hesla k vašemu účtu '$loginName'.\n"
-							. "Pro nastavení hesla klikněte na odkaz níže:\n\n"
-							. $activationLink . "\n\n"
-							. "Odkaz platí 24 hodin.\n"
-							. "Pokud jste akci nevyžádali, ignorujte prosím tento e-mail.\n";
-
-				$mail->send();
+			// Volání tvé globální funkce, která interně řeší inicializaci PHPMaileru i případný $smtp_forward
+			if (send_global_mail($userEmail, $mailSubject, $mailBody, true)) {
 				$messageHtml = "<div style='color: green; font-weight: bold;'>E-mail s instrukcemi pro obnovu hesla byl úspěšně odeslán.</div>";
-			} catch (Exception $e) {
-				$messageHtml = "<div style='color: red; font-weight: bold;'>Chyba při odesílání e-mailu: {$mail->ErrorInfo}</div>";
+			} else {
+				$messageHtml = "<div style='color: red; font-weight: bold;'>Chyba při odesílání e-mailu. Zkontrolujte logy.</div>";
 			}
 		}
 	}
 }
-
-$pageCharset = isset($charset) && $charset ? $charset : 'utf-8';
 ?>
 <!DOCTYPE html>
 <html lang="cs">
 <head>
-	<meta charset="<?php echo htmlspecialchars($pageCharset); ?>">
+	<meta charset="utf-8">
 	<title>Reset hesla do systému</title>
 	<style>
 		body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 50px; }

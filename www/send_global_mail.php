@@ -35,6 +35,17 @@ function send_global_mail(string $to, string $subject, string $body, bool $is_ht
 		$mail->SMTPSecure = ($smtp_port == 465) ? PHPMailer::ENCRYPTION_SMTPS : PHPMailer::ENCRYPTION_STARTTLS;
 		$mail->Port       = $smtp_port;
 		
+		// Vypnutí striktního ověřování SSL certifikátů.
+		// Workaround pro lokální vývoj na Windows s PHP 8.3, kde standardní ověřování
+		// selhává i přes správnou přítomnost cacert.pem.
+		$mail->SMTPOptions = array(
+			'ssl' => array(
+				'verify_peer'       => false,
+				'verify_peer_name'  => false,
+				'allow_self_signed' => true
+			)
+		);
+
 		// Zajištění korektního kódování češtiny v předmětu i těle zprávy
 		$mail->CharSet    = 'UTF-8';
 
@@ -90,4 +101,3 @@ function send_global_mail(string $to, string $subject, string $body, bool $is_ht
 		return false;
 	}
 }
-?>

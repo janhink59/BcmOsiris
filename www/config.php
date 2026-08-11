@@ -1,13 +1,13 @@
 <?php
 
-/* Výchozí konfigurační hodnoty.
+/* Soubor s výchozími konfiguračními hodnotami. Inkluduje se na každé stránce aplikace.
 	Vzápětí se inkluduje ostrý konfigurační soubor, který výchozí hodnoty přepíše
 	$CONFIG_SERVER_NAME=explode(':',$_SERVER['HTTP_HOST'])[0];
 	require_once "config_{$CONFIG_SERVER_NAME}.php";
 */
 $dbms="sqlsrv";
 $dbserver = "název serveru"; // Jméno hádám 
-$charset='UTF-8';
+$charset=$sqlsrv_charset='UTF-8';
 $dblogin="uživatel";
 $dbpassword="zadej heslo";
 $debugmode = 1;
@@ -33,3 +33,28 @@ require_once "config_{$CONFIG_SERVER_NAME}.php";
 // Načtení společných knihoven
 require_once 'RamsesLib.php';
 require_once 'send_global_mail.php';
+
+// Připojení k databázi a nastavení options
+
+$first_command="while @@trancount>0 rollback
+set xact_abort on
+set ansi_padding on
+set ansi_warnings on
+set ansi_nulls on
+set concat_null_yields_null on
+set arithabort on set ansi_null_dflt_on on
+set implicit_transactions off";
+
+$dbconnection=@sqlsrv_connect($dbserver
+	,array('UID'=>$dblogin
+	,'PWD'=>$dbpassword
+	,'APP'=>'Ramses'
+	,'CharacterSet'=>$sqlsrv_charset
+	//,"Authentication" => "SqlPassword"
+	,"TrustServerCertificate" => true // Klíčové pro PHP 8.x
+	,"MultipleActiveResultSets" => false)
+	);
+if (!$dbconnection)  fatal_error("Connect to SQL server failed, (SQLSRV configuration for $CONFIG_SERVER_NAME: $CONFIGURATION_NAME)","Server=$dbserver as $dblogin");
+if(@$use_dbname) sqlrun("use $use_dbname");
+//sqlsrv_query($dbconnection,"set transaction isolation level read uncommitted set concat_null_yields_null on set arithabort on set nocount on set ansi_null_dflt_on on");
+sqlrun($first_command);
