@@ -24,6 +24,7 @@ $smtp_sender_name = 'RAMSES ISMS';
 // Ochrana proti spamu při testování. 
 // Pokud je vyplněno, všechny e-maily jdou na tuto adresu. Pro produkci nech prázdné ('').
 $smtp_forward = 'jan.hink@tvojedomena.cz';
+$http_allowed = 0;
 
 // 1. Načtení konfigurace a knihoven, specifické pro aktuální instanci serveru
 
