@@ -67,9 +67,3 @@
 * V multi-tenantním prostředí se detekce domovského SSO tenanta provádí primárně podle e-mailové domény klienta (např. sloupec login_domain v tabulce organization).
 * Propojení mezi IdP (externí službou) a lokálním účtem se udržuje ve specializované vazební tabulce (např. user_external_identity), která napojuje identifikátory z IdP (např. provider_name a provider_user_id) na klíč original z tabulky user_account. I tato tabulka striktně podléhá pravidlům RAC a SSC.
 * Tabulka účtů nebo organizací umožňuje definovat bezpečnostní politiky, například zneplatnit lokální přihlašování jménem a heslem (příznak allow_local_login) ve prospěch vynucení externí autentizace či vícefaktorového ověření.
-
-8. Integrace a komunikace
-* Pro odesílání e-mailů se využívá standardní knihovna PHPMailer (přes Composer), která spolehlivě řeší komplexitu hlaviček, příloh a kódování dle RFC.
-* Odesílání se řídí globálními proměnnými z konfiguračního souboru (např. $smtp_server, $smtp_forward).
-* Je-li aktivní proměnná $smtp_forward (např. sandbox vývoj), funkce automaticky přesměruje e-mail na testovací adresu a do těla zprávy připojí informaci o původním adresátovi.
-* Veškeré chybové stavy komunikace a výjimky se musí propisovat do aplikačního deníku (Ramses.log) pomocí existující systémové funkce write_log().

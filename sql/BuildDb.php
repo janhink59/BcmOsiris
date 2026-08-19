@@ -72,6 +72,7 @@ $processContent = function(string $filePath, bool &$converted): string {
 		$converted = true;
 	}
 	
+
 	return $content;
 };
 
@@ -117,7 +118,7 @@ foreach ($manifestLines as $line) {
 			
 			// Přečtení obsahu s odříznutím BOM a validací/konverzí kódování
 			$wasConverted = false;
-			$cleanContent = $processContent($file, $wasConverted);
+			$cleanContent = "-- Zkopírováno z $file\n". $processContent($file, $wasConverted);
 			
 			// Výpis informace o zpracování
 			// $conversionInfo = $wasConverted ? " [konvertovano z Windows-1250]" : "";

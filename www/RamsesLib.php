@@ -1769,7 +1769,7 @@ function initsession(){
 	
 	$rms=charliteral($REMOTE_USER_NAME);
 	//if (!($r = sqlpagerun("set nocount on execute init_wwwsession '$SID',0,'$lang',@ntlm_name=$rms",0))) fatal_error("execute init_wwwsession '$SID'"); 
-	if (!($r = sqlrun("set nocount on execute init_wwwsession '$SID',0,'$lang',@ntlm_name=$rms",0))) fatal_error("execute init_wwwsession '$SID'"); 
+	if (!($r = sqlrun("set nocount on execute p_init_wwwsession '$SID',0"))) fatal_error("execute init_wwwsession '$SID'"); 
 	
 	$result_wwwsession=htmlspec(fetch($r));
 	free_result($r);
