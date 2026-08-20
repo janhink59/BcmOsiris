@@ -44,7 +44,7 @@ $header .= " * RamsesDB Auto-Deploy Build v. 02.06.2026\n";
 $header .= " * Datum vygenerování: {$dateStr}\n";
 $header .= " * Počítač: {$hostStr}\n";
 $header .= " * Kontrola kódování UTF-8 😊 (Příšerně žluťoučký kůň úpěl ďábelské ódy)\n";
-$header .= " * ========================================== */\n\n";
+$header .= " * ========================================== */\n\nGO\n";
 fwrite($outHandle, $header);
 
 $fileCount = 0;
@@ -118,7 +118,7 @@ foreach ($manifestLines as $line) {
 			
 			// Přečtení obsahu s odříznutím BOM a validací/konverzí kódování
 			$wasConverted = false;
-			$cleanContent = "-- Zkopírováno z $file\n". $processContent($file, $wasConverted);
+			$cleanContent = "-- Následující kód je zkopírován ze souboru $file:\nGO\n". $processContent($file, $wasConverted);
 			
 			// Výpis informace o zpracování
 			// $conversionInfo = $wasConverted ? " [konvertovano z Windows-1250]" : "";
@@ -131,7 +131,7 @@ foreach ($manifestLines as $line) {
 			fwrite($outHandle, $cleanContent);
 			
 			// Vložení separátoru dávky pro MSSQL
-			// fwrite($outHandle, "\nGO\n\n");
+			if(substr($cleanContent,-1)!="\n") fwrite($outHandle, "\nGO\n\n");
 			
 			$processedFiles[$realPath] = true;                  // Registrace souboru do paměti jako "zpracováno"
 			$fileCount++;

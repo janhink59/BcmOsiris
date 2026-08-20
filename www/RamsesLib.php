@@ -548,8 +548,8 @@ Time=$time
 Server=$_SERVER[SERVER_NAME] on \"$host\" $cn
 DbServer=$dbserver
 Database=$use_dbname
-Login=$result_wwwsession[user_login]
-Name=$result_wwwsession[organization_name]/$result_wwwsession[user_fullname]
+Login=array_item($result_wwwsession,'user_login');
+Name=array_item($result_wwwsession,'organization_name').'/'.array_item($result_wwwsession,'user_fullname');
 
 BackTrace:
 $bt
@@ -1774,9 +1774,10 @@ function initsession(){
 	$result_wwwsession=htmlspec(fetch($r));
 	free_result($r);
 	// Ošetříme stav, kdy user není přihlášen
-	if ($result_wwwsession[0]<0):
-		require_once(require_file("login.php"));
-		login_screen();
+	if (!$result_wwwsession || $result_wwwsession[0]<0):
+		$page='login';
+		return;
+		//login_screen();
 	endif;
 	$current_review=intliteral($result_wwwsession['crr_review']);
 	$cm_cat_max=$result_wwwsession['cm_cat_max'];

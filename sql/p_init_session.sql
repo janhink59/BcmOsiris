@@ -1,11 +1,11 @@
-execute dropni 'p_init_session'
+execute dropni 'p_init_wwwsession'
 GO
 /*
 
 	Check active session, additional parameter allows to change current language
 
 */
-create procedure [dbo].[p_init_session]
+create procedure [dbo].[p_init_wwwsession]
 	@wwwsession varchar(40),
 	@language varchar(2)=null,
 	@working_date date=null,

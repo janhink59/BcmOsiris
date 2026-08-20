@@ -225,7 +225,7 @@ if (!empty($token)) {
 				}
 
 				$baseUrl = $protocol . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['REQUEST_URI']), '/\\') . '/';
-				$activationLink = $baseUrl . "password_reset.php?token=" . urlencode($plainToken);
+				$activationLink = $baseUrl . "page_password_reset.php?token=" . urlencode($plainToken);
 
 				$mailSubject = "Obnova hesla v systému RAMSES";
 				$mailBody = "

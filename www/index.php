@@ -24,7 +24,7 @@ require_once "config.php";
 
 // 2. Zjištění požadované stránky
 // Využíváme standardní knihovní funkci getinput() pro bezpečné zpracování GET/POST požadavků
-$page = (string)getinput('page', 'raw');
+$page = (string)getinput('page');
 
 // 3. Výchozí směrování a výjimky pro přihlášení
 // Pokud parametr 'page' chybí nebo je prázdný, nastavíme výchozí hodnotu na 'main'

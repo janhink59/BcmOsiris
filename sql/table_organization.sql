@@ -6,9 +6,12 @@
 -- Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
 -- =============================================================================
 
-DROP TABLE IF EXISTS organization;
+-- Podmíněné odstranění tabulky, pokud v ní nejsou poslední změny
+if not exists(select * from v_syscolumns where tabname='organization' and colname='shortname')
+	execute dropni 'organization'
 GO
 
+if object_id('organization') is null
 CREATE TABLE organization (
 	-- -------------------------------------------------------------------------
 	-- Standardní RAC a SSC sloupce
@@ -77,40 +80,50 @@ GO
 
 -- -----------------------------------------------------------------------------
 -- Indexy pro zajištění RAC architektury
+-- (Upraveno: Volání sp_create_index pro idempotentní zakládání)
 -- -----------------------------------------------------------------------------
 
 -- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál
-CREATE UNIQUE INDEX uq_organization_active 
-	ON organization(original, object_owner) 
-	WHERE record_type = 'A' AND removed = 0;
+EXEC sp_create_index 
+	@tname = 'organization', 
+	@iname = 'uq_organization_active', 
+	@colnames = 'original, object_owner', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''A'' AND removed = 0';
 GO
 
 -- Zajištění unikátnosti jazykových verzí (Language) pro daného vlastníka a originál
-CREATE UNIQUE INDEX uq_organization_language 
-	ON organization(original, object_owner, language) 
-	WHERE record_type = 'L' AND removed = 0;
+EXEC sp_create_index 
+	@tname = 'organization', 
+	@iname = 'uq_organization_language', 
+	@colnames = 'original, object_owner, language', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''L'' AND removed = 0';
 GO
 
 -- -----------------------------------------------------------------------------
 -- Inicializační systémový záznam (0x00)
 -- -----------------------------------------------------------------------------
-INSERT INTO organization (
-	uuid,
-	object_owner,
-	original,
-	record_type,
-	approval_status,
-	caption,
-	shortname,
-	description_text
-) VALUES (
-	0x00,
-	0x00,
-	0x00,
-	'A',
-	'A',
-	'System',
-	'SYS',
-	'Systémová master organizace.'
-);
+IF NOT EXISTS(SELECT * FROM organization WHERE uuid = 0x00)
+BEGIN
+	INSERT INTO organization (
+		uuid,
+		object_owner,
+		original,
+		record_type,
+		approval_status,
+		caption,
+		shortname,
+		description_text
+	) VALUES (
+		0x00,
+		0x00,
+		0x00,
+		'A',
+		'A',
+		'System',
+		'SYS',
+		'Systémová master organizace.'
+	);
+END
 GO

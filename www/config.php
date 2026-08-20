@@ -1,9 +1,11 @@
 <?php
 
 /* Soubor s výchozími konfiguračními hodnotami. Inkluduje se na každé stránce aplikace.
-	Vzápětí se inkluduje ostrý konfigurační soubor, který výchozí hodnoty přepíše
+	Vzápětí se inkluduje ostrý konfigurační soubor, který výchozí hodnoty může přepsat.
 	$CONFIG_SERVER_NAME=explode(':',$_SERVER['HTTP_HOST'])[0];
 	require_once "config_{$CONFIG_SERVER_NAME}.php";
+
+	Nakonec se provede připojení k databázi a další nastavení
 */
 $dbms="sqlsrv";
 $dbserver = "název serveru"; // Jméno hádám 
@@ -12,6 +14,7 @@ $dblogin="uživatel";
 $dbpassword="zadej heslo";
 $debugmode = 1;
 $use_dbname="název databáze";
+$CONFIGURATION_NAME="Výchozí konfigurace";
 
 // Nastavení odesílání e-mailů (SMTP)
 $smtp_server = 'sandbox.smtp.mailtrap.io';
@@ -25,6 +28,15 @@ $smtp_sender_name = 'RAMSES ISMS';
 // Pokud je vyplněno, všechny e-maily jdou na tuto adresu. Pro produkci nech prázdné ('').
 $smtp_forward = 'jan.hink@tvojedomena.cz';
 $http_allowed = 0;
+
+// =========================================================================
+// INICIALIZACE SESSION A ZÍSKÁNÍ SESSION_ID PRO P_INIT_WWWSESSION
+// =========================================================================
+if (session_status() === PHP_SESSION_NONE) {
+	session_start();
+}
+// Globální proměnná $SID, kterou následně využívá initsession() v RamsesLib.php
+$SID = session_id();
 
 // 1. Načtení konfigurace a knihoven, specifické pro aktuální instanci serveru
 

@@ -6,16 +6,17 @@
 -- Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
 -- =============================================================================
 
-DROP TABLE IF EXISTS user_account;
 GO
+--DROP TABLE IF EXISTS user_account;
 
+if object_id('user_account') is null
 CREATE TABLE user_account (
 	-- -------------------------------------------------------------------------
 	-- Standardní RAC a SSC sloupce
 	-- -------------------------------------------------------------------------
 	uuid uuid NOT NULL,
-	object_owner uuid NOT NULL DEFAULT 0x00,
-	original uuid NOT NULL DEFAULT 0x00,
+	object_owner uuid NOT NULL default 0x00,
+	original uuid NOT NULL,
 	record_type varchar(1) NOT NULL DEFAULT 'A',
 	approval_status varchar(1) NOT NULL DEFAULT 'A',
 	inactive bit NOT NULL DEFAULT 0,
@@ -85,27 +86,19 @@ GO
 -- -----------------------------------------------------------------------------
 
 -- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál.
-CREATE UNIQUE INDEX uq_user_account_active 
-	ON user_account(original, object_owner) 
-	WHERE record_type = 'A' AND removed = 0;
-GO
+execute sp_create_index 'user_account','uq_user_account_active','original,object_owner','unique','WHERE record_type = ''A'' AND removed = 0'
 
 -- Zajištění unikátnosti jazykových verzí (Language) pro daného vlastníka a originál.
-CREATE UNIQUE INDEX uq_user_account_language 
-	ON user_account(original, object_owner, language) 
-	WHERE record_type = 'L' AND removed = 0;
-GO
+execute sp_create_index 'user_account','uq_user_account_language','original,object_owner,language','unique','WHERE record_type = ''L'' AND removed = 0'
 
 -- Zajištění unikátnosti přihlašovacího jména v rámci jednoho tenanta (organizace).
 -- Jméno nesmí kolidovat mezi aktivními uživateli.
-CREATE UNIQUE INDEX uq_user_account_login 
-	ON user_account(login_name, object_owner) 
-	WHERE record_type = 'A' AND inactive = 0 AND removed = 0;
-GO
+execute sp_create_index 'user_account','uq_user_account_login','login,object_owner','unique','WHERE record_type = ''A'' AND inactive=0 and removed = 0'
 
 -- -----------------------------------------------------------------------------
--- Inicializační systémový záznam (0x00)
+-- Inicializační systémový záznam (0x01)
 -- -----------------------------------------------------------------------------
+if not exists(select * from user_account where original=0x01 and record_type='A' and removed=0)
 INSERT INTO user_account (
 	uuid,
 	object_owner,
@@ -122,9 +115,9 @@ INSERT INTO user_account (
 	is_system_admin,
 	allow_local_login
 ) VALUES (
+	0x01,
 	0x00,
-	0x00,
-	0x00,
+	0x01,
 	'A',
 	'A',
 	'System Administrator',
