@@ -39,7 +39,7 @@ $isPost = ($_SERVER['REQUEST_METHOD'] === 'POST');
 $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
 $blockAction = false;
 
-// Blokování nezabezpečeného přenosu hesla, pokud není explicitně povolen[cite: 7]
+// Blokování nezabezpečeného přenosu hesla, pokud není explicitně povolen
 if (!$isHttps && empty($http_allowed)) {
 	$messageHtml = "
 		<div class='msg-err' style='margin-bottom: 25px;'>
@@ -70,12 +70,12 @@ if ($isPost) {
 		$isAuthenticated = false;
 		$userUuid = '';
 		
-		// A. Pokus o přihlášení jako System Admin (break-glass účet) z tabulky system_constant[cite: 3]
-		$sqlSysAdmin = "SELECT system_admin_pwd, sysadmin_email FROM system_constant";
+		// A. Pokus o přihlášení jako System Admin (break-glass účet) z tabulky system_constant
+		$sqlSysAdmin = "SELECT system_admin_pwd FROM system_constant";
 		$sysAdminRow = sqlfirstrow($sqlSysAdmin);
 		
-		// Kontrola, zda uživatel nezadal admin login nebo admin e-mail
-		if ($sysAdminRow && (strtolower($login) === 'admin' || (!empty($sysAdminRow['sysadmin_email']) && strtolower($login) === strtolower(trim((string)$sysAdminRow['sysadmin_email']))))) {
+		// Kontrola, zda uživatel zadal striktně admin login (odstraněna možnost přihlášení přes e-mail)
+		if ($sysAdminRow && strtolower($login) === 'admin') {
 			$hash = trim((string)$sysAdminRow['system_admin_pwd']);
 			if (password_verify($password, $hash)) {
 				$isAuthenticated = true;
@@ -83,20 +83,28 @@ if ($isPost) {
 			}
 		}
 		
-		// B. Pokus o přihlášení jako běžný uživatel z tabulky user_account[cite: 3]
+		// B. Pokus o přihlášení jako běžný uživatel z tabulky user_account
 		if (!$isAuthenticated) {
-			// Načítáme pouze základní údaje nezbytné pro PHP ověření, zbytek řeší p_set_login
 			$userSql = "
-				SELECT original, password_hash, inactive, require_password_change, allow_local_login 
+				SELECT original, password_hash, inactive, require_password_change, allow_local_login, locked_until 
 				FROM user_account 
 				WHERE login_name = $safeLogin 
 					AND record_type = 'A' 
 					AND removed = 0
 			";
-			$userRow = sqlfirstrow($userSql);
 			
-			if ($userRow) {
-				if ($userRow['inactive']) {
+			// Zjištění, zda jméno nekoliduje ve více tenantech (ověření exkluzivity)
+			$userRows = sqlarray_simple($userSql);
+			
+			if (count($userRows) > 1) {
+				$messageHtml = "<div class='msg-err'>Přihlašovací jméno není unikátní (kolize identit). Kontaktujte administrátora.</div>";
+			} elseif (count($userRows) === 1) {
+				$userRow = $userRows[0];
+				
+				// Kontrola časového uzamčení proti Brute-Force útokům
+				if (!empty($userRow['locked_until']) && strtotime($userRow['locked_until']) > time()) {
+					$messageHtml = "<div class='msg-err'>Účet je dočasně uzamčen z důvodu mnoha neúspěšných pokusů o přihlášení.</div>";
+				} elseif ($userRow['inactive']) {
 					$messageHtml = "<div class='msg-err'>Tento účet je momentálně deaktivován.</div>";
 				} elseif (isset($userRow['allow_local_login']) && $userRow['allow_local_login'] == 0) {
 					$messageHtml = "<div class='msg-err'>Přihlášení jménem a heslem není povoleno. Použijte jednotné přihlášení (SSO).</div>";
@@ -105,13 +113,18 @@ if ($isPost) {
 					if (password_verify($password, $hash)) {
 						$isAuthenticated = true;
 						$userUuid = trim((string)$userRow['original']);
-						
-						// Upozornění: Pokud require_password_change == 1, 
-						// můžeš sem později přidat vynucené přesměrování na password_reset.php
 					} else {
-						// Při chybném heslu inkrementujeme počítadlo selhání v databázi
+						// Inkrementace pokusů a případné uzamčení na 15 minut po 5 neúspěšných pokusech (T-SQL syntaxe)
 						$safeUserOriginal = guidliteral(trim((string)$userRow['original']));
-						sqlrun("UPDATE user_account SET failed_login_attempts = ISNULL(failed_login_attempts, 0) + 1 WHERE original = $safeUserOriginal AND record_type = 'A'");
+						sqlrun("
+							UPDATE user_account 
+							SET failed_login_attempts = ISNULL(failed_login_attempts, 0) + 1,
+								locked_until = CASE 
+									WHEN ISNULL(failed_login_attempts, 0) + 1 >= 5 THEN DATEADD(minute, 15, GETDATE()) 
+									ELSE locked_until 
+								END
+							WHERE original = $safeUserOriginal AND record_type = 'A'
+						");
 					}
 				}
 			}

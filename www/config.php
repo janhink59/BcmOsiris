@@ -44,7 +44,7 @@ $CONFIG_SERVER_NAME=explode(':',$_SERVER['HTTP_HOST'])[0];
 require_once "config_{$CONFIG_SERVER_NAME}.php";
 
 // Načtení společných knihoven
-require_once 'RamsesLib.php';
+require_once 'OsirisLib.php';
 require_once 'send_global_mail.php';
 
 // Připojení k databázi a nastavení options

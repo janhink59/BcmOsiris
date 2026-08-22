@@ -1,16 +1,16 @@
 <?php
 /**
  * =============================================================================
- * Stránka: password_reset.php
+ * Stránka: page_password_reset.php
  * Účel: Univerzální stránka pro vyžádání obnovy hesla (Fáze 1) 
  *       a následné nastavení nového hesla na základě tokenu (Fáze 2).
  * 
- * Vliv a kontext:
- * - Ošetřuje bezpečnostní riziko vyzrazení dat přes HTTP. Pokud není aktivní
- *   HTTPS a administrátor výslovně nepovolil $http_allowed, skript zablokuje akce.
- * - Ukládání tokenů do activation_token využívá rychlý hash SHA-256.
- * - Rozlišuje aplikaci hesla pro běžné uživatele (user_account) a pro
- *   nouzového break-glass admina (system_constant).
+ * Opravy a úpravy:
+ * - Fáze 1 nyní striktně vyžaduje přihlašovací jméno (login_name) i e-mail.
+ *   Tím je zamezeno kolizím v multi-tenantním prostředí (stejný e-mail u více tenantů).
+ * - Vyřešeno zastínění System Admina (0x00) lokálním adminem (0x01).
+ * - Odkazy a akce formulářů plně respektují centrální router (index.php?page=...).
+ * - Zajištěna ochrana proti brute-force a nechráněnému přenosu (HTTP blokace).
  * =============================================================================
  */
 
@@ -66,6 +66,7 @@ if (!empty($token)) {
 	$safeTokenHash = charliteral($hashedToken, 255);
 	$safePurpose = charliteral('PASSWORD_RESET', 50);
 
+	// Kontrola platnosti tokenu v databázi (musí být nepoužitý a neexpirovaný)
 	$sqlToken = "
 		SELECT uuid, user_account, expires_at 
 		FROM activation_token 
@@ -102,6 +103,7 @@ if (!empty($token)) {
 				$isSysAdmin = ($userIdForReset === '0x00' || $userIdForReset === '00000000-0000-0000-0000-000000000000');
 
 				if ($isSysAdmin) {
+					// Aktualizace hesla pro Break-glass administrátora
 					$updateSql = "
 						UPDATE system_constant 
 						SET system_admin_pwd = $safePwdHash, 
@@ -109,6 +111,7 @@ if (!empty($token)) {
 					";
 					$updateSuccess = sqlrun($updateSql);
 				} else {
+					// Aktualizace hesla pro běžného uživatele a reset chybových stavů
 					$safeUserId = guidliteral($userIdForReset);
 					$updateSql = "
 						UPDATE user_account 
@@ -124,6 +127,7 @@ if (!empty($token)) {
 				}
 
 				if ($updateSuccess) {
+					// Zneplatnění použitého tokenu
 					sqlrun("UPDATE activation_token SET is_used = 1, date_modified = GETDATE() WHERE uuid = $safeTokenUuid");
 					sqlrun("COMMIT");
 					
@@ -141,16 +145,18 @@ if (!empty($token)) {
 
 } else {
 	// =========================================================================
-	// FÁZE 1: VYŽÁDÁNÍ ODKAZU (ZADÁNÍ E-MAILU/LOGINU)
+	// FÁZE 1: VYŽÁDÁNÍ ODKAZU (ZADÁNÍ LOGINU A E-MAILU)
 	// =========================================================================
 	
 	if ($isPost) {
-		$rawInput = trim((string)getinput('login_or_email'));
+		$rawLogin = trim((string)getinput('login_name', 'raw'));
+		$rawEmail = trim((string)getinput('email', 'raw'));
 		
-		if (empty($rawInput)) {
-			$messageHtml = "<div class='msg-err'>Prosím, zadejte přihlašovací jméno nebo e-mail.</div>";
+		if (empty($rawLogin) || empty($rawEmail)) {
+			$messageHtml = "<div class='msg-err'>Prosím, zadejte přihlašovací jméno i e-mail.</div>";
 		} else {
-			$safeInput = charliteral($rawInput, 200);
+			$safeLogin = charliteral($rawLogin, 200);
+			$safeEmail = charliteral($rawEmail, 200);
 
 			$sysadminEmail = '';
 			$sqlSysAdmin = "SELECT sysadmin_email FROM system_constant";
@@ -159,37 +165,42 @@ if (!empty($token)) {
 				$sysadminEmail = trim((string)$sysAdminRow['sysadmin_email']);
 			}
 
-			$sqlUser = "
-				SELECT original, login_name, first_name, last_name, email 
-				FROM user_account 
-				WHERE (email = $safeInput OR login_name = $safeInput)
-					AND record_type = 'A' 
-					AND inactive = 0 
-					AND removed = 0
-			";
-			$userRow = sqlfirstrow($sqlUser);
-
 			$userEmail = '';
 			$loginName = '';
 			$userId = '';
 
-			if ($userRow) {
-				$userId = trim((string)$userRow['original']);
-				$loginName = trim((string)$userRow['login_name']);
+			// 1. Zjištění, zda se nejedná o vyžádání hesla pro System Admina (0x00)
+			if (strtolower($rawLogin) === 'admin' && !empty($sysadminEmail) && strcasecmp($rawEmail, $sysadminEmail) === 0) {
+				$userId = '0x00';
+				$loginName = 'admin';
+				$userEmail = $sysadminEmail;
+			} 
+			// 2. Pokud ne, hledáme standardního uživatele
+			else {
+				$sqlUser = "
+					SELECT original, login_name, first_name, last_name, email 
+					FROM user_account 
+					WHERE login_name = $safeLogin 
+						AND email = $safeEmail
+						AND record_type = 'A' 
+						AND inactive = 0 
+						AND removed = 0
+				";
 				
-				if ($userId === '00000000-0000-0000-0000-000000000000' || $userId === '0x00') {
-					$userEmail = $sysadminEmail;
-				} else {
+				// Nyní již nehrozí kolize z multi-tenantního prostředí, 
+				// kombinace loginu a konkrétního e-mailu je unikátní identifikátor
+				$userRow = sqlfirstrow($sqlUser);
+
+				if ($userRow) {
+					$userId = trim((string)$userRow['original']);
+					$loginName = trim((string)$userRow['login_name']);
 					$userEmail = trim((string)$userRow['email']);
 				}
-			} elseif (!empty($sysadminEmail) && strcasecmp($rawInput, $sysadminEmail) === 0) {
-				$userId = '0x00';
-				$loginName = 'System Admin';
-				$userEmail = $sysadminEmail;
 			}
 
 			if (empty($userEmail)) {
-				$messageHtml = "<div class='msg-err'>Účet s tímto jménem či e-mailem nebyl nalezen, nebo nemá e-mail nastaven.</div>";
+				// Bezpečnostní zpráva neprozrazuje, co přesně bylo špatně (prevence enumerace)
+				$messageHtml = "<div class='msg-err'>Účet s touto kombinací jména a e-mailu nebyl nalezen, nebo je deaktivován.</div>";
 			} else {
 				try {
 					$plainToken = bin2hex(random_bytes(32));
@@ -225,7 +236,8 @@ if (!empty($token)) {
 				}
 
 				$baseUrl = $protocol . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['REQUEST_URI']), '/\\') . '/';
-				$activationLink = $baseUrl . "page_password_reset.php?token=" . urlencode($plainToken);
+				// URL nyní směřuje korektně přes centrální router index.php
+				$activationLink = $baseUrl . "index.php?page=password_reset&token=" . urlencode($plainToken);
 
 				$mailSubject = "Obnova hesla v systému RAMSES";
 				$mailBody = "
@@ -261,8 +273,8 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 		body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 50px; }
 		.container { background-color: #fff; padding: 30px; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 450px; margin: auto; }
 		h1 { font-size: 22px; color: #333; margin-top: 0; }
-		label { display: block; margin-top: 15px; margin-bottom: 5px; color: #666; }
-		input[type="text"], input[type="password"] { width: 100%; padding: 10px; border: 1px solid #ccc; box-sizing: border-box; border-radius: 3px; }
+		label { display: block; margin-top: 15px; margin-bottom: 5px; color: #666; font-weight: bold; }
+		input[type="text"], input[type="email"], input[type="password"] { width: 100%; padding: 10px; border: 1px solid #ccc; box-sizing: border-box; border-radius: 3px; }
 		button { margin-top: 25px; padding: 12px 15px; background-color: #004488; color: #fff; border: none; border-radius: 3px; cursor: pointer; width: 100%; font-size: 16px; font-weight: bold; }
 		button:hover { background-color: #003366; }
 		button:disabled { background-color: #999; cursor: not-allowed; }
@@ -289,7 +301,8 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 			<!-- FÁZE 2: FORMULÁŘ PRO NOVÉ HESLO -->
 			<h1>Nastavení nového hesla</h1>
 			<p style="color: #555; font-size: 14px;">Zadejte své nové heslo. Z bezpečnostních důvodů musí obsahovat minimálně 8 znaků.</p>
-			<form method="POST" action="">
+			<!-- Akce nyní směřuje přes centrální router -->
+			<form method="POST" action="index.php?page=password_reset">
 				<input type="hidden" name="token" value="<?php echo htmlspecialchars($token); ?>">
 				
 				<label for="new_password">Nové heslo:</label>
@@ -304,16 +317,20 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 		<?php elseif (empty($token)): ?>
 			<!-- FÁZE 1: FORMULÁŘ PRO VYŽÁDÁNÍ ODKAZU -->
 			<h1>Obnova zapomenutého hesla</h1>
-			<p style="color: #555; font-size: 14px;">Zadejte svůj e-mail nebo uživatelské jméno. Na příslušnou e-mailovou adresu vám bude zaslán odkaz k nastavení nového hesla.</p>
-			<form method="POST" action="">
-				<label for="login_or_email">Uživatelské jméno nebo e-mail:</label>
-				<input type="text" id="login_or_email" name="login_or_email" required value="<?php echo htmlspecialchars($_POST['login_or_email'] ?? ''); ?>" <?php echo $disabledAttr; ?>>
+			<p style="color: #555; font-size: 14px;">Zadejte své přihlašovací jméno a e-mail. Na příslušnou e-mailovou adresu vám bude zaslán odkaz k nastavení nového hesla.</p>
+			<!-- Akce nyní směřuje přes centrální router -->
+			<form method="POST" action="index.php?page=password_reset">
+				<label for="login_name">Uživatelské jméno:</label>
+				<input type="text" id="login_name" name="login_name" required value="<?php echo htmlspecialchars($_POST['login_name'] ?? ''); ?>" <?php echo $disabledAttr; ?>>
+				
+				<label for="email">E-mailová adresa:</label>
+				<input type="email" id="email" name="email" required value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>" <?php echo $disabledAttr; ?>>
 				
 				<button type="submit" <?php echo $disabledAttr; ?>>Odeslat odkaz</button>
 			</form>
 		<?php endif; ?>
 		
-		<a href="index.php" class="back-link">Zpět na úvodní obrazovku (Přihlášení)</a>
+		<a href="index.php?page=login" class="back-link">Zpět na úvodní obrazovku (Přihlášení)</a>
 	</div>
 </body>
 </html>

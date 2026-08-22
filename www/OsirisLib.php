@@ -585,7 +585,7 @@ GET=$get$post$sess";
 		$time=$t=time();
 		$i=true;
 		if($ORIGINAL_REMOTE_ADDR!=='212.24.158.131'){ // Nezasílat e-maily, pokud je to testovací request Nagiosu
-			$i=mail($error_mailto,"Ramses error report",$msg,'')?"OK":"Error, message saved into log file";
+			$i=send_global_mail($error_mailto,"Osiris error report",$msg,false)?"OK":"Error, message saved into log file";
 		}
 		if($deadlock)
 			print "<DIV style=text-align:left><H1>System overload / systém je přetížen</H1>
