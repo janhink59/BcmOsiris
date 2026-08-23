@@ -29,6 +29,14 @@ $smtp_sender_name = 'RAMSES ISMS';
 $smtp_forward = 'jan.hink@tvojedomena.cz';
 $http_allowed = 0;
 
+// Nastavení Single Sign-On (SSO) - Google OAuth 2.0
+// Výchozí hodnoty ponecháváme prázdné z bezpečnostních důvodů.
+// Očekává se, že tyto proměnné budou přepsány v lokálním souboru (např. config_localhost.php),
+// který je vyloučen z verzování v Gitu (pomocí .gitignore).
+$google_client_id		= '';
+$google_client_secret	= '';
+$google_redirect_uri	= ''; // např. 'http://localhost/Ramses/index.php?page=google_callback'
+
 // =========================================================================
 // INICIALIZACE SESSION A ZÍSKÁNÍ SESSION_ID PRO P_INIT_WWWSESSION
 // =========================================================================
@@ -39,9 +47,11 @@ if (session_status() === PHP_SESSION_NONE) {
 $SID = session_id();
 
 // 1. Načtení konfigurace a knihoven, specifické pro aktuální instanci serveru
-
 $CONFIG_SERVER_NAME=explode(':',$_SERVER['HTTP_HOST'])[0];
 require_once "config_{$CONFIG_SERVER_NAME}.php";
+
+// Načtení autoloaderu pro všechny Composer závislosti (Google API, PhpSpreadsheet, PHPMailer, atd.)
+require_once __DIR__ . '/vendor/autoload.php';
 
 // Načtení společných knihoven
 require_once 'OsirisLib.php';
