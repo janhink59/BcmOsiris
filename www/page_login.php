@@ -4,15 +4,13 @@
  * Stránka: page_login.php
  * Účel: Zajišťuje autentizaci uživatele proti tabulce user_account 
  *       nebo system_constant (System Admin).
+ *       Podporuje zobrazení přesměrovaných chyb (např. z Google SSO).
  * 
  * Logika a vazby:
  * - Jelikož index.php přeskočí initsession() při $page == 'login', musíme
  *   zde session_start() zavolat sami, abychom získali platné $SID.
  * - Zpracovává POST požadavek s přihlašovacími údaji přes getinput().
- * - Z databáze získá pouze nezbytný identifikátor a hash hesla.
- * - Ověřuje heslo pomocí bezpečné PHP funkce password_verify().
- * - Po úspěšném ověření deleguje zápis a načtení detailů do wwwsession 
- *   voláním uložené procedury p_set_login.
+ * - Zachytává a zobrazuje flash hlášky předané přes $_SESSION['login_error'].
  * =============================================================================
  */
 
@@ -22,7 +20,7 @@ declare(strict_types=1);
 header('Content-Type: text/html; charset=utf-8');
 
 // Globální proměnné z configu a knihoven
-global $SID, $http_allowed;
+global $SID, $http_allowed, $google_client_id, $google_redirect_uri;
 
 // 1. Zajištění session (pokud jsme přišli přímo přes index.php?page=login)
 if (session_status() === PHP_SESSION_NONE) {
@@ -32,6 +30,40 @@ $SID = session_id();
 
 $messageHtml = '';
 $isPost = ($_SERVER['REQUEST_METHOD'] === 'POST');
+
+// =========================================================================
+// ZOBRAZENÍ CHYBOVÝCH HLÁŠEK Z PŘESMĚROVÁNÍ (Flash messages)
+// =========================================================================
+if (isset($_SESSION['login_error'])) {
+	$messageHtml = "<div class='msg-err'>" . $_SESSION['login_error'] . "</div>";
+	unset($_SESSION['login_error']); // Odstranění po prvním zobrazení
+}
+
+// =========================================================================
+// INICIALIZACE GOOGLE SSO (Příprava URL pro tlačítko)
+// =========================================================================
+$googleAuthUrl = '';
+if (
+	!empty($google_client_id) 
+	&& !empty($google_redirect_uri) 
+	&& filter_var($google_redirect_uri, FILTER_VALIDATE_URL) 
+	&& class_exists('Google\Client')
+) {
+	try {
+		// Vytvoření klienta pro získání autorizační URL s potřebnými scopes
+		$client = new Google\Client();
+		$client->setClientId($google_client_id);
+		$client->setRedirectUri($google_redirect_uri);
+		$client->addScope('email');
+		$client->addScope('profile');
+		
+		// Vygenerování URL pro přesměrování uživatele
+		$googleAuthUrl = $client->createAuthUrl();
+	} catch (InvalidArgumentException $e) {
+		// Tiše zachytíme případnou chybu z Google knihovny
+		$googleAuthUrl = '';
+	}
+}
 
 // =========================================================================
 // KONTROLA BEZPEČNOSTI (HTTP vs HTTPS)
@@ -56,7 +88,7 @@ if ($isPost && $blockAction) {
 }
 
 // =========================================================================
-// ZPRACOVÁNÍ PŘIHLÁŠENÍ
+// ZPRACOVÁNÍ PŘIHLÁŠENÍ (LOKÁLNÍ JMENO A HESLO)
 // =========================================================================
 if ($isPost) {
 	// Získání raw vstupů, protože hesla mohou obsahovat speciální znaky
@@ -74,7 +106,7 @@ if ($isPost) {
 		$sqlSysAdmin = "SELECT system_admin_pwd FROM system_constant";
 		$sysAdminRow = sqlfirstrow($sqlSysAdmin);
 		
-		// Kontrola, zda uživatel zadal striktně admin login (odstraněna možnost přihlášení přes e-mail)
+		// Kontrola, zda uživatel zadal striktně admin login
 		if ($sysAdminRow && strtolower($login) === 'admin') {
 			$hash = trim((string)$sysAdminRow['system_admin_pwd']);
 			if (password_verify($password, $hash)) {
@@ -176,6 +208,14 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 		.msg-err { color: #b71c1c; font-weight: bold; padding: 10px; border-left: 4px solid #b71c1c; background-color: #ffebee; line-height: 1.4; }
 		.forgot-pwd { display: block; text-align: center; margin-top: 20px; font-size: 14px; color: #004488; text-decoration: none; }
 		.forgot-pwd:hover { text-decoration: underline; }
+		
+		/* Přidané CSS třídy pro oddělovač a Google SSO tlačítko */
+		.divider { display: flex; align-items: center; text-align: center; margin: 25px 0 15px 0; color: #999; }
+		.divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid #ddd; }
+		.divider span { padding: 0 10px; font-size: 14px; }
+		.google-btn { display: block; text-align: center; padding: 11px 15px; background-color: #fff; color: #333; border: 1px solid #ccc; border-radius: 3px; cursor: pointer; width: 100%; font-size: 16px; font-weight: bold; text-decoration: none; box-sizing: border-box; }
+		.google-btn:hover { background-color: #f9f9f9; }
+		.google-btn img { vertical-align: middle; height: 18px; margin-right: 10px; margin-top: -3px; }
 	</style>
 </head>
 <body>
@@ -195,6 +235,15 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 			
 			<button type="submit" <?php echo $disabledAttr; ?>>Přihlásit se</button>
 		</form>
+
+		<!-- Vygenerování sekce s Google tlačítkem, pokud je nakonfigurováno API -->
+		<?php if (!empty($googleAuthUrl)): ?>
+			<div class="divider"><span>Nebo</span></div>
+			<a href="<?php echo htmlspecialchars($googleAuthUrl); ?>" class="google-btn">
+				<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
+				Přihlásit se přes Google
+			</a>
+		<?php endif; ?>
 		
 		<a href="index.php?page=password_reset" class="forgot-pwd">Zapomněli jste heslo?</a>
 	</div>

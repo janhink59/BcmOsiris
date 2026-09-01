@@ -19,7 +19,7 @@ declare(strict_types=1);
 header('Content-Type: text/html; charset=utf-8');
 
 // 1. Načtení základní konfigurace, knihoven a inicializace databáze
-// Skript config.php zajistí připojení k MSSQL a načtení sdílených funkcí z RamsesLib.php[cite: 3]
+// Skript config.php zajistí připojení k MSSQL a načtení sdílených funkcí z RamsesLib.php
 require_once "config.php";
 
 // 2. Zjištění požadované stránky
@@ -33,11 +33,9 @@ if ($page === '') {
 }
 
 // 4. Inicializace session a ověření uživatele
-// Funkce initsession() je definována v RamsesLib.php a plní pole $result_wwwsession[cite: 5].
-// Pokud uživatel není přihlášen a nejedná se o pokus o zobrazení přihlašovací stránky 
-// nebo o zaslání hesla, initsession() by jej dle historické logiky mohla vyhodit ven.
-// Zatím voláme initsession() globálně, jelikož drží kontext pro zbytek běhu systému[cite: 5].
-if ($page !== 'login' && $page !== 'password_reset') {
+// Funkce initsession() je definována v RamsesLib.php a plní pole $result_wwwsession.
+// Výjimka byla rozšířena o 'google_callback', protože při návratu z IdP ještě lokální session neexistuje.
+if ($page !== 'login' && $page !== 'password_reset' && $page !== 'google_callback') {
 	initsession();
 }
 
@@ -52,6 +50,6 @@ $page_file = "page_{$page}.php";
 if (file_exists($page_file)) {
 	require_once $page_file;
 } else {
-	// Pokud stránka neexistuje, využijeme globální handler pro fatální chyby z RamsesLib.php[cite: 5]
+	// Pokud stránka neexistuje, využijeme globální handler pro fatální chyby z RamsesLib.php
 	fatal_error("Chyba 404 - Nenalezeno", "Požadovaný modul '$page_file' nebyl na serveru nalezen.");
 }

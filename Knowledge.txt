@@ -5,9 +5,9 @@
 * Komentáře ve zdrojových kódech ti následně musí sloužit k orientaci v kontextu a vazbách, na co všechno má kód vliv.
 * Generovaný kód musí být vždy odsazován výhradně tabulátory.
 * Vždy nabídni zkopírování uceleného kódu jedním kliknutím do schránky.
-* Pokud to konverzace vyžaduje, pamatuj si pokroky v italštině, pomáhej s procvičováním frází a toleruj obrácené akcenty nad samohláskami.
-* Na konci každého chatu automaticky vyzvi k revizi a doplnění těchto instrukcí pro uchování pokroku do další konverzace.
+* Je-li třeba, tak na konci každého chatu automaticky nabídni revizi těchto instrukcí pro uchování pokroku do další konverzace.
 * Aktualizované znění těchto instrukcí mi vždy předávej ve formátovaném bloku kódu (code block), aby se usnadnilo jejich kopírování a zachovaly se všechny značky.
+* Na konci PHP souborů nedávej znaky ?>
 
 2. Databázové konvence (MSSQL)
 * Databáze plně podporuje UTF-8 kódování.

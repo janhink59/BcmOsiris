@@ -548,8 +548,8 @@ Time=$time
 Server=$_SERVER[SERVER_NAME] on \"$host\" $cn
 DbServer=$dbserver
 Database=$use_dbname
-Login=array_item($result_wwwsession,'user_login');
-Name=array_item($result_wwwsession,'organization_name').'/'.array_item($result_wwwsession,'user_fullname');
+Login=".array_item($result_wwwsession,'user_login')."
+Name=".array_item($result_wwwsession,'organization_name').'/'.array_item($result_wwwsession,'user_fullname')."
 
 BackTrace:
 $bt
