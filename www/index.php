@@ -5,7 +5,7 @@
  * Účel: Centrální rozcestník (router) aplikace RAMSES.
  *
  * Logika a vazby:
- * - Načte konfiguraci (config.php), která následně inkluduje RamsesLib.php.
+ * - Načte konfiguraci (config.php), která následně inkluduje OsirisLib.php.
  * - Pomocí initsession() zajistí ověření sezení a nastavení kontextu uživatele.
  * - Získá a zanese parametr 'page' prostřednictvím bezpečné funkce getinput().
  * - Pokud parametr není zadán, automaticky směruje na 'main' (page_main.php).
@@ -19,7 +19,7 @@ declare(strict_types=1);
 header('Content-Type: text/html; charset=utf-8');
 
 // 1. Načtení základní konfigurace, knihoven a inicializace databáze
-// Skript config.php zajistí připojení k MSSQL a načtení sdílených funkcí z RamsesLib.php
+// Skript config.php zajistí připojení k MSSQL a načtení sdílených funkcí z OsirisLib.php
 require_once "config.php";
 
 // 2. Zjištění požadované stránky
@@ -33,7 +33,7 @@ if ($page === '') {
 }
 
 // 4. Inicializace session a ověření uživatele
-// Funkce initsession() je definována v RamsesLib.php a plní pole $result_wwwsession.
+// Funkce initsession() je definována v OsirisLib.php a plní pole $result_wwwsession.
 // Výjimka byla rozšířena o 'google_callback', protože při návratu z IdP ještě lokální session neexistuje.
 if ($page !== 'login' && $page !== 'password_reset' && $page !== 'google_callback') {
 	initsession();
@@ -50,6 +50,6 @@ $page_file = "page_{$page}.php";
 if (file_exists($page_file)) {
 	require_once $page_file;
 } else {
-	// Pokud stránka neexistuje, využijeme globální handler pro fatální chyby z RamsesLib.php
+	// Pokud stránka neexistuje, využijeme globální handler pro fatální chyby z OsirisLib.php
 	fatal_error("Chyba 404 - Nenalezeno", "Požadovaný modul '$page_file' nebyl na serveru nalezen.");
 }

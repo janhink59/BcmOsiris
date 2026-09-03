@@ -9,7 +9,7 @@
 if (session_status() === PHP_SESSION_NONE) {
 	session_start();
 }
-// Globální proměnná $SID pro initsession() v RamsesLib.php
+// Globální proměnná $SID pro initsession() v OsirisLib.php
 $SID = session_id();
 
 // 2. Načtení autoloaderu pro Composer (Google API, PhpSpreadsheet, atd.)
