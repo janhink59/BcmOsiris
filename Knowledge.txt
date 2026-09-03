@@ -18,7 +18,12 @@
 3. Architektura RAC a SSC (Record & Access Control + Schvalovací cyklus)
 * Záznamy jsou logicky identifikovány pomocí sloupce original (uuid). Primárním klíčem řádku je uuid.
 * Vlastníkem (tenantem) je object_owner. Systémové záznamy mají object_owner = 0x00. Objekty vlastněné systémem nelze běžně smazat, k jejich deaktivaci slouží příznak inactive.
-* Klientský override (Views): Pro každou tabulku existuje pohled, kde při modifikovatelných vlastnostech a překladech má záznam klienta přednost před výchozím systémovým záznamem (0x00).
+* Klientský override (Views): Generovaná view (vrepo_{tabname}) automaticky skládají prioritu dat (tenant override > system). Poskytují sloupce:
+  - {colname}: finální zresolvovaná hodnota.
+  - {colname}_system: vždy původní systémová hodnota 'A' záznamu (dostupné pro VŠECHNY byznysové sloupce pro možnost zjištění odchylky v UI).
+  - {colname}_translated: systémový překlad pro aktuální jazyk 'L' (pouze pro překladatelné texty).
+  - {colname}_original: 'A' záznam organizace, nebo systémový 'A' záznam (pouze pro překladatelné texty).
+  - object_is_mine: příznak (1/0), zda tenant záznam přepsal.
 * Typy záznamů (record_type): 'A' = aktuálně schválený, 'L' = platná jazyková verze.
 * Koncepty v SSC (vlastněné uživatelem): 'I' (Insert), 'U' (Update), 'D' (Delete), 'G' (úprava jazykové verze).
 * Stavy schvalování (approval_status): Povolené hodnoty řídící SSC jsou 'D', 'W', 'S', 'A', 'R', 'C', 'I'.
