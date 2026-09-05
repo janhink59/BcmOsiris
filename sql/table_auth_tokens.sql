@@ -1,55 +1,81 @@
-/*
+ï»¿/*
 =========================================================================================
-KONTEXT PRO AI: Implementace permanentního pøihlášení (Remember Me) pro PHP 8.3
+KONTEXT PRO AI: Implementace permanentnÃ­ho pÅ™ihlÃ¡Å¡enÃ­ (Remember Me) pro PHP 8.3
 =========================================================================================
-Tento skript (MSSQL 2019) definuje strukturu pro bezpeèné uloení dlouhodobıch 
-pøihlašovacích tokenù, které umoòují pøihlášení uivatele i po vypršení standardního SID.
+Tento skript (MSSQL 2019) definuje strukturu pro bezpeÄnÃ© uloÅ¾enÃ­ dlouhodobÃ½ch 
+pÅ™ihlaÅ¡ovacÃ­ch tokenÅ¯, kterÃ© umoÅ¾ÅˆujÃ­ pÅ™ihlÃ¡Å¡enÃ­ uÅ¾ivatele i po vyprÅ¡enÃ­ standardnÃ­ho SID.
 
-Architektonická a bezpeènostní rozhodnutí:
-1. Bezpeènostní vzor "Selector & Validator":
-	- Cookie v prohlíeèi má formát "selector:validator".
-	- Tabulka ukládá `selector` v èistém textu pro rychlé vyhledání.
-	- Validator je uloen POUZE jako hash (SHA-256). Pøi úniku databáze tak útoèník 
-	  nezíská pouitelné tokeny. Pøi ovìøování se porovnává pøes hash_equals v PHP.
-2. Optimalizace primárního klíèe:
-	- Zámìrnì bylo vynecháno umìlé èíselné ID. Primárním klíèem je samotnı `selector`, 
-	  co vytváøí clustered index a zaruèuje okamité ètení bez ohledu na poèet záznamù.
-3. Identifikátor uivatele:
-	- Místo user_id pouíváme pøímo `user_login` (VARCHAR).
-4. Podpora pro selektivní odhlášení (Device Management):
-	- Sloupce `ip_address`, `user_agent` a `last_used` slouí jako metadata.
-	- Umoòují v UI zobrazit uivateli seznam aktivních sezení a selektivnì 
-	  invalidovat konkrétní zaøízení (napø. pøi ztrátì mobilu) smazáním konkrétního selectoru.
-5. Samoèisticí mechanismus:
-	- Odstraòování expirovanıch tokenù nevyaduje SQL Agent job. Je øešeno pomocí 
-	  AFTER INSERT triggeru, kterı pøi kadém novém zápisu promae staré záznamy.
+ArchitektonickÃ¡ a bezpeÄnostnÃ­ rozhodnutÃ­:
+1. BezpeÄnostnÃ­ vzor "Selector & Validator":
+	- Cookie v prohlÃ­Å¾eÄi mÃ¡ formÃ¡t "selector:validator".
+	- Tabulka uklÃ¡dÃ¡ `selector` v ÄistÃ©m textu pro rychlÃ© vyhledÃ¡nÃ­.
+	- Validator je uloÅ¾en POUZE jako hash (SHA-256). PÅ™i Ãºniku databÃ¡ze tak ÃºtoÄnÃ­k 
+	  nezÃ­skÃ¡ pouÅ¾itelnÃ© tokeny. PÅ™i ovÄ›Å™ovÃ¡nÃ­ se porovnÃ¡vÃ¡ pÅ™es hash_equals v PHP.
+2. Optimalizace primÃ¡rnÃ­ho klÃ­Äe:
+	- ZÃ¡mÄ›rnÄ› bylo vynechÃ¡no umÄ›lÃ© ÄÃ­selnÃ© ID. PrimÃ¡rnÃ­m klÃ­Äem je samotnÃ½ `selector`, 
+	  coÅ¾ vytvÃ¡Å™Ã­ clustered index a zaruÄuje okamÅ¾itÃ© ÄtenÃ­ bez ohledu na poÄet zÃ¡znamÅ¯.
+3. IdentifikÃ¡tor uÅ¾ivatele (ZMÄšNA 09/2026):
+	- Vazba je definovÃ¡na sloupcem `user_account_uuid` (uuid) mÃ­sto textovÃ©ho loginu.
+	  TÃ­m odpadÃ¡ nutnost doplÅˆkovÃ©ho ÄtenÃ­ tabulky user_account pÅ™ed volÃ¡nÃ­m 
+	  procedury p_set_login.
+4. Podpora pro selektivnÃ­ odhlÃ¡Å¡enÃ­ (Device Management):
+	- Sloupce `ip_address`, `user_agent` a `last_used` slouÅ¾Ã­ jako metadata.
+	- UmoÅ¾ÅˆujÃ­ v UI zobrazit uÅ¾ivateli seznam aktivnÃ­ch sezenÃ­ a selektivnÄ› 
+	  invalidovat konkrÃ©tnÃ­ zaÅ™Ã­zenÃ­ (napÅ™. pÅ™i ztrÃ¡tÄ› mobilu) smazÃ¡nÃ­m konkrÃ©tnÃ­ho selectoru.
+5. SamoÄisticÃ­ mechanismus:
+	- OdstraÅˆovÃ¡nÃ­ expirovanÃ½ch tokenÅ¯ nevyÅ¾aduje SQL Agent job. Je Å™eÅ¡eno pomocÃ­ 
+	  AFTER INSERT triggeru, kterÃ½ pÅ™i kaÅ¾dÃ©m novÃ©m zÃ¡pisu promaÅ¾e starÃ© zÃ¡znamy.
 =========================================================================================
 */
 
--- 1. Vytvoøení tabulky pro tokeny
-CREATE TABLE auth_tokens (
-	selector VARCHAR(64) PRIMARY KEY,
-	user_login VARCHAR(100) NOT NULL,
-	hashed_validator VARCHAR(255) NOT NULL,
-	expires DATETIME2 NOT NULL,
-	
-	-- Metadata pro identifikaci zaøízení a selektivní logout
-	ip_address VARCHAR(45) NOT NULL,
-	user_agent NVARCHAR(500) NOT NULL,
-	last_used DATETIME2 NOT NULL
-);
+-- IdempotentnÃ­ odstranÄ›nÃ­ starÃ© verze tabulky (pokud obsahuje textovÃ½ user_login)
+IF EXISTS (
+	SELECT 1 
+	FROM sys.columns 
+	WHERE object_id = OBJECT_ID('auth_tokens') 
+	  AND name = 'user_login'
+)
+BEGIN
+	DROP TABLE auth_tokens;
+	PRINT 'StarÃ¡ tabulka auth_tokens (s user_login) byla odstranÄ›na.';
+END
 GO
 
--- 2. Trigger pro automatickı úklid expirovanıch tokenù
+-- 1. VytvoÅ™enÃ­ tabulky pro tokeny
+IF OBJECT_ID('auth_tokens') IS NULL
+BEGIN
+	CREATE TABLE auth_tokens (
+		selector VARCHAR(64) PRIMARY KEY,
+		
+		-- Vazba pÅ™Ã­mo na originÃ¡lnÃ­ UUID uÅ¾ivatele z user_account
+		user_account_uuid uuid NOT NULL,
+		
+		hashed_validator VARCHAR(255) NOT NULL,
+		expires DATETIME2 NOT NULL,
+		
+		-- Metadata pro identifikaci zaÅ™Ã­zenÃ­ a selektivnÃ­ logout
+		ip_address VARCHAR(45) NOT NULL,
+		user_agent NVARCHAR(500) NOT NULL,
+		last_used DATETIME2 NOT NULL
+	);
+	PRINT 'Tabulka auth_tokens byla vytvoÅ™ena.';
+END
+GO
+
+-- 2. Trigger pro automatickÃ½ Ãºklid expirovanÃ½ch tokenÅ¯
+IF OBJECT_ID('trg_cleanup_expired_tokens', 'TR') IS NOT NULL
+	DROP TRIGGER trg_cleanup_expired_tokens;
+GO
+
 CREATE TRIGGER trg_cleanup_expired_tokens
 ON auth_tokens
 AFTER INSERT
 AS
 BEGIN
-	-- Vypnutí poèitadla dotèenıch øádkù pro sníení overheadu sítì a prevenci chyb v PDO
+	-- VypnutÃ­ poÄitadla dotÄenÃ½ch Å™Ã¡dkÅ¯ pro snÃ­Å¾enÃ­ overheadu sÃ­tÄ› a prevenci chyb v PDO
 	SET NOCOUNT ON;
 	
-	-- Smazání všech záznamù, jejich platnost ji vypršela
+	-- SmazÃ¡nÃ­ vÅ¡ech zÃ¡znamÅ¯, jejichÅ¾ platnost jiÅ¾ vyprÅ¡ela
 	DELETE FROM auth_tokens 
 	WHERE expires < SYSDATETIME();
 END;

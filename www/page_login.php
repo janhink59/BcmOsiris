@@ -10,7 +10,8 @@
  * - Jelikož index.php přeskočí initsession() při $page == 'login', musíme
  *   zde session_start() zavolat sami, abychom získali platné $SID.
  * - Zpracovává POST požadavek s přihlašovacími údaji přes getinput().
- * - Zachytává a zobrazuje flash hlášky předané přes $_SESSION['login_error'].
+ * - V případě zaškrtnutí "Zůstat přihlášen" generuje kryptograficky bezpečné
+ *   tokeny (Selector & Validator) do tabulky auth_tokens a HTTP-only cookie.
  * =============================================================================
  */
 
@@ -173,6 +174,54 @@ if ($isPost) {
 			$procSql = "EXEC p_set_login @user_uuid = $safeUserUuid, @wwwsession = $safeSid, @client_ip = $safeIp";
 			
 			if (sqlrun($procSql)) {
+				
+				// D. Zpracování "Zůstat přihlášen" (Remember Me token)
+				$rememberMe = (int)getinput('remember_me');
+				if ($rememberMe === 1) {
+					try {
+						// Generování kryptograficky silných tokenů
+						$selector = bin2hex(random_bytes(12));
+						$validator = bin2hex(random_bytes(32));
+						$hashedValidator = hash('sha256', $validator);
+						
+						// Platnost 30 dní
+						$expiresTime = time() + (30 * 24 * 60 * 60);
+						$expiresStr = date('Y-m-d H:i:s', $expiresTime);
+						
+						// Bezpečná příprava parametrů pro SQL
+						$safeSelector = charliteral($selector, 64);
+						$safeHashedValidator = charliteral($hashedValidator, 255);
+						$safeExpires = charliteral($expiresStr);
+						$safeUserAgent = charliteral($_SERVER['HTTP_USER_AGENT'] ?? '', 500);
+						$safeLastUsed = charliteral(date('Y-m-d H:i:s'));
+						
+						$sqlToken = "
+							INSERT INTO auth_tokens (
+								selector, user_account_uuid, hashed_validator, 
+								expires, ip_address, user_agent, last_used
+							) VALUES (
+								$safeSelector, $safeUserUuid, $safeHashedValidator, 
+								$safeExpires, $safeIp, $safeUserAgent, $safeLastUsed
+							)
+						";
+						
+						if (sqlrun($sqlToken)) {
+							// Odeslání HTTP hlavičky s cookie
+							$cookieOptions = [
+								'expires' => $expiresTime,
+								'path' => '/',
+								'secure' => $isHttps, // True pro HTTPS komunikaci
+								'httponly' => true,   // Skryje cookie před JavaScriptem (prevence XSS)
+								'samesite' => 'Strict' // Ochrana proti CSRF
+							];
+							setcookie('ramses_remember', $selector . ':' . $validator, $cookieOptions);
+						}
+					} catch (Exception $e) {
+						// Při chybě generátoru random_bytes se tiše přeskočí zápis a uživatel 
+						// bude přihlášen standardně bez trvalé cookie.
+					}
+				}
+				
 				// PRG Pattern: Po úspěšném POST přesměrujeme na GET hlavní stránky
 				header("Location: index.php?page=main");
 				exit;
@@ -209,13 +258,17 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 		.forgot-pwd { display: block; text-align: center; margin-top: 20px; font-size: 14px; color: #004488; text-decoration: none; }
 		.forgot-pwd:hover { text-decoration: underline; }
 		
-		/* Přidané CSS třídy pro oddělovač a Google SSO tlačítko */
+		/* Přidané CSS třídy pro oddělovač, Google SSO tlačítko a Remember Me */
 		.divider { display: flex; align-items: center; text-align: center; margin: 25px 0 15px 0; color: #999; }
 		.divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid #ddd; }
 		.divider span { padding: 0 10px; font-size: 14px; }
 		.google-btn { display: block; text-align: center; padding: 11px 15px; background-color: #fff; color: #333; border: 1px solid #ccc; border-radius: 3px; cursor: pointer; width: 100%; font-size: 16px; font-weight: bold; text-decoration: none; box-sizing: border-box; }
 		.google-btn:hover { background-color: #f9f9f9; }
 		.google-btn img { vertical-align: middle; height: 18px; margin-right: 10px; margin-top: -3px; }
+		
+		.remember-container { display: flex; align-items: center; margin-top: 15px; margin-bottom: 5px; }
+		.remember-container input[type="checkbox"] { width: auto; margin-right: 10px; margin-top: 0; cursor: pointer; }
+		.remember-container label { margin: 0; font-weight: normal; color: #333; cursor: pointer; }
 	</style>
 </head>
 <body>
@@ -232,6 +285,11 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 			
 			<label for="password">Heslo:</label>
 			<input type="password" id="password" name="password" required <?php echo $disabledAttr; ?>>
+			
+			<div class="remember-container">
+				<input type="checkbox" id="remember_me" name="remember_me" value="1" <?php echo $disabledAttr; ?>>
+				<label for="remember_me">Zůstat přihlášen na tomto zařízení</label>
+			</div>
 			
 			<button type="submit" <?php echo $disabledAttr; ?>>Přihlásit se</button>
 		</form>

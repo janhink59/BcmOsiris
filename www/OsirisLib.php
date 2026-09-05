@@ -1760,11 +1760,31 @@ function initsession(){
 		, $developer_mode, $right_developer, $rev_currency_code, $org_currency_code, $currency_code_mismatch
 		, $cm_cat_max, $cat1_in_context, $show_request_duration, $statistics_cat2;
 	
-	// Odhlášení uživatele
-	$page = getinput('page');
+	// Odhlášení uživatele (odstraněno getinput('page'), využíváme globální $page z index.php)
+	if(!$page) $page = getinput('page');
 	if ($page == "logout") {
+		// Odstranění běžné relace
 		sqlrun("delete from wwwsession where wwwsession = '$SID'");
-	};
+		
+		// Zpracování trvalého odhlášení ("Remember Me")
+		if (isset($_COOKIE['ramses_remember'])) {
+			$cookieParts = explode(':', $_COOKIE['ramses_remember']);
+			if (count($cookieParts) === 2) {
+				$selector = $cookieParts[0];
+				$safeSelector = charliteral($selector, 64);
+				sqlrun("DELETE FROM auth_tokens WHERE selector = $safeSelector");
+			}
+			// Invalidace cookie v prohlížeči (nastavení expiračního data do minulosti)
+			$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
+			setcookie('ramses_remember', '', [
+				'expires' => time() - 3600,
+				'path' => '/',
+				'secure' => $isHttps,
+				'httponly' => true,
+				'samesite' => 'Strict'
+			]);
+		}
+	}
 	
 	$rms = charliteral($REMOTE_USER_NAME ?? '');
 	
@@ -1775,17 +1795,77 @@ function initsession(){
 	$dbsession = htmlspec(fetch($r));
 	free_result($r);
 	
-	// Ošetříme stav, kdy user není přihlášen
-	if (!$dbsession || $dbsession[0] < 0):
+	// Ošetříme stav, kdy user není přihlášen (wwwsession expirovala nebo neexistuje)
+	if (!$dbsession || $dbsession[0] < 0) {
+		
+		// Záchyt - pokus o obnovení relace pomocí "Remember Me" cookie
+		if (isset($_COOKIE['ramses_remember']) && $page !== "logout") {
+			$cookieParts = explode(':', $_COOKIE['ramses_remember']);
+			
+			if (count($cookieParts) === 2) {
+				$selector = $cookieParts[0];
+				$validator = $cookieParts[1];
+				
+				$safeSelector = charliteral($selector, 64);
+				$sql = "SELECT user_account_uuid, hashed_validator FROM auth_tokens WHERE selector = $safeSelector AND expires > SYSDATETIME()";
+				$tokenRow = sqlfirstrow($sql);
+				
+				if ($tokenRow) {
+					// Bezpečné porovnání hashů proti timing útokům
+					$dbHash = trim((string)$tokenRow['hashed_validator']);
+					$cookieHash = hash('sha256', $validator);
+					
+					if (hash_equals($dbHash, $cookieHash)) {
+						// Token je platný. Obnovíme relaci voláním p_set_login.
+						$userUuid = trim((string)$tokenRow['user_account_uuid']);
+						$safeUserUuid = guidliteral($userUuid);
+						$safeSid = charliteral($SID, 100);
+						$safeIp = charliteral(get_client_ip_path(), 200);
+						
+						if (sqlrun("EXEC p_set_login @user_uuid = $safeUserUuid, @wwwsession = $safeSid, @client_ip = $safeIp")) {
+							
+							// Relace byla založena, aktualizujeme last_used u tokenu
+							sqlrun("UPDATE auth_tokens SET last_used = SYSDATETIME(), ip_address = $safeIp WHERE selector = $safeSelector");
+							
+							// Znovu načteme kontext pro aktuální request (nyní už uspěje)
+							if (!($r = sqlrun("set nocount on execute p_init_wwwsession '$SID',0"))) fatal_error("execute init_wwwsession '$SID' (auto-login)"); 
+							$dbsession = htmlspec(fetch($r));
+							free_result($r);
+							
+							if ($dbsession && $dbsession[0] > 0) {
+								goto after_login_recovery; // Úspěšný záchyt, můžeme pokračovat v načítání oprávnění
+							}
+						}
+					} else {
+						// Selektor existuje, ale hash validátoru nesedí. Možný pokus o podvržení cookie!
+						// Bezpečnostní opatření: Okamžitě smazat token z databáze.
+						sqlrun("DELETE FROM auth_tokens WHERE selector = $safeSelector");
+					}
+				}
+			}
+			
+			// Pokud jsme se dostali sem, obnova selhala (token nenalezen, expiroval, neplatný hash).
+			// Vymažeme neplatnou cookie z prohlížeče.
+			$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
+			setcookie('ramses_remember', '', [
+				'expires' => time() - 3600,
+				'path' => '/',
+				'secure' => $isHttps,
+				'httponly' => true,
+				'samesite' => 'Strict'
+			]);
+		}
+		
+		// Pokus o záchyt selhal nebo cookie vůbec nebyla předána. Přesměrování na login.
 		$page = 'login';
 		return;
-	endif;
+	}
+	
+	after_login_recovery:
 
 	// Extrakce oprávnění do samostatných globálních proměnných pro zpětnou kompatibilitu ostatních funkcí
-	//$right_debug = $dbsession['right_debug'];
 	$right_sysadmin = $dbsession['right_sysadmin'];
 	$right_orgadmin = $dbsession['right_orgadmin'];
-	//if(!$dbsession['right_debug']) $debugmode = 0;
 	return;
 }
 
