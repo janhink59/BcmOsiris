@@ -33,7 +33,7 @@ if ($page === '') {
 }
 
 // 4. Inicializace session a ověření uživatele
-// Funkce initsession() je definována v OsirisLib.php a plní pole $result_wwwsession.
+// Funkce initsession() je definována v OsirisLib.php a plní pole $dbsession.
 // Výjimka byla rozšířena o 'google_callback', protože při návratu z IdP ještě lokální session neexistuje.
 if ($page !== 'login' && $page !== 'password_reset' && $page !== 'google_callback') {
 	initsession();

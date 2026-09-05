@@ -5,10 +5,15 @@
 // Následně se načte lokální config_{SERVER_NAME}.php, který tyto hodnoty přepíše.
 // =========================================================================
 
-// 1. Inicializace session
+// 1. Inicializace session a předdefinování globálních proměnných
+
 if (session_status() === PHP_SESSION_NONE) {
 	session_start();
 }
+
+$dbsession=array(); // Globální proměnná pro uložení dat relace uživatele
+$debugmode=0; // Globální proměnná, která povoluje ladicí režim
+
 // Globální proměnná $SID pro initsession() v OsirisLib.php
 $SID = session_id();
 
@@ -78,4 +83,3 @@ if (@$use_dbname) {
 	sqlrun("use $use_dbname");
 }
 sqlrun($first_command);
-?>

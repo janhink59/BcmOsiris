@@ -1755,50 +1755,38 @@ function private_file($fn){
 }
 
 function initsession(){
-	global $result_wwwsession,$page,$SID,$lang,$current_review,$REMOTE_USER_NAME,$debugmode,$jsyntax
-		,$right_debug,$right_sysadmin,$right_orgadmin,$right_revedit,$right_profadmin,$right_profadmin_enabled
-		,$developer_mode,$right_developer,$rev_currency_code,$org_currency_code,$currency_code_mismatch
-		,$cm_cat_max,$cat1_in_context,$show_request_duration,$statistics_cat2;
+	global $dbsession, $page, $SID, $lang, $current_review, $REMOTE_USER_NAME, $debugmode, $jsyntax
+		, $right_debug, $right_sysadmin, $right_orgadmin, $right_revedit, $right_profadmin, $right_profadmin_enabled
+		, $developer_mode, $right_developer, $rev_currency_code, $org_currency_code, $currency_code_mismatch
+		, $cm_cat_max, $cat1_in_context, $show_request_duration, $statistics_cat2;
 	
 	// Odhlášení uživatele
-	//free_result($r);
-	$page=getinput('page');
+	$page = getinput('page');
 	if ($page == "logout") {
 		sqlrun("delete from wwwsession where wwwsession = '$SID'");
 	};
 	
-	$rms=charliteral($REMOTE_USER_NAME);
-	//if (!($r = sqlpagerun("set nocount on execute init_wwwsession '$SID',0,'$lang',@ntlm_name=$rms",0))) fatal_error("execute init_wwwsession '$SID'"); 
+	$rms = charliteral($REMOTE_USER_NAME ?? '');
+	
+	// Spuštění procedury p_init_wwwsession (která automaticky vrací záznam z dbsession)
 	if (!($r = sqlrun("set nocount on execute p_init_wwwsession '$SID',0"))) fatal_error("execute init_wwwsession '$SID'"); 
 	
-	$result_wwwsession=htmlspec(fetch($r));
+	// Načtení výsledku s automatickou HTML sanitizací
+	$dbsession = htmlspec(fetch($r));
 	free_result($r);
+	
 	// Ošetříme stav, kdy user není přihlášen
-	if (!$result_wwwsession || $result_wwwsession[0]<0):
-		$page='login';
+	if (!$dbsession || $dbsession[0] < 0):
+		$page = 'login';
 		return;
-		//login_screen();
 	endif;
-	$current_review=intliteral($result_wwwsession['crr_review']);
-	$cm_cat_max=$result_wwwsession['cm_cat_max'];
-	$statistics_cat2=$result_wwwsession['statistics_cat2'];
-	$cat1_in_context=$result_wwwsession['cat1_in_context'];
-	$right_debug=$result_wwwsession['right_debug'];
-	$right_sysadmin=$result_wwwsession['right_sysadmin'];
-	$right_orgadmin=$result_wwwsession['right_orgadmin'];
-	$right_revedit=$result_wwwsession['right_revedit'];
-	$right_developer=$developer_mode?$right_debug:0;
-	$right_profadmin_enabled=$result_wwwsession['right_profadmin_enabled'];
-	$right_profadmin=$result_wwwsession['right_profadmin'];
-	$rev_currency_code=$result_wwwsession['rev_currency_code'];
-	$org_currency_code=$result_wwwsession['org_currency_code'];
-	$show_request_duration=$result_wwwsession['show_request_duration'];
-	if(!$result_wwwsession['right_debug']) $debugmode=0;
-	$currency_code_mismatch=$result_wwwsession['currency_code_mismatch'];
-	//debugg('result_wwwsession');
-	$jsyntax .= "
-var rev_stat='$result_wwwsession[rev_stat]';
-var rev_stat_locked=$result_wwwsession[rev_stat_locked];";
+
+	// Extrakce oprávnění do samostatných globálních proměnných pro zpětnou kompatibilitu ostatních funkcí
+	//$right_debug = $dbsession['right_debug'];
+	$right_sysadmin = $dbsession['right_sysadmin'];
+	$right_orgadmin = $dbsession['right_orgadmin'];
+	//if(!$dbsession['right_debug']) $debugmode = 0;
+	return;
 }
 
 function sendAlert($time) {
