@@ -1,49 +1,74 @@
 <?php
-// =============================================================================
-// Stránka: page_main.php
-// Účel: Hlavní dashboard po přihlášení uživatele s výpisem kontextu.
-// =============================================================================
+/**
+ * =============================================================================
+ * Stránka: page_main.php
+ * Účel: Hlavní dashboard po přihlášení uživatele (Rozcestník).
+ * 
+ * Logika a vazby:
+ * - Zobrazuje aktuální kontext uživatele (jméno, tenant, přiřazené role).
+ * - Řídí se daty z tabulky wwwsession, kterou naplnila procedura p_set_login.
+ * - Slouží jako dynamický rozcestník pro moduly systémové správy (Sysadmin) 
+ *   a lokální správy organizace (Orgadmin).
+ * =============================================================================
+ */
 
 declare(strict_types=1);
 
 global $dbsession;
 
-// Bezpečnostní kontrola, zda máme k dispozici data relace
+// Bezpečnostní kontrola existence kontextu uživatele (zajišťuje initsession)
 if (!isset($dbsession) || !is_array($dbsession)) {
 	echo "<div class='msg-err'>Chyba: Nepodařilo se načíst kontext uživatele.</div>";
 	return;
 }
 
-// Získání primárních hodnot z pole $dbsession
+// Extrakce kontextových proměnných z relace
 $userName = $dbsession['display_name'] ?: $dbsession['user_name'];
 $orgName = $dbsession['organization_name'] ?: 'Systémová organizace';
+$isSysadmin = !empty($dbsession['right_sysadmin']);
+$isOrgadmin = !empty($dbsession['right_orgadmin']);
 
-// Sestavení dynamického seznamu rolí
+// Dynamické sestavení pole aktivních rolí pro uživatelské rozhraní
 $roles = [];
-if (!empty($dbsession['right_sysadmin'])) {
-	$roles[] = 'System Admin';
-}
-if (!empty($dbsession['right_orgadmin'])) {
-	$roles[] = 'Organization Admin';
-}
-if (!empty($dbsession['right_debug'])) {
-	$roles[] = 'Debug Mode';
-}
-
+if ($isSysadmin) $roles[] = 'System Admin';
+if ($isOrgadmin) $roles[] = 'Organization Admin';
+if (!empty($dbsession['right_debug'])) $roles[] = 'Debug Mode';
 $rolesStr = !empty($roles) ? implode(', ', $roles) : 'Běžný uživatel';
 
-// Ošetření výstupu pro HTML (XSS ochrana pro jistotu, i když htmlspec() už proběhl v initsession)
+// Příprava administračních akcí (viditelné výhradně pro Sysadmina)
+$sysadminActions = '';
+if ($isSysadmin) {
+	$sysadminActions = <<<HTML
+		<div class="admin-actions">
+			<h3>Systémová administrace</h3>
+			<a href="index.php?page=organization_licence" class="action-btn">Správa licencí organizací</a>
+		</div>
+HTML;
+}
+
+// Příprava akcí pro správce tenanta (viditelné pro lokálního Orgadmina i Sysadmina)
+$orgadminActions = '';
+if ($isOrgadmin) {
+	$orgadminActions = <<<HTML
+		<div class="admin-actions" style="border-top-color: #4CAF50;">
+			<h3 style="color: #2E7D32;">Správa organizace</h3>
+			<a href="index.php?page=org_users" class="action-btn" style="background-color: #4CAF50;">Správa uživatelů</a>
+		</div>
+HTML;
+}
+
+// XSS ochrana (pro jistotu, i když htmlspec() byl spuštěn už v OsirisLib)
 $safeUserName = htmlspecialchars((string)$userName);
 $safeOrgName = htmlspecialchars((string)$orgName);
 $safeRolesStr = htmlspecialchars((string)$rolesStr);
 
-// Výstup HTML pomocí HEREDOC (využíváme plně možností PHP 8.3)
+// Vykreslení finálního HTML
 echo <<<HTML
 <!DOCTYPE html>
 <html lang="cs">
 <head>
 	<meta charset="utf-8">
-	<title>Hlavní panel - RAMSES ISMS</title>
+	<title>Hlavní panel - BCM Osiris</title>
 	<style>
 		body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 50px; }
 		.dashboard-container { background-color: #fff; padding: 30px; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 600px; margin: auto; }
@@ -53,17 +78,25 @@ echo <<<HTML
 		.user-info strong { color: #333; display: inline-block; width: 120px; }
 		.logout-link { display: inline-block; margin-top: 25px; padding: 12px 15px; background-color: #b71c1c; color: #fff; text-decoration: none; border-radius: 3px; font-weight: bold; }
 		.logout-link:hover { background-color: #8e1515; }
+		
+		.admin-actions { margin-top: 30px; padding-top: 20px; border-top: 2px dashed #ccc; }
+		.admin-actions h3 { color: #333; margin-top: 0; font-size: 18px; }
+		.action-btn { display: inline-block; padding: 10px 15px; background-color: #004488; color: #fff; text-decoration: none; border-radius: 3px; font-weight: bold; margin-right: 10px; }
+		.action-btn:hover { background-color: #003366; }
 	</style>
 </head>
 <body>
 	<div class="dashboard-container">
-		<h1>Vítejte v systému RAMSES</h1>
+		<h1>Vítejte v systému BCM Osiris</h1>
 		
 		<div class="user-info">
 			<p><strong>Uživatel:</strong> {$safeUserName}</p>
 			<p><strong>Organizace:</strong> {$safeOrgName}</p>
 			<p><strong>Aktivní role:</strong> {$safeRolesStr}</p>
 		</div>
+		
+		{$sysadminActions}
+		{$orgadminActions}
 		
 		<a href="index.php?page=logout" class="logout-link">Odhlásit se</a>
 	</div>

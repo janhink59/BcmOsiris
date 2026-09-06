@@ -1,16 +1,20 @@
-IF OBJECT_ID('p_set_login') IS NOT NULL DROP PROCEDURE p_set_login;
+EXECUTE dropni 'p_set_login', 'P'
 GO
+
 /* =============================================================================
  * Procedura: p_set_login
- * Účel: Založí záznam o přihlášení uživatele do tabulky wwwsession.
- *       Volá se z aplikační vrstvy po úspěšném ověření jména/hesla nebo SSO tokenu.
- * Logika multi-tenancy:
- *       1. Ověří, zda má uživatel stále přístup do organizace z posledního přihlášení.
- *       2. Pokud nemá, vybere první platnou organizaci, do které má přístup.
- *       3. Pokud nemá přístup nikam, proces selže (rollback).
+ * Účel: Založí záznam o relaci do tabulky wwwsession po úspěšné autentizaci.
+ * 
+ * Logika Multi-tenancy:
+ * - Uživatel se přednostně přihlašuje do organizace (tenanta), kterou navštívil
+ *   naposledy (sloupec last_login_organization v tabulce user_account).
+ * - Pokud do ní už ztratil přístup, vybere se první dostupná organizace.
+ * - Bez oprávnění do jakékoliv organizace je přihlášení striktně zamítnuto 
+ *   (neplatí pro systémový účet 0x01).
+ * - Automaticky dohledává a vkládá název organizace pro potřeby uživatelského UI.
  * ============================================================================= */
 CREATE PROCEDURE p_set_login
-	@user_uuid uuid,
+	@user_uuid uniqueidentifier,
 	@wwwsession varchar(50),
 	@client_ip varchar(200)
 AS
@@ -18,35 +22,36 @@ BEGIN
 	SET NOCOUNT ON;
 	SET XACT_ABORT ON;
 
-	-- Proměnné pro kontext relace
+	-- Proměnné pro kontext relace (s výchozími fallbacky)
 	DECLARE @user_name varchar(80) = 'admin';
 	DECLARE @display_name varchar(200) = 'System Administrator';
-	DECLARE @organization uuid = 0x00;
+	DECLARE @organization uniqueidentifier = 0x00;
+	DECLARE @organization_name nvarchar(200) = 'Systémová organizace';
 	DECLARE @is_orgadmin bit = 0;
-	
-	-- Proměnné pro zjišťování dostupných organizací
-	DECLARE @last_login_org uuid;
-	DECLARE @target_org uuid = NULL;
+	DECLARE @is_sysadmin bit = 1;
+
+	DECLARE @last_login_org uniqueidentifier;
+	DECLARE @target_org uniqueidentifier = NULL;
 
 	BEGIN TRAN;
 
-	-- 1. Vyčištění případných starých relací (ukradené/recyklované session_id)
+	-- Vyčištění případných expirovaných/recyklovaných relací
 	DELETE FROM wwwsession WHERE wwwsession = @wwwsession;
 
-	-- 2. Načtení dat a kontextu pro standardního uživatele
 	IF @user_uuid <> 0x00 AND @user_uuid <> '00000000-0000-0000-0000-000000000000'
 	BEGIN
-		-- Načtení základních údajů uživatele a zjištění poslední navštívené organizace
+		-- Načtení základních údajů uživatele a zjištění preferovaného tenanta
 		SELECT 
 			@user_name = login_name,
 			@display_name = LTRIM(RTRIM(ISNULL(first_name, '') + ' ' + ISNULL(last_name, ''))),
-			@last_login_org = last_login_organization -- Tento sloupec musíme fyzicky přidat do user_account!
+			@last_login_org = last_login_organization,
+			@is_sysadmin = is_system_admin
 		FROM user_account
 		WHERE original = @user_uuid AND record_type = 'A' AND removed = 0 AND inactive = 0;
 
 		IF @display_name = '' SET @display_name = @user_name;
 
-		-- Zjištění, zda má uživatel stále přístup k poslední organizaci
+		-- Ověření, zda má uživatel stále přístup k preferovanému tenantovi
 		IF @last_login_org IS NOT NULL
 		BEGIN
 			SELECT TOP 1 @target_org = organization_uuid, @is_orgadmin = is_orgadmin
@@ -56,18 +61,17 @@ BEGIN
 			  AND record_type = 'A' AND removed = 0 AND inactive = 0;
 		END
 
-		-- Pokud do poslední organizace přístup nemá (nebo se přihlašuje poprvé), 
-		-- vezmeme první platnou organizaci, kterou najdeme.
+		-- Fallback: Výběr libovolného dostupného tenanta
 		IF @target_org IS NULL
 		BEGIN
 			SELECT TOP 1 @target_org = organization_uuid, @is_orgadmin = is_orgadmin
 			FROM user_organization_access
 			WHERE user_account_uuid = @user_uuid 
 			  AND record_type = 'A' AND removed = 0 AND inactive = 0
-			ORDER BY date_created DESC; -- Například nejnovější přidělený přístup
+			ORDER BY date_created DESC;
 		END
 		
-		-- Kritické selhání: Uživatel nemá platný přístup do ŽÁDNÉ organizace
+		-- Ochrana: Uživateli bez jakéhokoliv přístupu se odepře založení relace
 		IF @target_org IS NULL
 		BEGIN
 			ROLLBACK;
@@ -76,9 +80,13 @@ BEGIN
 		END
 
 		SET @organization = @target_org;
+		
+		-- Načtení vizuálního názvu tenanta pro UI
+		SELECT @organization_name = caption 
+		FROM organization 
+		WHERE original = @organization AND record_type = 'A' AND removed = 0;
 
-		-- Aktualizace uživatelského účtu: 
-		-- Reset chybných pokusů, záznam času a uložení kontextu poslední organizace
+		-- Aktualizace statistik a metadat posledního úspěšného přihlášení
 		UPDATE user_account 
 		SET failed_login_attempts = 0, 
 			last_login_date = GETDATE(),
@@ -87,19 +95,20 @@ BEGIN
 	END
 	ELSE 
 	BEGIN
-		-- Speciální fallback pro System Admina (vždy se přihlašuje do SYS - 0x00)
+		-- Speciální zpracování pro systémového break-glass admina (0x01)
 		SET @organization = 0x00;
+		SET @organization_name = 'Systémová organizace';
 		SET @is_orgadmin = 1;
+		SET @is_sysadmin = 1;
 	END
 
-	-- 3. Zápis do wwwsession s využitím zjištěných hodnot
-	-- Do tabulky wwwsession propíšeme i flag z vazební tabulky (right_orgadmin)
+	-- Fyzický zápis do tabulky relací
 	INSERT INTO wwwsession (
-		spid, wwwsession, user_account, user_name, organization, display_name, 
-		session_log, client_ip, login_date, right_orgadmin
+		spid, wwwsession, user_account, user_name, organization, organization_name, display_name, 
+		session_log, client_ip, login_date, right_orgadmin, right_sysadmin
 	) VALUES (
-		@@SPID, @wwwsession, @user_uuid, @user_name, @organization, @display_name, 
-		0, @client_ip, GETDATE(), @is_orgadmin
+		@@SPID, @wwwsession, @user_uuid, @user_name, @organization, @organization_name, @display_name, 
+		0, @client_ip, GETDATE(), @is_orgadmin, @is_sysadmin
 	);
 
 	COMMIT;

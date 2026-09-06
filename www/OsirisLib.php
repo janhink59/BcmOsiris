@@ -2605,7 +2605,7 @@ function autoredirect($target=''){
 		if(headers_sent())
 			print "<script>document.location=".jsliteral($target).';</script>';
 		else
-			header("location",$target);
+			header("Location: $target"); // Opravený formát HTTP hlavičky
 		die();
 	}
 }
