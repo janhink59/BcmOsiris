@@ -41,7 +41,7 @@ $google_info = $oauth2->userinfo->get();
 $google_email = $google_info->email;
 
 // =========================================================================
-// BYZNYS LOGIKA PRO RAMSES ISMS (PŘÍMÉ PÁROVÁNÍ DLE E-MAILU)
+// BYZNYS LOGIKA PRO BCM Osiris (PŘÍMÉ PÁROVÁNÍ DLE E-MAILU)
 // =========================================================================
 
 // Hledáme aktivní účet podle e-mailu. Pokud je jich více, bereme naposledy přihlášený.

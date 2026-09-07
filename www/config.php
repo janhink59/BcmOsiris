@@ -36,7 +36,7 @@ $smtp_port = 2525;
 $smtp_user = 'tvoje_mailtrap_jmeno';
 $smtp_password = 'tvoje_mailtrap_heslo';
 $smtp_sender = 'noreply@tvojedomena.cz';
-$smtp_sender_name = 'RAMSES ISMS';
+$smtp_sender_name = 'BCM Osiris';
 $smtp_forward = 'honza.hink@gmail.com'; // Ochrana proti spamu při testování
 $http_allowed = 0;
 

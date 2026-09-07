@@ -11,6 +11,8 @@
  * - Vyřešeno zastínění System Admina (0x00) lokálním adminem (0x01).
  * - Odkazy a akce formulářů plně respektují centrální router (index.php?page=...).
  * - Zajištěna ochrana proti brute-force a nechráněnému přenosu (HTTP blokace).
+ * - NOVĚ: Ve fázi 2 (obnova přes token) je uživateli jasně zobrazeno, 
+ *   pro jaký účet heslo mění (jméno, login a e-mail).
  * =============================================================================
  */
 
@@ -56,6 +58,7 @@ $token = trim((string)getinput('token'));
 $tokenValid = false;
 $userIdForReset = '';
 $tokenUuidForReset = '';
+$displayUserInfo = ''; // Proměnná pro uložení informací o uživateli pro zobrazení ve formuláři
 
 if (!empty($token)) {
 	// =========================================================================
@@ -83,6 +86,40 @@ if (!empty($token)) {
 		$tokenValid = true;
 		$userIdForReset = trim((string)$tokenRow['user_account']);
 		$tokenUuidForReset = trim((string)$tokenRow['uuid']);
+		
+		// ---------------------------------------------------------------------
+		// NOVÉ: Zjištění informací o uživateli pro UI (UX vylepšení)
+		// ---------------------------------------------------------------------
+		$isSysAdmin = ($userIdForReset === '0x00' || $userIdForReset === '00000000-0000-0000-0000-000000000000');
+		if ($isSysAdmin) {
+			$displayUserInfo = "Systémový administrátor (admin)";
+		} else {
+			$safeUserIdForResetInfo = guidliteral($userIdForReset);
+			$sqlUserInfo = "
+				SELECT login_name, first_name, last_name, email 
+				FROM user_account 
+				WHERE original = $safeUserIdForResetInfo 
+					AND record_type = 'A'
+			";
+			$userInfoRow = sqlfirstrow($sqlUserInfo);
+			
+			if ($userInfoRow) {
+				$uLogin = htmlspecialchars(trim((string)$userInfoRow['login_name']));
+				$uEmail = htmlspecialchars(trim((string)$userInfoRow['email']));
+				$uFirst = htmlspecialchars(trim((string)$userInfoRow['first_name']));
+				$uLast = htmlspecialchars(trim((string)$userInfoRow['last_name']));
+				
+				// Sestavení řetězce; pokud uživatel nemá vyplněné jméno a příjmení, zobrazí se alespoň login a e-mail
+				if (!empty($uFirst) || !empty($uLast)) {
+					$displayUserInfo = "$uFirst $uLast ($uLogin) &lt;$uEmail&gt;";
+				} else {
+					$displayUserInfo = "$uLogin &lt;$uEmail&gt;";
+				}
+			} else {
+				$displayUserInfo = "Neznámý uživatel (ID: " . htmlspecialchars($userIdForReset) . ")";
+			}
+		}
+		// ---------------------------------------------------------------------
 
 		if ($isPost) {
 			$newPwd = (string)getinput('new_password', 'raw');
@@ -100,8 +137,6 @@ if (!empty($token)) {
 				sqlrun("BEGIN TRAN");
 				$updateSuccess = false;
 
-				$isSysAdmin = ($userIdForReset === '0x00' || $userIdForReset === '00000000-0000-0000-0000-000000000000');
-
 				if ($isSysAdmin) {
 					// Aktualizace hesla pro Break-glass administrátora
 					$updateSql = "
@@ -112,7 +147,7 @@ if (!empty($token)) {
 					$updateSuccess = sqlrun($updateSql);
 				} else {
 					// Aktualizace hesla pro běžného uživatele a reset chybových stavů
-					$safeUserId = guidliteral($userIdForReset);
+					$safeUserIdForUpdate = guidliteral($userIdForReset);
 					$updateSql = "
 						UPDATE user_account 
 						SET password_hash = $safePwdHash, 
@@ -120,7 +155,7 @@ if (!empty($token)) {
 							locked_until = NULL, 
 							require_password_change = 0,
 							date_modified = GETDATE()
-						WHERE original = $safeUserId 
+						WHERE original = $safeUserIdForUpdate 
 							AND record_type = 'A'
 					";
 					$updateSuccess = sqlrun($updateSql);
@@ -217,7 +252,7 @@ if (!empty($token)) {
 				$safePurpose = charliteral('PASSWORD_RESET', 50); 
 				$safeExpires = dateliteral($expiresAt);
 				$safeIp = charliteral(get_client_ip_path(), 200);
-				$safeUserId = ($userId === '0x00' || $userId === '00000000-0000-0000-0000-000000000000') ? '0x00' : guidliteral($userId);
+				$safeUserIdForInsert = ($userId === '0x00' || $userId === '00000000-0000-0000-0000-000000000000') ? '0x00' : guidliteral($userId);
 
 				$sqlInsert = "
 					INSERT INTO activation_token (
@@ -225,7 +260,7 @@ if (!empty($token)) {
 						expires_at, is_used, request_ip, 
 						date_created, date_modified, removed
 					) VALUES (
-						$safeTokenUuid, $safeHash, $safePurpose, $safeUserId, 
+						$safeTokenUuid, $safeHash, $safePurpose, $safeUserIdForInsert, 
 						$safeExpires, 0, $safeIp, 
 						GETDATE(), GETDATE(), 0
 					)
@@ -268,7 +303,7 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 <html lang="cs">
 <head>
 	<meta charset="utf-8">
-	<title>Obnova hesla - RAMSES ISMS</title>
+	<title>Obnova hesla - BCM Osiris</title>
 	<style>
 		body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 50px; }
 		.container { background-color: #fff; padding: 30px; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 450px; margin: auto; }
@@ -284,6 +319,9 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 		.msg-ok { color: #1b5e20; font-weight: bold; padding: 10px; border-left: 4px solid #1b5e20; background-color: #e8f5e9; }
 		.back-link { display: block; text-align: center; margin-top: 20px; font-size: 14px; color: #004488; text-decoration: none; }
 		.back-link:hover { text-decoration: underline; }
+		
+		/* Nová třída pro zobrazení identity uživatele */
+		.user-identity-box { background-color: #e9f2fa; border-left: 4px solid #004488; padding: 12px; margin-top: 10px; margin-bottom: 20px; font-weight: bold; color: #004488; border-radius: 0 3px 3px 0; word-break: break-all; }
 	</style>
 </head>
 <body>
@@ -300,7 +338,14 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 		<?php if (!empty($token) && $tokenValid): ?>
 			<!-- FÁZE 2: FORMULÁŘ PRO NOVÉ HESLO -->
 			<h1>Nastavení nového hesla</h1>
+			
+			<p style="color: #555; font-size: 14px; margin-bottom: 5px;">Měníte heslo pro účet:</p>
+			<div class="user-identity-box">
+				<?php echo $displayUserInfo; ?>
+			</div>
+
 			<p style="color: #555; font-size: 14px;">Zadejte své nové heslo. Z bezpečnostních důvodů musí obsahovat minimálně 8 znaků.</p>
+			
 			<!-- Akce nyní směřuje přes centrální router -->
 			<form method="POST" action="index.php?page=password_reset">
 				<input type="hidden" name="token" value="<?php echo htmlspecialchars($token); ?>">
