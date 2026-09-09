@@ -50,7 +50,7 @@ function send_global_mail(string $to, string $subject, string $body, bool $is_ht
 		$mail->CharSet    = 'UTF-8';
 
 		// Definice odesílatele (Fallback jména, pokud by $smtp_sender_name nebylo definováno)
-		$mail->setFrom($smtp_sender, $smtp_sender_name ?? 'RAMSES ISMS');
+		$mail->setFrom($smtp_sender, $smtp_sender_name ?? 'BCM Osiris');
 
 		// Ochrana pro testovací prostředí a vývoj
 		// Pokud je definován $smtp_forward, zpráva se neodešle klientovi, ale na tuto adresu.
