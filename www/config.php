@@ -20,6 +20,15 @@ $SID = session_id();
 // 2. Načtení autoloaderu pro Composer (Google API, PhpSpreadsheet, atd.)
 require_once __DIR__ . '/vendor/autoload.php';
 
+// 2.5 Nativní Autoloader pro lokální třídy (např. abstract_page, user_context)
+spl_autoload_register(function (string $class_name) {
+	// Převedeme název třídy přímo na název souboru ve stejném adresáři
+	$file = __DIR__ . '/' . $class_name . '.php';
+	if (file_exists($file)) {
+		require_once $file;
+	}
+});
+
 // 3. Výchozí konfigurace databáze
 $dbms = "sqlsrv";
 $dbserver = "název serveru";

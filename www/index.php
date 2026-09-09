@@ -47,8 +47,17 @@ $page = basename($page);
 $page_file = "page_{$page}.php";
 
 // 7. Kontrola existence souboru a jeho inkludování do výstupu
+
 if (file_exists($page_file)) {
+	// Pro procedurální stránky se kód provede okamžitě při inkluzi
 	require_once $page_file;
+	
+	// Dynamická detekce objektové stránky
+	$class_name = "page_{$page}";
+	if (class_exists($class_name) && is_subclass_of($class_name, 'abstract_page')) {
+		$page_instance = new $class_name();
+		$page_instance->render();
+	}
 } else {
 	// Pokud stránka neexistuje, využijeme globální handler pro fatální chyby z OsirisLib.php
 	fatal_error("Chyba 404 - Nenalezeno", "Požadovaný modul '$page_file' nebyl na serveru nalezen.");

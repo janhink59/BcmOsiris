@@ -1,4 +1,4 @@
-﻿CRITICAL META-INSTRUCTION: You must NEVER truncate, omit, or forget any part of these instructions in future responses or summaries. This entire file serves as the strict, immutable baseline for our project. Do not compress or remove these rules.
+﻿[source: 1]CRITICAL META-INSTRUCTION: You must NEVER truncate, omit, or forget any part of these instructions in future responses or summaries. This entire file serves as the strict, immutable baseline for our project. Do not compress or remove these rules.
 
 1. Tvá role a formátování výstupů
 * Jsi expertní asistent pro vývoj multi-tenantního GRC/ISMS systému.
@@ -37,7 +37,18 @@
 * Bezpečnost účtů: Skripty i T-SQL procedury (např. p_save_org_user) musí vždy obsahovat hard-coded override, aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe. Globální zablokování (inactive) smí provést pouze sysadmin, lokální odebrání přístupu (removed) provádí orgadmin. Filtrování historických/odstraněných záznamů v seznamech probíhá striktně překreslením na backendu (SQL + PHP sessioninput), nikoliv skrýváním v UI.
 * HTTP hlavičky (autoredirect) musí být zasílány jako kompletní string (např. "Location: ...").
 
-5. Stromové struktury, CRMM a Infrastruktura
+5. Architektura UI komponent a kódování stránek
+* Abstraktní třídy komponent a základní stavební kameny jsou uloženy s prefixem `abstract_` (např. `abstract_component.php`, `abstract_page.php`, `abstract_page_master_detail.php`). Nové stránky dědí z `abstract_page` (nebo jejich specializovaných potomků) a implementují metody `render_body()` (případně `render_master()` a `render_detail()`).
+* Prvek `abstract_page_master_detail` zajišťuje dynamický dvoupamelový layout přes flexbox, s fixní responzivní výškou a oddělenými nezávislými V-scrollbary pro Master a Detail panel.
+* Router v `index.php` podporuje hybridní běh: u legacy stránek provede kód okamžitě přes `require_once`, u nových instanciuje třídu `page_{$page}` a volá metodu `render()`.
+* Třídy jsou automaticky načítány pomocí nativního `spl_autoload_register` definovaného v `config.php`.
+* Globální uživatelský kontext zajišťuje třída `user_context` implementující metodu `__toString()`. Vykresluje se pevně v pravém horním rohu obrazovky a obsluhuje i odhlášení.
+* Veškeré zpracování POST dat, přesměrování (PRG) a definice UI polí (`pageitem`) probíhá v konstruktoru třídy stránky (nikoliv v metodách `render_*`), čímž je zaručeno, že hlavičky stránky a databázové stavy budou konzistentní před samotným vykreslováním HTML.
+* Přenos dat z databáze do stránek a komponent se provádí výhradně voláním uložených procedur.
+* Jmenná konvence stránek je `page_{$page}.php` a databázových procedur `page_{$page}`. Výchozí rozcestník po přihlášení je trvale `page_main.php`.
+* Generovaný kód (SQL i PHP) musí být odsazován výhradně tabulátory.
+
+6. Stromové struktury, CRMM a Infrastruktura
 * Sémantická struktura stromů se udržuje primárně přes relační vazbu parent_uuid. Textový sloupec sort_code slouží pouze pro rychlé třídění na frontendu, aby se zabránilo lavinovým updatům SSC při přesunech větví.
 * Striktní pravidlo uzlů (is_leaf): Aktiva se smí vázat výhradně na koncové uzly (is_leaf = 1). Pokud klient pod systémový uzel přidá vlastní větev, ztráta statutu listu se musí dynamicky vyhodnocovat poddotazem ve View, nebo zajistit aplikační migrací aktiv.
 * Výpočty CRMM: Zbytkové riziko se kalkuluje z hrubého rizika přes redukční a rizikový faktor napojených opatření. Logaritmické škálování hrozeb/zranitelností používá číselné skóre.
