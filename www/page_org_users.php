@@ -3,6 +3,8 @@
  * =============================================================================
  * Stránka: page_org_users.php
  * Účel: Master-Detail rozhraní pro správu uživatelů aktuálního tenanta.
+ *       Kód je vyčištěn od inline stylů a plně využívá sjednocené CSS 
+ *       třídy poskytované z abstract_page_master_detail.
  * =============================================================================
  */
 
@@ -22,17 +24,22 @@ class page_org_users extends abstract_page_master_detail {
 		
 		$this->page_title = 'Správa uživatelů organizace';
 		
+		// Ověření oprávnění pro přístup do modulu
 		if (empty($dbsession['right_orgadmin'])) {
 			$this->access_denied = true;
 			return;
 		}
 
+		// Načtení kontextu z relace (dbsession)
 		$this->is_sysadmin = !empty($dbsession['right_sysadmin']);
 		$this->logged_user_uuid = (string)$dbsession['user_account'];
 		$this->current_org = guidliteral($dbsession['organization']);
+		
+		// Parametry UI z requestu
 		$this->show_removed_users = (bool)sessioninput('show_removed_users', 4);
 		$this->update_guid = getinput('update_guid', 'raw') ?: null;
 
+		// Definice polí formuláře
 		pageitem('login_name', 'Přihlašovací jméno', 'Login', 'Unikátní login do systému', 'text', 'varchar', '100%', 0, 0, 100);
 		pageitem('first_name', 'Jméno', 'Jméno', 'Křestní jméno', 'text', 'varchar', '100%', 0, 0, 100);
 		pageitem('last_name', 'Příjmení', 'Příjmení', 'Příjmení', 'text', 'varchar', '100%', 0, 0, 100);
@@ -41,29 +48,35 @@ class page_org_users extends abstract_page_master_detail {
 		pageitem('remove_access', 'Odstranit přístup', 'Zrušit', 'Zamezí uživateli přístup do organizace', 'checkbox', 'bit', '', 0, 0, 0);
 		pageitem('deactivate_global', 'Deaktivovat účet', 'Neaktivní', 'Globálně zablokuje účet (Sysadmin)', 'checkbox', 'bit', '', 0, 0, 0);
 
-		// Zavedení globální proměnné musí proběhnout AŽ PO spuštění funkcí pageitem()
+		// Ochrana proti odebrání vlastních práv - nastavení UI elementu pouze pro čtení
 		if ($this->update_guid !== null && strcasecmp($this->update_guid, $this->logged_user_uuid) === 0) {
 			global $pageitem_is_orgadmin;
 			$pageitem_is_orgadmin->displayonly = 1;
 		}
 
+		// Zpracování odeslaného formuláře
 		if (getinput('button_save', 'raw')) {
 			$this->handle_save();
 		}
 	}
 
+	/**
+	 * Zpracování uložení záznamu přes systémovou uloženou proceduru.
+	 */
 	private function handle_save(): void {
 		reginputs('login_name:varchar,first_name:varchar,last_name:varchar,email:varchar');
 		reginputs('is_orgadmin:bit,remove_access:bit,deactivate_global:bit');
 		
 		global $login_name, $first_name, $last_name, $email, $is_orgadmin, $remove_access, $deactivate_global;
 		
+		// Hard-coded override pojistka (pro jistotu i na úrovni PHP, ačkoliv to řeší i procedura)
 		if ($this->update_guid !== null && strcasecmp($this->update_guid, $this->logged_user_uuid) === 0) {
 			$remove_access = 0;
 			$deactivate_global = 0;
 			$is_orgadmin = 1; 
 		}
 		
+		// Zamezení neoprávněné globální deaktivace účtu
 		if (!$this->is_sysadmin) {
 			$deactivate_global = 0;
 		}
@@ -71,7 +84,7 @@ class page_org_users extends abstract_page_master_detail {
 		$safe_uuid = ($this->update_guid === 'NEW') ? 'NULL' : guidliteral($this->update_guid);
 		$safe_user = guidliteral($this->logged_user_uuid);
 
-		$sql = "EXEC p_save_org_user 
+		$sql = "EXEC form_org_users 
 			@organization_uuid = {$this->current_org},
 			@user_original = {$safe_uuid},
 			@login_name = {$login_name},
@@ -88,6 +101,10 @@ class page_org_users extends abstract_page_master_detail {
 		autoredirect("index.php?page=org_users&update_guid={$this->update_guid}");
 	}
 
+	/**
+	 * Vykreslení levého panelu (Master) se seznamem uživatelů.
+	 * Očištěno od inline stylů, používá třídu md-table.
+	 */
 	protected function render_master(): void {
 		if ($this->access_denied) {
 			echo "<div class='msg-err'>Přístup odepřen. Vyžadována role Organization Administrator.</div>";
@@ -112,16 +129,17 @@ class page_org_users extends abstract_page_master_detail {
 			</form>
 		</div>
 
-		<table style="width: 100%; border-collapse: collapse;">
-			<tr style="background-color: #e9f2fa; text-align: left;">
-				<th style="padding: 8px; border: 1px solid #ddd;">Jméno a příjmení</th>
-				<th style="padding: 8px; border: 1px solid #ddd;">Stav</th>
-				<th style="padding: 8px; border: 1px solid #ddd; width: 50px;">Akce</th>
+		<table class="md-table">
+			<tr>
+				<th>Jméno a příjmení</th>
+				<th>Stav</th>
+				<th style="width: 50px;">Akce</th>
 			</tr>
 HTML;
 
 		$remove_filter = $this->show_removed_users ? "" : "AND a.removed = 0";
 		
+		// Výběr uživatelů propojený s přístupovou tabulkou pro daného tenanta
 		$q = sqlrun("
 			SELECT u.original, u.first_name, u.last_name, u.inactive, a.removed AS access_removed
 			FROM user_account u
@@ -135,22 +153,23 @@ HTML;
 		global $datarow;
 		while (fetch_datarow($q)) {
 			$is_removed = $datarow['access_removed'];
-			
 			$is_active_row = ($this->update_guid !== null && strcasecmp((string)$datarow['original'], $this->update_guid) === 0);
 			
-			$bg_color = $is_active_row ? '#e6f7ff' : ($is_removed ? '#f9f9f9' : '#fff');
-			$color = $is_removed ? '#999' : '#333';
-			$status = $is_removed ? 'Zrušen' : ($datarow['inactive'] ? '<span style="color:red">Neaktivní</span>' : 'Aktivní');
-			
+			// Aplikace sjednocených CSS tříd podle stavu řádku
+			$row_class = '';
 			if ($is_active_row) {
-				echo "<tr id='active-row' style='background-color: {$bg_color}; color: {$color};'>";
-			} else {
-				echo "<tr style='background-color: {$bg_color}; color: {$color};'>";
+				$row_class = 'md-row-active';
+			} elseif ($is_removed) {
+				$row_class = 'md-row-inactive';
 			}
 			
-			echo "<td style='padding: 8px; border: 1px solid #ddd;'>" . htmlspecialchars($datarow['last_name'] . ' ' . $datarow['first_name']) . "</td>";
-			echo "<td style='padding: 8px; border: 1px solid #ddd;'>{$status}</td>";
-			echo "<td style='padding: 8px; border: 1px solid #ddd; text-align: center;'>
+			$id_attr = $is_active_row ? "id='active-row'" : "";
+			$status = $is_removed ? 'Zrušen' : ($datarow['inactive'] ? '<span style="color:red">Neaktivní</span>' : 'Aktivní');
+			
+			echo "<tr {$id_attr} class='{$row_class}'>";
+			echo "<td>" . htmlspecialchars($datarow['last_name'] . ' ' . $datarow['first_name']) . "</td>";
+			echo "<td>{$status}</td>";
+			echo "<td style='text-align: center;'>
 					<a href='index.php?page=org_users&update_guid={$datarow['original']}' style='font-weight:bold;color:#004488;text-decoration:none;'>Detail</a>
 				  </td>";
 			echo "</tr>";
@@ -160,6 +179,9 @@ HTML;
 		echo "</table>";
 	}
 
+	/**
+	 * Vykreslení pravého panelu (Detail) pro editaci vlastností.
+	 */
 	protected function render_detail(): void {
 		if ($this->access_denied) {
 			return;
@@ -199,6 +221,7 @@ HTML;
 HTML;
 		echo hidden_input('update_guid', $this->update_guid);
 		
+		// Formulářová část - využíváme layoutovou tabulku pro zarovnání polí
 		echo <<<HTML
 			<table style="width: 100%; border-collapse: collapse;">
 				<tr><td style="padding: 6px 0; width: 150px;">
@@ -211,6 +234,7 @@ HTML;
 		echo "<tr>" . td1_label('is_orgadmin') . td1_input('is_orgadmin', '', 1) . "</tr>";
 		echo "</table>";
 
+		// Bezpečnostní blok pro nebezpečné operace
 		if ($this->update_guid !== 'NEW') {
 			echo "<div style='background-color: #ffebee; border-left: 4px solid #b71c1c; padding: 15px; margin-top: 25px;'>";
 			

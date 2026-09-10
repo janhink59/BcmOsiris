@@ -1,8 +1,8 @@
-EXECUTE dropni 'p_save_org_user', 'P'
+EXECUTE dropni 'form_org_users', 'P'
 GO
 
 /* =============================================================================
- * Procedura: p_save_org_user
+ * Procedura: form_org_users
  * Účel: Bezpečné uložení, úprava nebo deaktivace uživatele v rámci tenanta.
  * 
  * Architektura a bezpečnost:
@@ -14,7 +14,7 @@ GO
  *   databáze vynutí ignorování příkazů k odebrání práv či zablokování, i kdyby 
  *   byl volající HTTP požadavek kompromitován.
  * ============================================================================= */
-CREATE PROCEDURE p_save_org_user
+CREATE PROCEDURE form_org_users
 	@organization_uuid uniqueidentifier,
 	@user_original uniqueidentifier,
 	@login_name varchar(100),
