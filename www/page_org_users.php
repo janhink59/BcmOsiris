@@ -221,37 +221,41 @@ HTML;
 HTML;
 		echo hidden_input('update_guid', $this->update_guid);
 		
-		// Formulářová část - využíváme layoutovou tabulku pro zarovnání polí
+		// Formulářová část - plně integrovaná do jedné tabulky pro perfektní lícování sloupců
 		echo <<<HTML
 			<table style="width: 100%; border-collapse: collapse;">
-				<tr><td style="padding: 6px 0; width: 150px;">
 HTML;
-		echo td1_label('login_name') . td1_input('login_name') . "</tr>";
+		// Šířka prvního sloupce je nyní definována bezpečně uvnitř prvního popisku formuláře
+		echo "<tr>" . td1_label('login_name', "style='padding: 6px 0; width: 150px;'") . td1_input('login_name') . "</tr>";
 		echo "<tr>" . td1_label('first_name') . td1_input('first_name') . "</tr>";
 		echo "<tr>" . td1_label('last_name') . td1_input('last_name') . "</tr>";
 		echo "<tr>" . td1_label('email') . td1_input('email') . "</tr>";
 		echo "<tr><td colspan='2'><hr style='border:0;border-top:1px dashed #ccc;margin:15px 0;'></td></tr>";
 		echo "<tr>" . td1_label('is_orgadmin') . td1_input('is_orgadmin', '', 1) . "</tr>";
-		echo "</table>";
 
-		// Bezpečnostní blok pro nebezpečné operace
+		// Bezpečnostní blok zpracovaný pouhým obarvením a okrajem konkrétních řádků
 		if ($this->update_guid !== 'NEW') {
-			echo "<div style='background-color: #ffebee; border-left: 4px solid #b71c1c; padding: 15px; margin-top: 25px;'>";
-			
 			if ($is_me) {
-				echo "<p style='color: #b71c1c; font-weight: bold; margin: 0;'>Ochrana účtu: Vlastní přístup ani administrátorská práva nelze odebrat.</p>";
+				echo "<tr style='background-color: #ffebee;'>
+						<td colspan='2' style='border-left: 4px solid #b71c1c; padding: 15px; color: #b71c1c; font-weight: bold;'>
+							Ochrana účtu: Vlastní přístup ani administrátorská práva nelze odebrat.
+						</td>
+					  </tr>";
 				echo hidden_input('remove_access', '0');
 				echo hidden_input('deactivate_global', '0');
 			} else {
-				echo "<table style='width: 100%; border-collapse: collapse;'>";
-				echo "<tr>" . td1_label('remove_access') . td1_input('remove_access', '', 1) . "</tr>";
+				$danger_row_style = "style='background-color: #ffebee;'";
+				$danger_td_style = "style='border-left: 4px solid #b71c1c; color: #b71c1c; padding: 6px 0;'";
+				
+				echo "<tr {$danger_row_style}>" . td1_label('remove_access', $danger_td_style) . td1_input('remove_access', '', 1) . "</tr>";
+				
 				if ($this->is_sysadmin) {
-					echo "<tr>" . td1_label('deactivate_global') . td1_input('deactivate_global', '', 1) . "</tr>";
+					echo "<tr {$danger_row_style}>" . td1_label('deactivate_global', $danger_td_style) . td1_input('deactivate_global', '', 1) . "</tr>";
 				}
-				echo "</table>";
 			}
-			echo "</div>";
 		}
+
+		echo "</table>";
 
 		echo <<<HTML
 			<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 15px;">

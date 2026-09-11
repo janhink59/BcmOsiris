@@ -4,7 +4,14 @@
  * Třída: abstract_page
  * Účel: Základní abstraktní třída pro objektově orientované stránky.
  *       Zajišťuje jednotný layout, centrální CSS styly a zobrazení kontextu 
- *       uživatele v pravém horním rohu.
+ *       uživatele (horní pruh).
+ * 
+ * Vazby na okolí:
+ * - Je volána z centrálního routeru `index.php`, který instancuje jejího potomka
+ *   a spouští metodu `render()`.
+ * - Slouží jako předek pro další šablony (např. `abstract_page_master_detail`) 
+ *   nebo konkrétní stránky.
+ * - Instancuje třídu `user_context` pro vykreslení horního informačního panelu.
  * =============================================================================
  */
 
@@ -36,15 +43,15 @@ abstract class abstract_page {
 			font-family: Arial, sans-serif; 
 			background-color: #f4f4f4; 
 			margin: 0; 
-			padding: 50px 30px; 
+			padding: 0; /* Bez odsazení pro dokonalé přilehnutí horního pruhu */
 			color: #333; 
 		}
 		.page-panel { 
 			background-color: #fff; 
-			padding: 30px; 
+			padding: 20px; 
 			border-radius: 5px; 
 			box-shadow: 0 0 10px rgba(0,0,0,0.1); 
-			margin: 0 auto; 
+			margin: 15px auto; /* Dynamické odsazení od pruhu a okrajů */
 			max-width: 800px; 
 		}
 		h1.page-heading { 
@@ -81,7 +88,7 @@ abstract class abstract_page {
 	</style>
 </head>
 <body>
-	<!-- Globální kontextový panel (vykreslí se vpravo nahoře) -->
+	<!-- Globální kontextový panel (vykreslí se jako kompaktní blockový horní pruh) -->
 	{$user_context}
 	
 	<!-- Hlavní obálka pro obsah specifické stránky -->
