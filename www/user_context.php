@@ -7,9 +7,8 @@
  * 
  * Vazby na okolí:
  * - Instancuje se a vykresluje výhradně uvnitř metody render() v `abstract_page`.
- * - Spoléhá na existenci globálního pole `$dbsession`, které primárně připravuje 
- *   funkce `initsession()` v souboru `OsirisLib.php`.
- * - Zajišťuje generování URL pro odhlášení (`index.php?page=logout`).
+ * - Spoléhá na existenci globálního pole `$dbsession`.
+ * - Nově vyhodnocuje flag `change_context_allowed` pro nabídnutí změny kontextu.
  * =============================================================================
  */
 
@@ -47,17 +46,24 @@ class user_context {
 		$safeDisplayName = htmlspecialchars($displayName, ENT_QUOTES, 'UTF-8');
 		$safeOrgName = htmlspecialchars($orgName, ENT_QUOTES, 'UTF-8');
 
+		// Vykreslení organizace s odkazem, pokud je povolená změna kontextu
+		if (!empty($dbsession['change_context_allowed'])) {
+			$orgHtml = '<a href="index.php?page=change_user_context" class="bcm-context-org link" title="Změnit organizaci či roli">' . $safeOrgName . ' <span style="font-size: 10px;">▼</span></a>';
+		} else {
+			$orgHtml = '<span class="bcm-context-org" title="Aktuální organizace">' . $safeOrgName . '</span>';
+		}
+
 		return <<<HTML
 <style>
 	.bcm-top-bar {
 		background: #ffffff;
 		border-bottom: 1px solid #cbd5e1;
-		padding: 4px 12px; /* Maximální kompaktnost */
+		padding: 4px 12px;
 		font-family: Arial, sans-serif;
 		font-size: 12px;
 		color: #334155;
 		display: flex;
-		justify-content: space-between; /* Grafika vlevo, obsah vpravo */
+		justify-content: space-between;
 		align-items: center;
 		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 	}
@@ -68,11 +74,21 @@ class user_context {
 	.bcm-top-bar-right {
 		display: flex;
 		align-items: center;
-		gap: 10px; /* Kompaktní mezery mezi údaji a tlačítkem */
+		gap: 10px;
 	}
 	.bcm-context-org { 
 		font-weight: bold; 
 		color: #0f172a; 
+	}
+	a.bcm-context-org.link {
+		text-decoration: none;
+		padding: 2px 6px;
+		border-radius: 3px;
+		transition: background 0.2s;
+	}
+	a.bcm-context-org.link:hover {
+		background-color: #f1f5f9;
+		color: #2563eb;
 	}
 	.bcm-context-user { 
 		color: #475569; 
@@ -104,7 +120,6 @@ class user_context {
 		border-radius: 3px;
 	}
 	.ctx-graphic-placeholder {
-		/* Blok speciálně připravený pro budoucí grafiku (loga, ikony apod.) */
 		color: #94a3b8;
 		font-style: italic;
 		font-weight: bold;
@@ -117,12 +132,11 @@ class user_context {
 <div class="bcm-top-bar">
 	<div class="bcm-top-bar-left">
 		<div class="ctx-graphic-placeholder">
-			<!-- Prostor pro budoucí firemní grafiku -->
 			[ Logo / Grafika ]
 		</div>
 	</div>
 	<div class="bcm-top-bar-right">
-		<span class="bcm-context-org" title="Aktuální organizace">{$safeOrgName}</span>
+		{$orgHtml}
 		<span style="color: #cbd5e1;">|</span>
 		<span class="bcm-context-user" title="Přihlášený uživatel">{$safeDisplayName}</span>
 		<span class="ctx-role {$roleClass}">{$roleText}</span>

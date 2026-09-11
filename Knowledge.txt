@@ -33,8 +33,10 @@
 
 4. Zpracování identit, SSO a multi-tenancy
 * Tabulka user_account je globální (object_owner = 0x00). Přihlašovací jméno a e-mail musí být celosystémově unikátní.
-* Přístup globálních uživatelů do konkrétních tenantů řídí vazební tabulka user_organization_access (obsahuje is_orgadmin a lokální removed).
-* SSO integrace (Google atd.) a autentizace probíhá plně v PHP vrstvě. Webový server má povolen anonymní přístup. Relaci zakládá T-SQL procedura p_set_login s ohledem na zvolenou či poslední navštívenou organizaci (zapisuje do dbsession / wwwsession).
+* Přístup globálních uživatelů do konkrétních tenantů řídí vazební tabulka user_organization_access (obsahuje is_orgadmin a lokální removed). View `v_user_organization_access` (s LEFT JOIN na dbsession) sjednocuje čtení oprávnění pro prvotní přihlášení i změnu kontextu.
+* SSO integrace a autentizace probíhá plně v PHP vrstvě. Webový server má povolen anonymní přístup. Relaci zakládá T-SQL procedura `p_set_login` s ohledem na vyžádanou (`@requested_org`) či poslední navštívenou organizaci (zapisuje do dbsession / wwwsession).
+* Přepínání kontextu uživatele (organizace, role) minimalizuje zátěž databáze: řídí se statickým příznakem `change_context_allowed` (kalkulovaným v `p_set_login`) v tabulce relací. V UI se organizace nepřepíná roletkou v záhlaví, ale výhradně přes dedikovanou stránku (`page_change_user_context`) s využitím PRG vzoru a procedury `p_set_login`.
+* Pomocná ladicí relace se zakládá přes proceduru `p_debuglogin` (využívající interně `p_set_login` a `p_init_wwwsession`).
 * Bezpečnost účtů: Skripty i T-SQL procedury musí vždy obsahovat hard-coded override, aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe. Globální zablokování (inactive) smí provést pouze sysadmin, lokální odebrání přístupu (removed) provádí orgadmin. Filtrování historických/odstraněných záznamů probíhá překreslením na backendu (SQL + PHP sessioninput), nikoliv skrýváním v UI.
 * HTTP hlavičky (autoredirect) musí být zasílány jako kompletní string (např. "Location: ...").
 
@@ -49,11 +51,10 @@
 * Globální uživatelský kontext zajišťuje třída `user_context` implementující metodu `__toString()`. Zobrazuje se jako kompaktní, statický horizontální horní pruh obrazovky, s vyhrazeným prostorem pro grafiku vlevo a odhlášením vpravo.
 * Veškeré zpracování POST dat, přesměrování (PRG) a definice UI polí (`pageitem`) probíhá v konstruktoru třídy stránky (nikoliv v metodách `render_*`), čímž je zaručeno, že hlavičky stránky a databázové stavy budou konzistentní před samotným vykreslováním HTML.
 * Přenos dat z databáze do stránek a komponent se provádí výhradně voláním uložených procedur.
-* Jmenná konvence stránek je `page_{$page}.php` a databázové procedura mají názvy `page_{$page}` a `form_{$page}`.
+* Jmenná konvence stránek je `page_{$page}.php` a databázové procedury mají názvy `page_{$page}` a `form_{$page}`.
 * Procedura `page_{$page}` dodává na stránku všechna potřebná data, prvním parametrem je @subpage, která určuje, která část stránky se má načíst (např. 'main','detail' atd.)
 * Procedura `form_{$page}` s potřebnými parametry slouží k zápisu, zpravidla zpracování formulářů. Prvním parametrem je @subform, který specifikuje, o jakou operaci zápisu se jedná (stisknuté tlačítko apod.)
 * Výchozí rozcestník po přihlášení je trvale `page_main.php`.
-* Generovaný kód (SQL i PHP) musí být odsazován výhradně tabulátory.
 
 6. Stromové struktury, CRMM a Infrastruktura
 * Sémantická struktura stromů se udržuje primárně přes relační vazbu parent_uuid. Textový sloupec sort_code slouží pouze pro rychlé třídění na frontendu, aby se zabránilo lavinovým updatům SSC při přesunech větví.
