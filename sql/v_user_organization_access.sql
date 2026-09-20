@@ -3,7 +3,7 @@ GO
 /* =============================================================================
  * SOUBOR: v_user_organization_access.sql
  * Účel: Rozšířený pohled nad vazební tabulkou user_organization_access pro
- *       vyhodnocení oprávnění uživatele.
+ *       vyhodnocení oprávnění uživatele. Nyní vrací i user_access_uuid pro naplnění kontextu operací.
  *
  * Vazby na okolí:
  * - Primárně voláno procedurou p_set_login pro rozhodnutí o cílové organizaci
@@ -14,7 +14,8 @@ GO
  *   kdy záznam relace (@@SPID) ještě neexistuje (prvotní login).
  * ============================================================================= */
 CREATE VIEW v_user_organization_access AS
-SELECT	a.user_account_uuid,
+SELECT	a.original AS user_access_uuid,
+	a.user_account_uuid,
 	a.organization_uuid AS organization,
 	o.caption AS organization_name,
 	a.is_orgadmin,

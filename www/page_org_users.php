@@ -15,6 +15,7 @@ class page_org_users extends abstract_page_master_detail {
 	private bool $access_denied = false;
 	private string $current_org;
 	private string $logged_user_uuid;
+	private string $logged_user_access;
 	private ?string $update_guid;
 	private bool $show_removed_users;
 	private bool $is_sysadmin;
@@ -33,6 +34,7 @@ class page_org_users extends abstract_page_master_detail {
 		// Načtení kontextu z relace (dbsession)
 		$this->is_sysadmin = !empty($dbsession['right_sysadmin']);
 		$this->logged_user_uuid = (string)$dbsession['user_account'];
+		$this->logged_user_access = (string)$dbsession['user_access_uuid'];
 		$this->current_org = guidliteral($dbsession['organization']);
 		
 		// Parametry UI z requestu
@@ -48,7 +50,7 @@ class page_org_users extends abstract_page_master_detail {
 		pageitem('remove_access', 'Odstranit přístup', 'Zrušit', 'Zamezí uživateli přístup do organizace', 'checkbox', 'bit', '', 0, 0, 0);
 		pageitem('deactivate_global', 'Deaktivovat účet', 'Neaktivní', 'Globálně zablokuje účet (Sysadmin)', 'checkbox', 'bit', '', 0, 0, 0);
 
-		// Ochrana proti odebrání vlastních práv - nastavení UI elementu pouze pro čtení
+		// Ochrana proti odebrání vlastních práv - nastavení UI elementu pouze pro čtení (porovnává se globální ID účtu)
 		if ($this->update_guid !== null && strcasecmp($this->update_guid, $this->logged_user_uuid) === 0) {
 			global $pageitem_is_orgadmin;
 			$pageitem_is_orgadmin->displayonly = 1;
@@ -63,13 +65,16 @@ class page_org_users extends abstract_page_master_detail {
 	/**
 	 * Zpracování uložení záznamu přes systémovou uloženou proceduru.
 	 */
+/**
+	 * Zpracování uložení záznamu přes systémovou uloženou proceduru.
+	 */
 	private function handle_save(): void {
 		reginputs('login_name:varchar,first_name:varchar,last_name:varchar,email:varchar');
 		reginputs('is_orgadmin:bit,remove_access:bit,deactivate_global:bit');
 		
 		global $login_name, $first_name, $last_name, $email, $is_orgadmin, $remove_access, $deactivate_global;
 		
-		// Hard-coded override pojistka (pro jistotu i na úrovni PHP, ačkoliv to řeší i procedura)
+		// Hard-coded override pojistka (pro jistotu i na úrovni PHP)
 		if ($this->update_guid !== null && strcasecmp($this->update_guid, $this->logged_user_uuid) === 0) {
 			$remove_access = 0;
 			$deactivate_global = 0;
@@ -82,8 +87,8 @@ class page_org_users extends abstract_page_master_detail {
 		}
 		
 		$safe_uuid = ($this->update_guid === 'NEW') ? 'NULL' : guidliteral($this->update_guid);
-		$safe_user = guidliteral($this->logged_user_uuid);
 
+		// Parametr @who_modified byl odstraněn, SQL procedura si ho přečte z dbsession
 		$sql = "EXEC form_org_users 
 			@organization_uuid = {$this->current_org},
 			@user_original = {$safe_uuid},
@@ -93,8 +98,7 @@ class page_org_users extends abstract_page_master_detail {
 			@last_name = {$last_name},
 			@is_orgadmin = {$is_orgadmin},
 			@remove_access = {$remove_access},
-			@deactivate_global = {$deactivate_global},
-			@who_modified = {$safe_user}";
+			@deactivate_global = {$deactivate_global}";
 			
 		sqlrun($sql);
 		

@@ -60,7 +60,9 @@ if ($button_save) {
 	global $caption, $login_domain, $licence_level, $licence_state, $admin_login, $admin_first_name, $admin_last_name, $admin_email;
 	
 	$safe_uuid = guidliteral($update_guid);
-	$safe_user = guidliteral($dbsession['user_account']);
+	
+	// Používáme přístupový kontext namísto globálního účtu pro auditní stopu
+	$safe_access = guidliteral($dbsession['user_access_uuid']);
 
 	if ($update_guid === 'NEW') {
 		$new_uuid = generateUUID();
@@ -75,7 +77,7 @@ if ($button_save) {
 			$safe_new_uuid, 0x00, $safe_new_uuid, 'A', 'A',
 			$caption, $login_domain, $licence_level, $licence_state,
 			$admin_login, $admin_first_name, $admin_last_name, $admin_email,
-			$safe_user, $safe_user
+			$safe_access, $safe_access
 		)";
 		sqlrun($sql);
 	} else {
@@ -89,13 +91,14 @@ if ($button_save) {
 			admin_last_name = $admin_last_name,
 			admin_email = $admin_email,
 			date_modified = GETDATE(),
-			who_modified = $safe_user
+			who_modified = $safe_access
 		WHERE original = $safe_uuid AND record_type = 'A'";
 		sqlrun($sql);
 		
 		// Detekce triggeru pro aktivaci tenanta (očekáváme stav APPROVED)
 		if (trim((string)$licence_state, "'") === 'APPROVED') {
-			sqlrun("EXEC p_process_organization_licence @licence_original = $safe_uuid, @who_modified = $safe_user");
+			// Parametr @who_modified byl odstraněn, procedura si kontext načítá sama z dbsession
+			sqlrun("EXEC p_process_organization_licence @licence_original = $safe_uuid");
 		}
 	}
 	autoredirect('index.php?page=organization_licence');

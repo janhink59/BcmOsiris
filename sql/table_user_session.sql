@@ -22,6 +22,7 @@ CREATE TABLE [dbo].[wwwsession](
 	[spid] [int] NOT NULL, -- @@spid posledního requestu
 	[wwwsession] [varchar](50) NOT NULL primary key,
 	[user_account] uuid not null,
+	[user_access_uuid] uuid not null,
 	[user_name] [varchar](80) NOT NULL,
 	[organization] uuid not null,
 	[organization_name] [nvarchar](200) default '' NOT NULL,
@@ -48,6 +49,7 @@ CREATE TABLE [dbo].[dbsession](
 	[spid] [int] primary key NOT NULL, -- @@spid requestu
 	[wwwsession] [varchar](50) NOT NULL,
 	[user_account] uuid not null,
+	[user_access_uuid] uuid not null,
 	[user_name] [varchar](80) NOT NULL,
 	[organization] uuid not null,
 	[organization_name] [nvarchar](200) default '' NOT NULL,

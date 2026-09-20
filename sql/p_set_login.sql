@@ -19,6 +19,7 @@ BEGIN
 	DECLARE @organization_name nvarchar(200) = '';
 	DECLARE @is_orgadmin bit = 0;
 	DECLARE @change_context_allowed bit = 0;
+	DECLARE @user_access_uuid uniqueidentifier = NULL;
 
 	BEGIN TRAN;
 
@@ -37,7 +38,8 @@ BEGIN
 		SELECT TOP 1 
 			@organization = v.organization,
 			@organization_name = v.organization_name,
-			@is_orgadmin = v.is_orgadmin
+			@is_orgadmin = v.is_orgadmin,
+			@user_access_uuid = v.user_access_uuid
 		FROM	v_user_organization_access v
 		WHERE	v.user_account_uuid = @user_uuid
 		ORDER BY 
@@ -71,14 +73,15 @@ BEGIN
 		SET @organization_name = 'Systémová organizace';
 		SET @is_orgadmin = 1;
 		SET @is_sysadmin = 1;
-		SET @change_context_allowed = 1; -- Sysadmin může měnit kontext vždy
+		SET @change_context_allowed = 1;
+		SET @user_access_uuid = 0x00;
 	END
 
 	INSERT INTO wwwsession (
-		spid, wwwsession, user_account, user_name, organization, organization_name, display_name, 
+		spid, wwwsession, user_account, user_access_uuid, user_name, organization, organization_name, display_name, 
 		session_log, client_ip, login_date, right_orgadmin, right_sysadmin, change_context_allowed
 	) VALUES (
-		@@SPID, @wwwsession, @user_uuid, @user_name, @organization, @organization_name, @display_name, 
+		@@SPID, @wwwsession, @user_uuid, @user_access_uuid, @user_name, @organization, @organization_name, @display_name, 
 		0, @client_ip, GETDATE(), @is_orgadmin, @is_sysadmin, @change_context_allowed
 	);
 

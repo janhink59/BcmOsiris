@@ -8,11 +8,11 @@ GO
  * Architektura a bezpečnost:
  * - Zajišťuje logický zápis do globální tabulky user_account (vlastněné 0x00)
  *   i vytvoření vazby na lokálního tenanta v tabulce user_organization_access.
- * - Podporuje odříznutí přístupu (remove_access) pro Orgadmina i globální umrtvení 
- *   účtu (deactivate_global) pro Sysadmina.
- * - Striktní hard-coded override: Pokud uživatel edituje vlastní záznam, 
- *   databáze vynutí ignorování příkazů k odebrání práv či zablokování, i kdyby 
- *   byl volající HTTP požadavek kompromitován.
+ * - Zápis auditní stopy (who_created, who_modified) přebírá UUID přístupové vazby
+ *   automaticky z tabulky dbsession pro aktuální @@SPID.
+ * - Striktní hard-coded override: Ochrana účtu před smazáním sama sebe probíhá 
+ *   porovnáním s identitou v dbsession. Databáze vynutí ignorování příkazů 
+ *   k odebrání práv či zablokování.
  * ============================================================================= */
 CREATE PROCEDURE form_org_users
 	@organization_uuid uniqueidentifier,
@@ -23,8 +23,7 @@ CREATE PROCEDURE form_org_users
 	@last_name varchar(100),
 	@is_orgadmin bit,
 	@remove_access bit = 0,
-	@deactivate_global bit = 0,
-	@who_modified uniqueidentifier
+	@deactivate_global bit = 0
 AS
 BEGIN
 	SET NOCOUNT ON;
@@ -33,6 +32,21 @@ BEGIN
 	DECLARE @resolved_user_uuid uniqueidentifier = @user_original;
 	DECLARE @access_uuid uniqueidentifier;
 	
+	-- Získání kontextu přístupu a identity uživatele PŘÍMO ze session
+	DECLARE @user_access_uuid uniqueidentifier;
+	DECLARE @current_user_account uniqueidentifier;
+	
+	SELECT	@user_access_uuid = user_access_uuid,
+		@current_user_account = user_account
+	FROM	dbsession 
+	WHERE	spid = @@SPID;
+	
+	IF @user_access_uuid IS NULL
+	BEGIN
+		RAISERROR('Bezpečnostní chyba: Nelze ověřit identitu relace (dbsession chybí).', 16, 1);
+		RETURN;
+	END
+
 	-- Pokud jde o nového uživatele (bez zadaného ID), pokusíme se najít existující účet
 	IF @resolved_user_uuid IS NULL OR @resolved_user_uuid = 0x00
 	BEGIN
@@ -42,7 +56,7 @@ BEGIN
 	END
 	
 	-- BEZPEČNOSTNÍ POJISTKA BACKENDU: Ochrana před ztrátou kontroly nad vlastním účtem
-	IF @resolved_user_uuid = @who_modified
+	IF @resolved_user_uuid = @current_user_account
 	BEGIN
 		SET @remove_access = 0;
 		SET @deactivate_global = 0;
@@ -63,7 +77,7 @@ BEGIN
 		) VALUES (
 			@resolved_user_uuid, 0x00, @resolved_user_uuid, 'A', 'A',
 			LTRIM(RTRIM(@first_name + ' ' + @last_name)), @login_name, @email, @first_name, @last_name, 1,
-			@deactivate_global, @who_modified, @who_modified
+			@deactivate_global, @user_access_uuid, @user_access_uuid
 		);
 	END
 	ELSE
@@ -75,7 +89,7 @@ BEGIN
 			last_name = @last_name,
 			inactive = CASE WHEN @deactivate_global = 1 THEN 1 ELSE inactive END,
 			date_modified = GETDATE(),
-			who_modified = @who_modified
+			who_modified = @user_access_uuid
 		WHERE original = @resolved_user_uuid AND record_type = 'A';
 	END
 	
@@ -99,7 +113,7 @@ BEGIN
 			) VALUES (
 				@access_uuid, @organization_uuid, @access_uuid, 'A', 'A',
 				@resolved_user_uuid, @organization_uuid, @is_orgadmin, 0,
-				@who_modified, @who_modified
+				@user_access_uuid, @user_access_uuid
 			);
 		END
 	END
@@ -109,7 +123,7 @@ BEGIN
 		SET is_orgadmin = @is_orgadmin,
 			removed = @remove_access,
 			date_modified = GETDATE(),
-			who_modified = @who_modified
+			who_modified = @user_access_uuid
 		WHERE original = @access_uuid AND record_type = 'A';
 	END
 	

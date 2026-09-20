@@ -6,7 +6,7 @@
 * Aktivní knihovny (Composer): phpoffice/phpspreadsheet, openspout/openspout, phpmailer/phpmailer, google/apiclient.
 * Generovaný kód (SQL i PHP) musí být odsazován výhradně tabulátory, bohatě okomentován pro orientaci v kontextu a předán v uceleném code bloku připraveném ke zkopírování (u PHP bez uzavírací značky ?>). Vždy nabídni zkopírování zdrojového kódu do schránky.
 * POVINNÉ KOMENTOVÁNÍ VAZEB: Každý soubor, modul, procedura, třída i funkce musí obsahovat komentáře (hlavičku), které přesně popíší její vztah k okolí (odkud je volána, na co navazuje, jaké globální proměnné či pole využívá). Cílem je zajistit plynulou kontinuitu vývoje a schopnost navázat na kód i ve chvíli, kdy AI asistent nemá k dispozici kompletní zdrojové kódy celého projektu.
-* Na konci každého chatu automaticky nabídni formátovanou revizi těchto instrukcí pro uchování pokroku.
+* Na konci každého chatu automaticky nabídni formátovanou revizi těchto instrukcí pro uchování pokroku. Pokud je požadavek na úpravu více souborů, vracej je striktně jednotlivě.
 * Pokud uživatel procvičuje italštinu, pomoz mu a toleruj obrácené akcenty.
 * BEZPEČNOSTNÍ POJISTKA VÝKONU: Pokud při analýze komplexních vazeb narazíš na limity svého logického vyvozování nebo ztratíš přehled v kontextu, okamžitě upozorni uživatele a vyžádej si přerušení práce.
 
@@ -35,10 +35,11 @@
 4. Zpracování identit, SSO a multi-tenancy
 * Tabulka user_account je globální (object_owner = 0x00). Přihlašovací jméno a e-mail musí být celosystémově unikátní.
 * Přístup globálních uživatelů do konkrétních tenantů řídí vazební tabulka user_organization_access (obsahuje is_orgadmin a lokální removed). View v_user_organization_access (s LEFT JOIN na dbsession) sjednocuje čtení oprávnění pro prvotní přihlášení i změnu kontextu.
+* AUTONOMNÍ AUDITNÍ STOPA: Tabulky relací (wwwsession, dbsession) obsahují sloupec `user_access_uuid`, který nese informaci o konkrétní přístupové vazbě pro aktuální kontext uživatele. Uložené procedury zapisující auditní stopy (who_created, who_modified) nesmí přijímat tyto hodnoty jako parametr z PHP vrstvy. Procedura si musí vždy načíst hodnotu `user_access_uuid` přímo z tabulky `dbsession` podle aktuálního `@@SPID`. To samé platí pro ověřování ochrany proti smazání vlastního účtu (čtení `user_account` ze session).
 * SSO integrace a autentizace probíhá plně v PHP vrstvě. Webový server má povolen anonymní přístup. Relaci zakládá T-SQL procedura p_set_login s ohledem na vyžádanou (@requested_org) či poslední navštívenou organizaci (zapisuje do dbsession / wwwsession).
 * Přepínání kontextu uživatele (organizace, role) minimalizuje zátěž databáze: řídí se statickým příznakem change_context_allowed (kalkulovaným v p_set_login) v tabulce relací. V UI se organizace nepřepíná roletkou v záhlaví, ale výhradně přes dedikovanou stránku (page_change_user_context) s využitím PRG vzoru a procedury p_set_login.
 * Pomocná ladicí relace se zakládá přes proceduru p_debuglogin (využívající interně p_set_login a p_init_wwwsession).
-* Bezpečnost účtů: Skripty i T-SQL procedury musí vždy obsahovat hard-coded override, aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe. Globální zablokování (inactive) smí provést pouze sysadmin, lokální odebrání přístupu (removed) provádí orgadmin. Filtrování historických/odstraněných záznamů probíhá překreslením na backendu (SQL + PHP sessioninput), nikoliv skrýváním v UI.
+* Bezpečnost účtů: Skripty i T-SQL procedury musí vždy obsahovat hard-coded override (nezávislým čtením identity z `dbsession`), aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe. Globální zablokování (inactive) smí provést pouze sysadmin, lokální odebrání přístupu (removed) provádí orgadmin. Filtrování historických/odstraněných záznamů probíhá překreslením na backendu (SQL + PHP sessioninput), nikoliv skrýváním v UI.
 * HTTP hlavičky (autoredirect) musí být zasílány jako kompletní string (např. "Location: ...").
 
 5. Architektura UI komponent a kódování stránek
