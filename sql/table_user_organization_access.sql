@@ -46,11 +46,20 @@ BEGIN
 		
 		-- Příznak, zda je uživatel administrátorem dané organizace
 		is_orgadmin bit NOT NULL DEFAULT 0,
+		
+		-- Poslední zvolená role (0 = User, 1 = Admin) pro obnovu kontextu session
+		last_orgadmin bit NOT NULL DEFAULT 0,
 
 		CONSTRAINT pk_user_organization_access PRIMARY KEY (uuid)
 	);
 	PRINT 'Tabulka user_organization_access byla vytvorena.';
 END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Zajištění chybějících sloupců pro existující databáze (změnový příkaz)
+-- -----------------------------------------------------------------------------
+EXEC p_create_missing_column 'user_organization_access', 'last_orgadmin', 'bit NOT NULL DEFAULT 0';
 GO
 
 -- -----------------------------------------------------------------------------
@@ -100,6 +109,7 @@ BEGIN
 		user_account_uuid,
 		organization_uuid,
 		is_orgadmin,
+		last_orgadmin,
 		who_created,
 		who_modified
 	) VALUES (
@@ -111,16 +121,16 @@ BEGIN
 		0x01,    -- user_account_uuid = id sysadmina
 		0x00,    -- organization_uuid = systémová org
 		1,       -- is_orgadmin
+		1,       -- last_orgadmin
 		0x01,
 		0x01
 	);
 	
-	-- Originál zkopírujeme do UUID, abychom udrželi RAC standard 
-	-- (při inzerci NEWID() nevíme jaký vygenerovalo originál, takže to aktualizujeme)
-	UPDATE user_organization_access 
-	SET original = uuid 
-	WHERE user_account_uuid = 0x01 AND organization_uuid = 0x00 AND record_type = 'A';
-	
-	PRINT 'Vytvořen přístup System Administrátora do systémové organizace.';
 END
+-- Originál zkopírujeme do UUID, abychom udrželi RAC standard 
+--PRINT 'Vytvořen přístup System Administrátora do systémové organizace.';
+UPDATE user_organization_access 
+SET original = uuid 
+WHERE user_account_uuid = 0x01 AND organization_uuid = 0x00 AND record_type = 'A';
+	
 GO

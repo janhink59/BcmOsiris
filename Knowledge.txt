@@ -35,31 +35,31 @@
 4. Zpracování identit, SSO a multi-tenancy
 * Tabulka user_account je globální (object_owner = 0x00). Přihlašovací jméno a e-mail musí být celosystémově unikátní.
 * Přístup globálních uživatelů do konkrétních tenantů řídí vazební tabulka user_organization_access (obsahuje is_orgadmin a lokální removed). View v_user_organization_access (s LEFT JOIN na dbsession) sjednocuje čtení oprávnění pro prvotní přihlášení i změnu kontextu.
-* AUTONOMNÍ AUDITNÍ STOPA: Tabulky relací (wwwsession, dbsession) obsahují sloupec `user_access_uuid`, který nese informaci o konkrétní přístupové vazbě pro aktuální kontext uživatele. Uložené procedury zapisující auditní stopy (who_created, who_modified) nesmí přijímat tyto hodnoty jako parametr z PHP vrstvy. Procedura si musí vždy načíst hodnotu `user_access_uuid` přímo z tabulky `dbsession` podle aktuálního `@@SPID`. To samé platí pro ověřování ochrany proti smazání vlastního účtu (čtení `user_account` ze session).
+* Volitelná role: Role v rámci tenanta se pamatuje ve sloupci last_orgadmin. Uživatel, který má statická práva administrátora organizace (is_orgadmin = 1), si může při změně kontextu explicitně vybrat, zda do organizace vstoupí jako Administrátor nebo běžný Uživatel. Volbu zpracovává p_set_login přes parametr @requested_admin a odráží se kompaktně v horním panelu.
+* AUTONOMNÍ AUDITNÍ STOPA: Tabulky relací (wwwsession, dbsession) obsahují sloupec user_access_uuid, který nese informaci o konkrétní přístupové vazbě pro aktuální kontext uživatele. Uložené procedury zapisující auditní stopy nesmí přijímat tyto hodnoty jako parametr z PHP. Procedura si musí vždy načíst hodnotu user_access_uuid přímo z tabulky dbsession podle aktuálního @@SPID. To samé platí pro ověřování ochrany proti smazání vlastního účtu.
 * SSO integrace a autentizace probíhá plně v PHP vrstvě. Webový server má povolen anonymní přístup. Relaci zakládá T-SQL procedura p_set_login s ohledem na vyžádanou (@requested_org) či poslední navštívenou organizaci (zapisuje do dbsession / wwwsession).
-* Přepínání kontextu uživatele (organizace, role) minimalizuje zátěž databáze: řídí se statickým příznakem change_context_allowed (kalkulovaným v p_set_login) v tabulce relací. V UI se organizace nepřepíná roletkou v záhlaví, ale výhradně přes dedikovanou stránku (page_change_user_context) s využitím PRG vzoru a procedury p_set_login.
+* Přepínání kontextu uživatele (organizace, role) minimalizuje zátěž databáze: řídí se statickým příznakem change_context_allowed. V UI se organizace nepřepíná roletkou v záhlaví, ale výhradně přes dedikovanou stránku (page_change_user_context) formou maticového seznamu s využitím PRG vzoru.
 * Pomocná ladicí relace se zakládá přes proceduru p_debuglogin (využívající interně p_set_login a p_init_wwwsession).
-* Bezpečnost účtů: Skripty i T-SQL procedury musí vždy obsahovat hard-coded override (nezávislým čtením identity z `dbsession`), aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe. Globální zablokování (inactive) smí provést pouze sysadmin, lokální odebrání přístupu (removed) provádí orgadmin. Filtrování historických/odstraněných záznamů probíhá překreslením na backendu (SQL + PHP sessioninput), nikoliv skrýváním v UI.
+* Bezpečnost účtů: Skripty i T-SQL procedury musí vždy obsahovat hard-coded override (nezávislým čtením identity z dbsession), aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe. Globální zablokování (inactive) smí provést pouze sysadmin, lokální odebrání přístupu (removed) provádí orgadmin. Filtrování historických/odstraněných záznamů probíhá překreslením na backendu.
 * HTTP hlavičky (autoredirect) musí být zasílány jako kompletní string (např. "Location: ...").
 
 5. Architektura UI komponent a kódování stránek
-* Abstraktní třídy komponent a základní stavební kameny jsou uloženy s prefixem abstract_ (např. abstract_component.php, abstract_page.php, abstract_page_master_detail.php). Nové stránky dědí z abstract_page a implementují metody render_body().
-* Tělo stránky (body v abstract_page.php) má zrušené okraje (margin a padding 0), aby se na něj mohl fixovat obsah bez rušivých mezer.
-* Prvek abstract_page_master_detail zajišťuje dynamický dvoupanelový layout přes flexbox, s fixní responzivní výškou a oddělenými nezávislými V-scrollbary pro Master a Detail panel. Router v této třídě podporuje asynchronní refresh levého panelu přes URL parametr ajax_panel=master.
-* Klientský frontend využívá výhradně čistý (vanilla) JavaScript (ES6+). Je striktně zakázáno používat jQuery, jQuery UI nebo rozsáhlé frontendové frameworky. Pro AJAX komunikaci se používá výhradně nativní Fetch API.
-* Pro formuláře, tabulky a seznamy je zakázáno používat roztříštěné struktury a inline styly. Formulářová pole musí být pro dokonalé zarovnání sloučena do jedné HTML tabulky (sloupec label + sloupec hodnota). Varovné stavy a logické skupiny se odlišují podbarvením nebo vloženými hlavičkami přímo na úrovni řádků (<tr>). Využívají se sjednocené CSS třídy (.md-table, .md-row-active, .md-row-inactive).
-* Router v index.php podporuje hybridní běh: u legacy stránek provede kód okamžitě přes require_once, u nových instanciuje třídu page_{$page} a volá metodu render().
-* Třídy jsou automaticky načítány pomocí nativního spl_autoload_register definovaného v config.php.
-* Globální uživatelský kontext zajišťuje třída user_context implementující metodu __toString(). Zobrazuje se jako kompaktní, statický horizontální horní pruh obrazovky, s vyhrazeným prostorem pro grafiku vlevo a odhlášením vpravo.
-* Veškeré zpracování POST dat, přesměrování (PRG) a definice UI polí (pageitem) probíhá v konstruktoru třídy stránky (nikoliv v metodách render_*), čímž je zaručeno, že hlavičky stránky a databázové stavy budou konzistentní před samotným vykreslováním HTML.
-* Přenos dat z databáze do stránek a komponent se provádí výhradně voláním uložených procedur.
+* Abstraktní třídy komponent a základní stavební kameny jsou uloženy s prefixem abstract_. Nové stránky dědí z abstract_page a implementují metodu render_body().
+* Tělo stránky (body) má zrušené okraje (margin a padding 0), aby se na něj mohl fixovat obsah bez rušivých mezer.
+* Prvek abstract_page_master_detail zajišťuje dynamický dvoupanelový layout přes flexbox s nezávislými V-scrollbary. Podporuje asynchronní refresh levého panelu přes URL parametr ajax_panel=master a nativní Fetch API.
+* Klientský frontend využívá výhradně čistý (vanilla) JavaScript (ES6+). Je striktně zakázáno používat jQuery, jQuery UI nebo rozsáhlé frontendové frameworky.
+* Formuláře musí být pro dokonalé zarovnání sloučena do jedné HTML tabulky s využitím sjednocených CSS tříd (.md-table, .md-row-active, .md-row-inactive).
 * Jmenná konvence stránek je page_{$page}.php a databázové procedury mají názvy page_{$page} a form_{$page}.
-* Procedura page_{$page} dodává na stránku všechna potřebná data, prvním parametrem je @subpage, která určuje, která část stránky se má načíst (např. 'main','detail' atd.)
-* Procedura form_{$page} s potřebnými parametry slouží k zápisu, zpravidla zpracování formulářů. Prvním parametrem je @subform, který specifikuje, o jakou operaci zápisu se jedná (stisknuté tlačítko apod.)
+* Procedura page_{$page} dodává na stránku všechna potřebná data, prvním parametrem je @subpage, která určuje, která část stránky se má načíst (např. 'main', 'detail' atd.).
+* Procedura form_{$page} slouží k zápisu a zpracování formulářů. Prvním parametrem je @subform, který specifikuje operaci zápisu (stisknuté tlačítko apod.).
+* Router v index.php podporuje hybridní běh. U objektových stránek instanciuje page_{$page} a volá render(). Autoloader se stará o načítání tříd.
+* Globální uživatelský kontext zajišťuje třída user_context implementující __toString(), která vizuálně odděluje globální navigaci (vlevo) a session kontext se zkrácenými formáty rolí (vpravo). 
+* Veškeré zpracování POST dat, přesměrování (PRG) a definice UI polí (pageitem) probíhá v konstruktoru třídy stránky (před vykreslováním).
+* Přenos dat z databáze do stránek probíhá výhradně voláním uložených procedur.
 * Výchozí rozcestník po přihlášení je trvale page_main.php.
 
 6. Stromové struktury, CRMM a Infrastruktura
-* Sémantická struktura stromů se udržuje primárně přes relační vazbu parent_uuid. Textový sloupec sort_code slouží pouze pro rychlé třídění na frontendu, aby se zabránilo lavinovým updatům SSC při přesunech větví.
-* Striktní pravidlo uzlů (is_leaf): Aktiva se smí vázat výhradně na koncové uzly (is_leaf = 1). Pokud klient pod systémový uzel přidá vlastní větev, ztráta statutu listu se musí dynamicky vyhodnocovat poddotazem ve View, nebo zajistit aplikační migrací aktiv.
-* Výpočty CRMM: Zbytkové riziko se kalkuluje z hrubého rizika přes redukční a rizikový faktor napojených opatření. Logaritmické škálování hrozeb/zranitelností používá číselné skóre.
-* Infrastruktura: Produkční prostředí na Windows Serveru vyžaduje stejnou úpravu registrů jako Windows 10 (LongPathsEnabled), aby mohl Composer správně instalovat obří závislosti.
+* Sémantická struktura stromů se udržuje primárně přes relační vazbu parent_uuid. Sloupec sort_code slouží pouze pro rychlé třídění na frontendu.
+* Striktní pravidlo uzlů (is_leaf): Aktiva se smí vázat výhradně na koncové uzly (is_leaf = 1).
+* Výpočty CRMM: Zbytkové riziko se kalkuluje z hrubého rizika přes redukční a rizikový faktor napojených opatření.
+* Infrastruktura: Produkční prostředí na Windows Serveru vyžaduje stejnou úpravu registrů jako Windows 10 (LongPathsEnabled).

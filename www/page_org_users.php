@@ -65,9 +65,6 @@ class page_org_users extends abstract_page_master_detail {
 	/**
 	 * Zpracování uložení záznamu přes systémovou uloženou proceduru.
 	 */
-/**
-	 * Zpracování uložení záznamu přes systémovou uloženou proceduru.
-	 */
 	private function handle_save(): void {
 		reginputs('login_name:varchar,first_name:varchar,last_name:varchar,email:varchar');
 		reginputs('is_orgadmin:bit,remove_access:bit,deactivate_global:bit');
@@ -107,7 +104,6 @@ class page_org_users extends abstract_page_master_detail {
 
 	/**
 	 * Vykreslení levého panelu (Master) se seznamem uživatelů.
-	 * Očištěno od inline stylů, používá třídu md-table.
 	 */
 	protected function render_master(): void {
 		if ($this->access_denied) {
@@ -159,7 +155,6 @@ HTML;
 			$is_removed = $datarow['access_removed'];
 			$is_active_row = ($this->update_guid !== null && strcasecmp((string)$datarow['original'], $this->update_guid) === 0);
 			
-			// Aplikace sjednocených CSS tříd podle stavu řádku
 			$row_class = '';
 			if ($is_active_row) {
 				$row_class = 'md-row-active';
@@ -202,18 +197,12 @@ HTML;
 		if ($this->update_guid === 'NEW') {
 			$datarow = [
 				'login_name' => '', 'first_name' => '', 'last_name' => '',
-				'email' => '', 'is_orgadmin' => 0, 'remove_access' => 0, 'deactivate_global' => 0
+				'email' => '', 'is_orgadmin' => 0, 'remove_access' => 0, 'deactivate_global' => 0,
+				'date_created' => null, 'who_created_info' => null, 'date_modified' => null, 'who_modified_info' => null
 			];
 		} else {
 			$safe_uuid = guidliteral($this->update_guid);
-			$q = sqlrun("
-				SELECT u.login_name, u.first_name, u.last_name, u.email, 
-					   a.is_orgadmin, a.removed AS remove_access, u.inactive AS deactivate_global
-				FROM user_account u
-				JOIN user_organization_access a ON a.user_account_uuid = u.original
-				WHERE u.original = {$safe_uuid} AND a.organization_uuid = {$this->current_org}
-				  AND a.record_type = 'A' AND u.record_type = 'A'
-			");
+			$q = sqlrun("EXEC page_org_users 'detail', 0, {$safe_uuid}");
 			fetch_datarow($q);
 			free_result($q);
 		}
@@ -225,11 +214,9 @@ HTML;
 HTML;
 		echo hidden_input('update_guid', $this->update_guid);
 		
-		// Formulářová část - plně integrovaná do jedné tabulky pro perfektní lícování sloupců
 		echo <<<HTML
 			<table style="width: 100%; border-collapse: collapse;">
 HTML;
-		// Šířka prvního sloupce je nyní definována bezpečně uvnitř prvního popisku formuláře
 		echo "<tr>" . td1_label('login_name', "style='padding: 6px 0; width: 150px;'") . td1_input('login_name') . "</tr>";
 		echo "<tr>" . td1_label('first_name') . td1_input('first_name') . "</tr>";
 		echo "<tr>" . td1_label('last_name') . td1_input('last_name') . "</tr>";
@@ -237,7 +224,6 @@ HTML;
 		echo "<tr><td colspan='2'><hr style='border:0;border-top:1px dashed #ccc;margin:15px 0;'></td></tr>";
 		echo "<tr>" . td1_label('is_orgadmin') . td1_input('is_orgadmin', '', 1) . "</tr>";
 
-		// Bezpečnostní blok zpracovaný pouhým obarvením a okrajem konkrétních řádků
 		if ($this->update_guid !== 'NEW') {
 			if ($is_me) {
 				echo "<tr style='background-color: #ffebee;'>
@@ -267,5 +253,8 @@ HTML;
 			</div>
 		</form>
 HTML;
+
+		// Vykreslení auditní stopy z dotažených sloupců
+		$this->render_audit_trail();
 	}
 }

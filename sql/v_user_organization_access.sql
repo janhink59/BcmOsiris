@@ -1,9 +1,11 @@
 EXECUTE dropni 'v_user_organization_access', 'V'
 GO
+
 /* =============================================================================
  * SOUBOR: v_user_organization_access.sql
  * Účel: Rozšířený pohled nad vazební tabulkou user_organization_access pro
- *       vyhodnocení oprávnění uživatele. Nyní vrací i user_access_uuid pro naplnění kontextu operací.
+ *       vyhodnocení oprávnění uživatele. Nyní vrací i user_access_uuid pro naplnění 
+ *       kontextu operací a last_orgadmin pro uchování paměti zvolené role.
  *
  * Vazby na okolí:
  * - Primárně voláno procedurou p_set_login pro rozhodnutí o cílové organizaci
@@ -19,6 +21,7 @@ SELECT	a.original AS user_access_uuid,
 	a.organization_uuid AS organization,
 	o.caption AS organization_name,
 	a.is_orgadmin,
+	a.last_orgadmin,
 	u.last_login_organization AS last_login_org,
 	s.organization AS current_organization,
 	a.date_created

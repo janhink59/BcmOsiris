@@ -3,9 +3,10 @@ IF OBJECT_ID('page_org_users') IS NOT NULL
 GO
 
 /* =============================================================================
- * Procedura: p_page_org_users
+ * Procedura: page_org_users
  * Účel: Načítá seznam uživatelů tenanta a detaily pro formulář v Master-Detail.
  * Architektura: Nezávislá na parametrech, kontext organizace čerpá z dbsession.
+ * Nyní vrací auditní sloupce přímo přeložené pomocí f_get_user_info.
  * ============================================================================= */
 CREATE PROCEDURE dbo.page_org_users
 	@subpage VARCHAR(50),
@@ -61,7 +62,11 @@ BEGIN
 			u.email,
 			ou.is_orgadmin,
 			ou.removed AS remove_access,
-			u.inactive AS deactivate_global
+			u.inactive AS deactivate_global,
+			u.date_created,
+			dbo.f_get_user_info(u.who_created) AS who_created_info,
+			u.date_modified,
+			dbo.f_get_user_info(u.who_modified) AS who_modified_info
 		FROM dbo.user_account u
 		INNER JOIN dbo.user_organization_access ou ON u.original = ou.user_account_uuid
 		WHERE u.original = @update_guid 

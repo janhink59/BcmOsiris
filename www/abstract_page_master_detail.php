@@ -3,8 +3,8 @@
  * =============================================================================
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupamelový layout.
- *       Nově implementuje AJAX refresh master panelu přes Fetch API a sjednocuje 
- *       styly tabulek a aktivních řádků pro všechny moduly tohoto typu.
+ *       Nyní obsahuje očištěnou metodu pro renderování auditní stopy bez
+ *       generování zbytečných dotazů na databázi.
  * =============================================================================
  */
 
@@ -12,28 +12,17 @@ declare(strict_types=1);
 
 abstract class abstract_page_master_detail extends abstract_page {
 
-	/**
-	 * Přepisujeme globální render(). 
-	 * Zajišťuje zachycení AJAX požadavku čistě pro obnovu master panelu bez 
-	 * nutnosti stahovat a vykreslovat celou HTML strukturu stránky.
-	 */
 	public function render(): void {
-		// Detekce AJAX požadavku (např. z naší JS funkce refreshMasterPanel)
 		if (isset($_GET['ajax_panel']) && $_GET['ajax_panel'] === 'master') {
 			$this->render_master();
 			exit;
 		}
-		
-		// Běžný běh: vykreslení celé stránky (HTML obálka z abstract_page)
 		parent::render();
 	}
 
 	final protected function render_body(): void {
 		echo <<<HTML
 		<style>
-			/* ---------------------------------------------------
-			   Základní layout Master-Detail
-			--------------------------------------------------- */
 			.page-panel { 
 				max-width: 95% !important; 
 				padding: 0 !important; 
@@ -49,7 +38,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 				background-color: #fafafa; 
 				padding: 20px; 
 				overflow-y: auto; 
-				position: relative; /* Důležité pro offset výpočty při scrollování */
+				position: relative; 
 			}
 			.md-detail { 
 				flex: 1; 
@@ -63,11 +52,6 @@ abstract class abstract_page_master_detail extends abstract_page {
 				border-bottom: 2px solid #eee;
 				padding-bottom: 10px;
 			}
-
-			/* ---------------------------------------------------
-			   Sjednocené styly pro UI prvky v Master panelu
-			   (Odstraňuje nutnost inline stylů v potomcích)
-			--------------------------------------------------- */
 			.md-table {
 				width: 100%;
 				border-collapse: collapse;
@@ -90,8 +74,6 @@ abstract class abstract_page_master_detail extends abstract_page {
 			.md-table tr:hover {
 				background-color: #f1f1f1;
 			}
-			
-			/* Stavy řádků (aktivní výběr a deaktivovaný/smazaný záznam) */
 			.md-row-active {
 				background-color: #e6f7ff !important;
 				color: #333 !important;
@@ -102,10 +84,8 @@ abstract class abstract_page_master_detail extends abstract_page {
 			}
 		</style>
 
-		<!-- Obalíme master obsah do kontejneru s jednoznačným ID pro Fetch API injekce -->
 		<div class="md-master" id="md-master-container">
 HTML;
-		// Synchronní úvodní načtení
 		$this->render_master();
 
 		echo <<<HTML
@@ -118,10 +98,6 @@ HTML;
 		</div>
 		
 		<script>
-			/**
-			 * Abstrahovaná logika vycentrování rolování na aktivní prvek.
-			 * Lze volat po načtení stránky i po asynchronním AJAX refreshi.
-			 */
 			function scrollToActiveRow() {
 				const activeRow = document.getElementById("active-row");
 				const masterPanel = document.getElementById("md-master-container");
@@ -129,19 +105,11 @@ HTML;
 				if (activeRow && masterPanel) {
 					const panelRect = masterPanel.getBoundingClientRect();
 					const rowRect = activeRow.getBoundingClientRect();
-					
-					// Fyzický posun řádku vůči viditelnému okraji panelu
 					const offset = rowRect.top - panelRect.top;
-					
-					// Nastavení vnitřního rolování (vycentruje prvek)
 					masterPanel.scrollTop += offset - (panelRect.height / 2) + (rowRect.height / 2);
 				}
 			}
 
-			/**
-			 * Asynchronně obnoví obsah levého (Master) panelu bez přenačtení stránky.
-			 * Využívá Fetch API. Doplňuje URL parametr ajax_panel=master pro backend router.
-			 */
 			function refreshMasterPanel() {
 				const url = new URL(window.location.href);
 				url.searchParams.set('ajax_panel', 'master');
@@ -158,9 +126,7 @@ HTML;
 				.then(html => {
 					const masterPanel = document.getElementById("md-master-container");
 					if (masterPanel) {
-						// Nahrazení starého DOM za aktuální data
 						masterPanel.innerHTML = html;
-						// Centrování pohledu na potenciálně nově vložený/změněný řádek
 						scrollToActiveRow();
 					}
 				})
@@ -169,12 +135,47 @@ HTML;
 				});
 			}
 
-			// Provedeme vycentrování při prvním synchronním načtení dokumentu
 			document.addEventListener("DOMContentLoaded", function() {
 				setTimeout(scrollToActiveRow, 50);
 			});
 		</script>
 HTML;
+	}
+
+	/**
+	 * Vykreslí auditní stopu záznamu. Spoléhá na to, že SQL procedura dodá
+	 * předformátované hodnoty ve sloupcích who_created_info a who_modified_info.
+	 */
+	protected function render_audit_trail(): void {
+		global $datarow;
+		
+		if (empty($datarow) || (empty($datarow['date_created']) && empty($datarow['date_modified']))) {
+			return;
+		}
+
+		$html = '';
+		
+		if (!empty($datarow['date_created'])) {
+			$dt_val = $datarow['date_created'];
+			$date_c = ($dt_val instanceof DateTime) ? $dt_val->format('d.m.Y H:i') : date('d.m.Y H:i', strtotime((string)$dt_val));
+			
+			$who_c_name = !empty($datarow['who_created_info']) ? $datarow['who_created_info'] : 'Neznámý uživatel';
+			
+			$html .= "<div>Vytvořil {$date_c} " . htmlspecialchars((string)$who_c_name) . "</div>";
+		}
+
+		if (!empty($datarow['date_modified'])) {
+			$dt_val = $datarow['date_modified'];
+			$date_m = ($dt_val instanceof DateTime) ? $dt_val->format('d.m.Y H:i') : date('d.m.Y H:i', strtotime((string)$dt_val));
+			
+			$who_m_name = !empty($datarow['who_modified_info']) ? $datarow['who_modified_info'] : 'Neznámý uživatel';
+			
+			$html .= "<div>Změnil &nbsp;&nbsp;{$date_m} " . htmlspecialchars((string)$who_m_name) . "</div>";
+		}
+
+		if ($html !== '') {
+			echo "<div style=\"margin-top: 30px; font-size: 11px; color: #94a3b8; line-height: 1.6; font-family: monospace;\">{$html}</div>";
+		}
 	}
 
 	abstract protected function render_master(): void;
