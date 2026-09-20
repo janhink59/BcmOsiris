@@ -2,5 +2,9 @@ F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
 
 system_constant.sql
 table_*.sql
+f_*.sql
+generate_*.sql
 v_*.sql
 p_*.sql
+page_*.sql
+form_*.sql
