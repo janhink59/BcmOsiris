@@ -6,11 +6,12 @@ GO
  * Účel: Založení uživatelské relace a inicializace kontextu (tenant, práva).
  *
  * Vazby:
- * - Voláno primárně při úspěšné autentizaci, nebo pro změnu kontextu z UI.
- * - Čte dostupná oprávnění z v_user_organization_access.
- * - Zapisuje aktivní relaci do wwwsession (a následně přes p_init_wwwsession do dbsession).
- * - Aktualizuje last_login_date a last_login_organization v user_account.
- * - Nyní umožňuje přes @requested_admin přepínat efektivní roli Admin/User.
+ * - Voláno primárně při úspěšné autentizaci (např. z page_login nebo page_google_callback), 
+ *   nebo pro explicitní změnu kontextu z UI (page_change_user_context).
+ * - Čte dostupná oprávnění z pohledu v_user_organization_access.
+ * - Zapisuje aktivní relaci do tabulky wwwsession (a následně přes p_init_wwwsession do dbsession).
+ * - Aktualizuje last_login_date a last_login_organization v tabulce user_account.
+ * - Umožňuje přes parametr @requested_admin explicitně přepínat efektivní roli Admin/User.
  * ============================================================================= */
 CREATE PROCEDURE p_set_login
 	@user_uuid uniqueidentifier,
@@ -82,8 +83,13 @@ BEGIN
 		END
 
 		-- Vyhodnocení, zda má uživatel na výběr z více možností kontextu
+		-- OPRAVA: Kontext lze měnit, pokud je uživatel členem více organizací, 
+		-- NEBO pokud má alespoň v jedné roli administrátora.
 		IF (SELECT COUNT(1) FROM v_user_organization_access WHERE user_account_uuid = @user_uuid) > 1
+			OR EXISTS (SELECT 1 FROM v_user_organization_access WHERE user_account_uuid = @user_uuid AND is_orgadmin = 1)
+		BEGIN
 			SET @change_context_allowed = 1;
+		END
 
 		UPDATE	user_account 
 		SET	failed_login_attempts = 0, 

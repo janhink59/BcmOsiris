@@ -620,13 +620,12 @@ function to_string($val){
 	if(is_array($val) or is_object($val)){
 		ob_start();
 		print_r($val);
-		$s=ob_get_contents();
-		ob_clean();
-		return $s;
+		return ob_get_clean();
 	}
 	else
 		return $val;
 }
+
 // CHARLITERAL: Převede znaky na literál v apostrofech
 
 function charliteral($c,$len=0){
@@ -1621,28 +1620,27 @@ function dbMultiselect($array,$name,$readonly=false){
 	return "$cbxs$options";
 }
 
+// DEBUGITEM: Funkce uloží do globálního pole debugitems položku pro pozdější výpis
+// Parametr $utf8 určuje, zda je text v	UTF-8, i když aktuální charset může být 8-bitový.
+
 function debugitem($label,$text='',$utf8=false){
-	global $debugitems, $debugmode;
+	global $debugitems, $debugmode, $charset;
 	if(!$debugmode) return;
-	//print "<br>MAIN DEBUG $label: "; print_r($text);
-	//print "<br>MAIN DEBUG $label: is_resource=".is_resource($text);
-	//print "<br>MAIN DEBUG $label: is_array=".is_array($text);
+	
 	if(!is_array($debugitems)) $debugitems=array();
-	if(is_array($text)) foreach($text as $i=>$item) if(is_string($item)) $text[$i]=htmlspec($item);
-	$typ='';
+	
 	$p=new stdClass();
 	$p->label=$label;
-	//print "<br>MAIN DEBUG $label: resource 2=".is_resource($text);
 	$p->text=$text;
-	$p->utf8=$utf8;
+	$p->utf8=$utf8 || ($charset=='UTF-8');
 	$p->isres=false;
+	
 	if(is_resource($p->text)){
-		$p->isres=true; // Oprava chyby PHP, kdy se ztrácí vlastnost resource
-		$p->text="$p->text";
-	//print "<br>MAIN DEBUG $label: p-text resource=".is_resource($p->text);
+		$p->isres=true;
+		$p->text=(string)$p->text;
 	}
+	
 	array_push($debugitems,$p);
-	rtn: return;
 }
 
 function debugget(){
@@ -1697,48 +1695,41 @@ function addArrayKeysInfo(&$a,$nk,$recursion){
 }
 
 function debugprint($noprint=false){
-	global $debugitems,$debugmode,$debugContent;
-	if(is_array($debugitems) and (count($debugitems)>0) && $debugmode){
-		$debugContent = '
-<DIV><H1>DEBUG:</H1>';
-		foreach($debugitems as $index=>$item){
-			$val=$item->text;
-			if($val===null) $val='--NULL--';
-			if($val===false) $val='--FALSE--';
-			if($val===true) $val='--TRUE--';
-			if(is_resource($val)) $val="$val";
-			$debugContent .= "<br /><span style=\"color:blue;font-weight=bold\">$item->label: </span>";
-			if(is_array($val) or is_object($val)){
-				$recursion=array();
-				addArrayKeysInfo($val,$item->label,$recursion);
-				ob_start();
-				var_export($val);
-				$val=nl2br(ob_get_contents());
-				if($item->utf8) $val=from_utf8($val);
-				$s=str_replace('<br />','<br/>',$val);
-				$s=str_replace('  ','&nbsp;',$s);
-				$s=str_replace("\r\n",'<br/>',$s);
-				ob_clean();
-				$debugContent .= $s;
-			} else{
-				//print "BACHA $val !";
-				if($item->isres){
-					$debugContent .= "$val";
+	global $debugitems, $debugmode, $debugContent, $charset;
+	
+	if(is_array($debugitems) && count($debugitems) > 0 && $debugmode){
+		$debugContent = "\n<DIV><H1>DEBUG:</H1>";
+		foreach($debugitems as $item){
+			$val = $item->text;
+			
+			if($val === null) $val = '--NULL--';
+			elseif($val === false) $val = '--FALSE--';
+			elseif($val === true) $val = '--TRUE--';
+			
+			$debugContent .= "<br /><span style=\"color:blue;font-weight:bold;\">" . htmlspecialchars($item->label) . ": </span>";
+			
+			if(is_array($val) || is_object($val)){
+				$recursion = array();
+				addArrayKeysInfo($val, $item->label, $recursion);
+				
+				$str_val = to_string($val);                                      // Zde bezpecne ziskame string pres nasi novou funkci
+				
+				if($item->utf8 and $charset!='UTF-8') $str_val = from_utf8($str_val);
+				
+				$debugContent .= "<pre style=\"display:inline;margin:0;\">" . htmlspecialchars($str_val) . "</pre>";
+			} else {
+				if($item->isres || is_resource($val) || strpos(gettype($val), 'resource') !== false){
+					$debugContent .= (string)$val;                               // Spojeni a resources se vypisou naprimo
 				} else {
-					if(is_resource($val) or empty($val) or strpos(gettype($val),'resource')!==false){
-						$debugContent .= "$val";
-					}else{
-						//$val="$val";
-						//$debugContent .= nl2br(HTMLSpecialChars(($item->utf8?from_utf8($val):$val)));
-						$debugContent .= nl2br(HTMLSpecialChars($val));
-					}
+					$debugContent .= nl2br(htmlspecialchars((string)$val));      // Obycejne texty zustanou bez apostrofu
 				}
 			}
-		};
+		}
 		$debugContent .= '</DIV>';
-	};
+	}
+	
 	if(!$noprint) print $debugContent;
-	return $debugContent;
+	return $debugContent ?? '';
 }
 
 function debugerror($context){
