@@ -20,13 +20,16 @@
 3. Architektura RAC a SSC (Record & Access Control + Schvalovací cyklus)
 * Záznamy jsou logicky identifikovány pomocí sloupce original (uuid). Primárním klíčem řádku je uuid.
 * Vlastníkem (tenantem) je object_owner. Systémové záznamy mají object_owner = 0x00. Objekty vlastněné systémem nelze běžně smazat, k jejich deaktivaci slouží příznak inactive.
-* Deterministický originál: Vazební tabulky (např. user_organization_access) používají deterministický hash pro sloupec original, aby se zabránilo duplicitám logických vazeb. Generuje se automaticky po insertu pomocí triggerů (prefix trgo_), které jsou dynamicky skládány z definic v tabulce meta_original_keys a využívají funkci f_generate_original. U aktivních primárních záznamů platí striktně pravidlo uuid = original. Záznamy přepsané tenantem dědí original ze své předlohy (systém či template).
+* Deterministický originál: Vazební tabulky a další objekty používají deterministický hash pro sloupec original, aby se zabránilo duplicitám logických vazeb. Generuje se automaticky po insertu pomocí triggerů (prefix trgo_), které jsou dynamicky skládány z definic ve sloupci generic_column_list v tabulce meta_object a využívají funkci f_generate_original. U aktivních primárních záznamů platí striktně pravidlo uuid = original. Záznamy přepsané tenantem dědí original ze své předlohy (systém či template).
 * Klientský override (Views): Generovaná view (vrepo_{tabname}) automaticky skládají prioritu dat (tenant override > system). Poskytují sloupce:
   - {colname}: finální zresolvovaná hodnota.
   - {colname}_system: vždy původní systémová hodnota 'A' záznamu (dostupné pro VŠECHNY byznysové sloupce pro možnost zjištění odchylky v UI).
   - {colname}_translated: systémový překlad pro aktuální jazyk 'L' (pouze pro překladatelné texty).
   - {colname}_original: 'A' záznam organizace, nebo systémový 'A' záznam (pouze pro překladatelné texty).
   - object_is_mine: příznak (1/0), zda tenant záznam přepsal.
+* Ochrana systémových objektů a metadat: Tabulky (např. meta_object, meta_column) využívají sloupce is_final a is_protected k řízení limitů klientského overridu:
+  - is_final (bit): 1 = Zcela zakazuje organizacím (tenantům) vytvořit si vlastní přepis záznamu (typ 'A'). Povoluje pouze úpravu jazykových překladů (typ 'L').
+  - is_protected (bit): 1 = Povoluje organizaci vytvořit vlastní přepis záznamu (typ 'A'), ale aplikační vrstva (PHP) musí omezit editaci výhradně na vizuální/prezentační vlastnosti (např. caption, helptext, placeholder, sort_code). Technická logika záznamu (např. column_name, input_type, is_computed) zůstává uzamčena (readonly).
 * Typy záznamů (record_type): 'A' = aktuálně schválený, 'L' = platná jazyková verze, 'H' = historický záznam (výhradně pro audit).
 * Koncepty v SSC (vlastněné uživatelem): 'I' (Insert), 'U' (Update), 'D' (Delete), 'G' (úprava jazykové verze).
 * Stavy schvalování (approval_status): Povolené hodnoty řídící SSC jsou 'D', 'W', 'S', 'A', 'R', 'C', 'I'.

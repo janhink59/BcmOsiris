@@ -1,0 +1,2 @@
+execute p_fix_meta_column
+GO

@@ -8,3 +8,5 @@ v_*.sql
 p_*.sql
 page_*.sql
 form_*.sql
+drop_abandoned_objects.sql
+final_scripts.sql
