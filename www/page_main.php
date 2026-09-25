@@ -1,8 +1,10 @@
 <?php
 /**
  * =============================================================================
+ * Verze: 2026-09-25 16:51
  * Stránka: page_main.php
  * Účel: Hlavní rozcestník. Kód je maximálně zredukován na byznys logiku tlačítek.
+ * OPRAVA: Přidán odkaz na správu metadat objektů pro systémové administrátory.
  * =============================================================================
  */
 
@@ -30,7 +32,8 @@ class page_main extends abstract_page {
 			$sysadminActions = <<<HTML
 				<div style="margin-top: 20px; padding-top: 15px;">
 					<h3 style="margin-top: 0; font-size: 16px;">Systémová administrace</h3>
-					<a href="index.php?page=organization_licence" class="btn">Správa licencí organizací</a>
+					<a href="index.php?page=organization_licence" class="btn" style="margin-right: 10px;">Správa licencí organizací</a>
+					<a href="index.php?page=meta_object" class="btn">Správa metadat objektů a sloupců</a>
 				</div>
 HTML;
 		}

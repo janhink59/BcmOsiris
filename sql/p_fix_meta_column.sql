@@ -3,13 +3,15 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
+ * Verze: 2026-09-25 17:15
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       1. Vypočítá nejčastější hodnoty metadat (módus) z DB včetně chytré šířky.
  *       2. Založí a naplní globální slovník sloupců (typ 'C').
  *       3. Synchronizuje fyzické objekty (T, V, F).
  *       4. Synchronizuje fyzické sloupce a zanese odchylky od globálu.
  * Poznámka: Pracuje striktně se systémovými záznamy (object_owner = 0x00).
- * OPRAVA: Přidáno is_ms_shipped = 0 a SCHEMA_ID('dbo') pro prevenci duplicit PK.
+ * OPRAVA: Využití nativního výpočtu f_generate_original pro prevenci duplicit.
+ *         Odstranění @ parametrů a omezení na dbo aplikační objekty.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -17,8 +19,31 @@ BEGIN
 	SET NOCOUNT ON;
 	SET XACT_ABORT ON;
 
-	-- Explicitní přetypování pro f_generate_original, aby T-SQL hash přesně odpovídal triggeru
+	-- Explicitní definice vlastníka pro zajištění stejného datového typu jako má T-SQL hash
 	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+
+	-- -------------------------------------------------------------------------
+	-- CLEANUP: Odstranění vadných dat z předchozích běhů
+	-- -------------------------------------------------------------------------
+	
+	-- 1. Odstranění parametrů funkcí (začínajících zavináčem)
+	DELETE FROM meta_column WHERE column_name LIKE '@%';
+	
+	-- 2. Odstranění duplicit objektů (ponecháme vždy ten nejstarší platný)
+	WITH cte AS (
+		SELECT uuid, ROW_NUMBER() OVER(PARTITION BY builtin_code, object_type, object_owner, record_type ORDER BY date_created ASC) as rn
+		FROM meta_object
+		WHERE object_owner = 0x00 AND record_type = 'A'
+	)
+	DELETE FROM meta_object WHERE uuid IN (SELECT uuid FROM cte WHERE rn > 1);
+
+	-- 3. Odstranění duplicit sloupců
+	WITH cte AS (
+		SELECT uuid, ROW_NUMBER() OVER(PARTITION BY parent_object, column_name, object_owner, record_type ORDER BY date_created ASC) as rn
+		FROM meta_column
+		WHERE object_owner = 0x00 AND record_type = 'A'
+	)
+	DELETE FROM meta_column WHERE uuid IN (SELECT uuid FROM cte WHERE rn > 1);
 
 	-- -------------------------------------------------------------------------
 	-- 0. VÝPOČET NEJČASTĚJŠÍCH VLASTNOSTÍ (MÓDUS) PRO GLOBÁLNÍ SLOVNÍK
@@ -49,23 +74,16 @@ BEGIN
 				ELSE '100%'
 			END AS calc_input_width
 		FROM v_syscolumns
+		WHERE colname NOT LIKE '@%'
 	),
 	ranked_attributes AS (
 		SELECT 
-			colname,
-			calc_input_type,
-			calc_max_length,
-			calc_is_computed,
-			calc_input_width,
-			ROW_NUMBER() OVER(
-				PARTITION BY colname 
-				ORDER BY COUNT(*) DESC
-			) AS rn
+			colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width,
+			ROW_NUMBER() OVER(PARTITION BY colname ORDER BY COUNT(*) DESC) AS rn
 		FROM column_attributes
 		GROUP BY colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
 	)
-	SELECT 
-		colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
+	SELECT colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
 	INTO #global_attr
 	FROM ranked_attributes 
 	WHERE rn = 1;
@@ -74,10 +92,10 @@ BEGIN
 	-- 1. PŘÍPRAVA GLOBÁLNÍHO SLOVNÍKU (Typ C)
 	-- -------------------------------------------------------------------------
 	
-	-- ELEGANTNÍ VÝPOČET: Konstantní UUID slovníku známe předem, nepotřebujeme NEWID()
+	-- ELEGANTNÍ VÝPOČET: Konstantní UUID slovníku známe z kombinace key1='C' a key2='sys_global_columns'
 	DECLARE @c_object uniqueidentifier = dbo.f_generate_original('meta_object', @sys_owner, 'C', 'sys_global_columns');
 
-	IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @c_object AND object_type = 'C' AND record_type = 'A' AND object_owner = 0x00)
+	IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @c_object AND object_owner = 0x00 AND record_type = 'A')
 	BEGIN
 		INSERT INTO meta_object (
 			uuid, object_owner, original, record_type, approval_status,
@@ -90,7 +108,7 @@ BEGIN
 		);
 	END
 
-	-- Plnění unikátních názvů sloupců do globálního slovníku (plné default hodnoty a módusy)
+	-- Plnění unikátních názvů sloupců do globálního slovníku
 	INSERT INTO meta_column (
 		uuid, object_owner, original, record_type, approval_status,
 		parent_object, parent_order, sort_code, column_name, 
@@ -101,7 +119,7 @@ BEGIN
 		is_final, is_protected, ancestor
 	)
 	SELECT 
-		x.new_uuid, 0x00, x.new_uuid, 'A', 'A',
+		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',                                -- uuid se plní vypočítaným hashem, trigger to potvrdí
 		@c_object, 
 		ROW_NUMBER() OVER(ORDER BY ga.colname), 
 		'C' + RIGHT('000' + CAST(ROW_NUMBER() OVER(ORDER BY ga.colname) * 10 AS varchar), 3),
@@ -112,11 +130,10 @@ BEGIN
 		0, 0, 0, 0, 0, ga.calc_is_computed, 1, 0, 1,
 		1, 0, NULL
 	FROM #global_attr ga
-	CROSS APPLY (SELECT NEWID() AS new_uuid) x
+	CROSS APPLY (SELECT dbo.f_generate_original('meta_column', @sys_owner, CAST(@c_object AS varchar(36)), ga.colname) AS orig_uuid) x
 	WHERE NOT EXISTS (
 		SELECT 1 FROM meta_column mc 
-		WHERE mc.parent_object = @c_object 
-		  AND mc.column_name = ga.colname COLLATE DATABASE_DEFAULT 
+		WHERE mc.original = x.orig_uuid 
 		  AND mc.record_type = 'A'
 		  AND mc.object_owner = 0x00
 	);
@@ -130,22 +147,20 @@ BEGIN
 		module, is_final, is_protected
 	)
 	SELECT 
-		dbo.f_generate_original('meta_object', @sys_owner, CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END, o.name),
-		0x00, 
-		dbo.f_generate_original('meta_object', @sys_owner, CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END, o.name),
-		'A', 'A',
-		CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END, 
+		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
+		x.obj_type, 
 		o.name, o.name, o.name, 'Popis pro ' + o.name, 
 		CASE WHEN o.type = 'U' THEN 'Nápověda pro tabulku ' + o.name WHEN o.type = 'V' THEN 'Nápověda pro view ' + o.name ELSE 'Nápověda pro ' + o.name END,
 		'', 1, 0
 	FROM sys.objects o
+	CROSS APPLY (SELECT CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END AS obj_type) ot
+	CROSS APPLY (SELECT dbo.f_generate_original('meta_object', @sys_owner, ot.obj_type, o.name) AS orig_uuid) x
 	WHERE o.type IN ('U', 'V', 'FN', 'IF', 'TF')
 	  AND o.is_ms_shipped = 0
 	  AND o.schema_id = SCHEMA_ID('dbo')
 	  AND NOT EXISTS (
 		SELECT 1 FROM meta_object mo
-		WHERE mo.builtin_code = o.name COLLATE DATABASE_DEFAULT 
-		  AND mo.object_type = CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END
+		WHERE mo.original = x.orig_uuid
 		  AND mo.record_type = 'A'
 		  AND mo.object_owner = 0x00
 	  );
@@ -163,7 +178,7 @@ BEGIN
 		is_final, is_protected, ancestor
 	)
 	SELECT 
-		x.new_uuid, 0x00, x.new_uuid, 'A', 'A',
+		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
 		mo.original, c.colid, c.colname,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL,
 		
@@ -212,11 +227,11 @@ BEGIN
 		AND gc.object_owner = 0x00
 	JOIN #global_attr ga
 		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
-	CROSS APPLY (SELECT NEWID() AS new_uuid) x
-	WHERE NOT EXISTS (
+	CROSS APPLY (SELECT dbo.f_generate_original('meta_column', @sys_owner, CAST(mo.original AS varchar(36)), c.colname) AS orig_uuid) x
+	WHERE c.colname NOT LIKE '@%'
+	  AND NOT EXISTS (
 		SELECT 1 FROM meta_column mc 
-		WHERE mc.parent_object = mo.original 
-		  AND mc.column_name = c.colname COLLATE DATABASE_DEFAULT 
+		WHERE mc.original = x.orig_uuid
 		  AND mc.record_type = 'A'
 		  AND mc.object_owner = 0x00
 	);
@@ -277,7 +292,8 @@ BEGIN
 		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
 	WHERE mc.record_type = 'A' 
 	  AND mc.object_owner = 0x00 
-	  AND mc.ancestor IS NULL;
+	  AND mc.ancestor IS NULL
+	  AND mc.column_name NOT LIKE '@%';
 
 END
 GO
