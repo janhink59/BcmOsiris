@@ -1,13 +1,14 @@
-execute dropni 'p_fix_meta_column', 'P'
+EXECUTE dropni 'p_fix_meta_column', 'P'
 GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Účel: Automatická synchronizace fyzické struktury databáze do metadatových 
- *       tabulek meta_object a meta_column. 
- *       Krok 1: Mapování objektů (T, V, F).
- *       Krok 2: Mapování sloupců.
- *       Krok 3: Pokročilá detekce předků u Views přes závislosti.
+ * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
+ *       1. Vypočítá nejčastější hodnoty metadat (módus) z DB včetně chytré šířky.
+ *       2. Založí a naplní globální slovník sloupců (typ 'C').
+ *       3. Synchronizuje fyzické objekty (T, V, F).
+ *       4. Synchronizuje fyzické sloupce a zanese odchylky od globálu.
+ * Poznámka: Pracuje striktně se systémovými záznamy (object_owner = 0x00).
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -16,122 +17,272 @@ BEGIN
 	SET XACT_ABORT ON;
 
 	-- -------------------------------------------------------------------------
-	-- 1. SYNCHRONIZACE OBJEKTŮ DO meta_object
+	-- 0. VÝPOČET NEJČASTĚJŠÍCH VLASTNOSTÍ (MÓDUS) PRO GLOBÁLNÍ SLOVNÍK
 	-- -------------------------------------------------------------------------
-	INSERT INTO meta_object (
-		uuid, object_owner, original, record_type, approval_status,
-		object_type, builtin_code, caption, caption_plural, helptext,
-		module, generic_column_list, is_final, is_protected
+	IF OBJECT_ID('tempdb..#global_attr') IS NOT NULL DROP TABLE #global_attr;
+	
+	WITH column_attributes AS (
+		SELECT 
+			colname,
+			CASE 
+				WHEN typename IN ('bit') THEN 'checkbox'
+				WHEN typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN 'date'
+				WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN 'number'
+				WHEN typename IN ('varchar', 'nvarchar', 'text', 'ntext') AND prec = -1 THEN 'textarea'
+				ELSE 'text'
+			END AS calc_input_type,
+			CASE 
+				WHEN typename IN ('varchar', 'nvarchar', 'char', 'nchar') AND prec > 0 THEN prec
+				ELSE 0 
+			END AS calc_max_length,
+			ISNULL(iscomputed, 0) AS calc_is_computed,
+			CASE 
+				WHEN typename = 'bit' THEN 'auto'
+				WHEN typename = 'date' THEN '120px'
+				WHEN typename = 'smalldatetime' THEN '150px'
+				WHEN typename IN ('datetime', 'datetime2') THEN '180px'
+				WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '100px'
+				ELSE '100%'
+			END AS calc_input_width
+		FROM v_syscolumns
+	),
+	ranked_attributes AS (
+		SELECT 
+			colname,
+			calc_input_type,
+			calc_max_length,
+			calc_is_computed,
+			calc_input_width,
+			ROW_NUMBER() OVER(
+				PARTITION BY colname 
+				ORDER BY COUNT(*) DESC
+			) AS rn
+		FROM column_attributes
+		GROUP BY colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
 	)
 	SELECT 
-		NEWID(), 0x00, NEWID(), 'A', 'A',
-		CASE 
-			WHEN o.type = 'U' THEN 'T'
-			WHEN o.type = 'V' THEN 'V'
-			WHEN o.type IN ('FN', 'IF', 'TF') THEN 'F'
-		END, 
-		o.name, o.name, o.name, 'Vygenerováno automaticky', 
-		'', 
-		CASE 
-			WHEN o.name = 'meta_object' THEN 'object_type,builtin_code'
-			WHEN o.name = 'meta_column' THEN 'parent_object,column_name'
-			ELSE 'uuid'
-		END,
-		1, 0
-	FROM sys.objects o
-	WHERE o.type IN ('U', 'V', 'FN', 'IF', 'TF')
-	  AND o.name COLLATE DATABASE_DEFAULT NOT IN (
-	  	SELECT builtin_code FROM meta_object WHERE object_type IN ('T', 'V', 'F') AND record_type = 'A'
-	  );
-
-	UPDATE meta_object SET original = uuid WHERE original <> uuid AND record_type = 'A';
-
-	UPDATE meta_object SET generic_column_list = 'object_type,builtin_code'
-	WHERE builtin_code = 'meta_object' AND object_type = 'T' AND generic_column_list <> 'object_type,builtin_code';
-
-	UPDATE meta_object SET generic_column_list = 'parent_object,column_name'
-	WHERE builtin_code = 'meta_column' AND object_type = 'T' AND generic_column_list <> 'parent_object,column_name';
+		colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
+	INTO #global_attr
+	FROM ranked_attributes 
+	WHERE rn = 1;
 
 	-- -------------------------------------------------------------------------
-	-- 2. SYNCHRONIZACE SLOUPCŮ DO meta_column
+	-- 1. PŘÍPRAVA GLOBÁLNÍHO SLOVNÍKU (Typ C)
 	-- -------------------------------------------------------------------------
+	DECLARE @c_object uniqueidentifier;
+
+	IF NOT EXISTS (SELECT 1 FROM meta_object WHERE builtin_code = 'sys_global_columns' AND object_type = 'C' AND record_type = 'A' AND object_owner = 0x00)
+	BEGIN
+		DECLARE @new_c_uuid uniqueidentifier = NEWID();
+		INSERT INTO meta_object (
+			uuid, object_owner, original, record_type, approval_status,
+			object_type, builtin_code, caption, caption_plural, description, helptext,
+			module, is_final, is_protected
+		) VALUES (
+			@new_c_uuid, 0x00, @new_c_uuid, 'A', 'A',
+			'C', 'sys_global_columns', 'Globální definice sloupců', 'Globální definice sloupců', 'Systémový slovník pro výchozí vlastnosti databázových sloupců', 'Kontejner',
+			'', 1, 1
+		);
+		SET @c_object = @new_c_uuid;
+	END
+	ELSE
+	BEGIN
+		SELECT @c_object = original FROM meta_object WHERE builtin_code = 'sys_global_columns' AND object_type = 'C' AND record_type = 'A' AND object_owner = 0x00;
+	END
+
+	-- Plnění unikátních názvů sloupců do globálního slovníku (plné default hodnoty a módusy)
 	INSERT INTO meta_column (
 		uuid, object_owner, original, record_type, approval_status,
 		parent_object, parent_order, sort_code, column_name, 
-		caption, caption_plural, label, header, helptext, placeholder,
-		input_type, input_width, input_rows, input_cols,
+		caption, caption_plural, description, label, header, helptext, placeholder,
+		input_type, input_width, input_rows, max_length, css_class,
 		translate, history, is_html, is_mandatory, is_url, is_computed, 
 		show_empty, hidden, customizable,
 		is_final, is_protected, ancestor
 	)
 	SELECT 
-		NEWID(), 0x00, NEWID(), 'A', 'A',
-		mo.original, 
-		c.colid, 
-		'C' + RIGHT('000' + CAST(c.colid * 10 AS varchar), 3),
-		c.colname,
-		c.colname, c.colname, c.colname, c.colname, 
-		'Nápověda pro ' + c.colname, 'Zadejte ' + c.colname,
-		CASE 
-			WHEN c.typename IN ('bit') THEN 'checkbox'
-			WHEN c.typename IN ('date', 'datetime', 'datetime2') THEN 'date'
-			WHEN c.typename IN ('int', 'smallint', 'tinyint', 'decimal', 'numeric') THEN 'number'
-			WHEN c.typename IN ('varchar', 'nvarchar') AND c.prec = -1 THEN 'textarea'
-			ELSE 'text'
-		END,
-		'100%', 0, 0,
-		0, 0, 0, 
-		CASE WHEN c.nulls = 'not null' THEN 1 ELSE 0 END,
-		0, ISNULL(c.iscomputed, 0), 1, 0, 1,
+		x.new_uuid, 0x00, x.new_uuid, 'A', 'A',
+		@c_object, 
+		ROW_NUMBER() OVER(ORDER BY ga.colname), 
+		'C' + RIGHT('000' + CAST(ROW_NUMBER() OVER(ORDER BY ga.colname) * 10 AS varchar), 3),
+		ga.colname,
+		ga.colname, ga.colname, 'Globální definice pro ' + ga.colname, ga.colname, ga.colname, 
+		'Nápověda pro ' + ga.colname, 'Zadejte ' + ga.colname,
+		ga.calc_input_type, ga.calc_input_width, 0, ga.calc_max_length, '',
+		0, 0, 0, 0, 0, ga.calc_is_computed, 1, 0, 1,
 		1, 0, NULL
+	FROM #global_attr ga
+	CROSS APPLY (SELECT NEWID() AS new_uuid) x
+	WHERE NOT EXISTS (
+		SELECT 1 FROM meta_column mc 
+		WHERE mc.parent_object = @c_object 
+		  AND mc.column_name = ga.colname COLLATE DATABASE_DEFAULT 
+		  AND mc.record_type = 'A'
+		  AND mc.object_owner = 0x00
+	);
+
+	-- -------------------------------------------------------------------------
+	-- 2. SYNCHRONIZACE OBJEKTŮ (T, V, F)
+	-- -------------------------------------------------------------------------
+	INSERT INTO meta_object (
+		uuid, object_owner, original, record_type, approval_status,
+		object_type, builtin_code, caption, caption_plural, description, helptext,
+		module, is_final, is_protected
+	)
+	SELECT 
+		x.new_uuid, 0x00, x.new_uuid, 'A', 'A',
+		CASE 
+			WHEN o.type = 'U' THEN 'T'
+			WHEN o.type = 'V' THEN 'V'
+			WHEN o.type IN ('FN', 'IF', 'TF') THEN 'F'
+		END, 
+		o.name, o.name, o.name, 'Popis pro ' + o.name, 
+		CASE 
+			WHEN o.type = 'U' THEN 'Nápověda pro tabulku ' + o.name
+			WHEN o.type = 'V' THEN 'Nápověda pro view ' + o.name
+			WHEN o.type IN ('FN', 'IF', 'TF') THEN 'Nápověda pro funkci ' + o.name
+			ELSE 'Nápověda pro ' + o.name
+		END,
+		'', 1, 0
+	FROM sys.objects o
+	CROSS APPLY (SELECT NEWID() AS new_uuid) x
+	WHERE o.type IN ('U', 'V', 'FN', 'IF', 'TF')
+	  AND NOT EXISTS (
+		SELECT 1 FROM meta_object mo
+		WHERE mo.builtin_code = o.name COLLATE DATABASE_DEFAULT 
+		  AND mo.object_type IN ('T', 'V', 'F') 
+		  AND mo.record_type = 'A'
+		  AND mo.object_owner = 0x00
+	  );
+
+	-- -------------------------------------------------------------------------
+	-- 3. SYNCHRONIZACE LOKÁLNÍCH SLOUPCŮ (Uložení NULL tam, kde je shoda s C)
+	-- -------------------------------------------------------------------------
+	INSERT INTO meta_column (
+		uuid, object_owner, original, record_type, approval_status,
+		parent_object, parent_order, column_name, 
+		caption, caption_plural, description, label, header, helptext, placeholder,
+		input_type, input_width, input_rows, max_length, css_class,
+		translate, history, is_html, is_mandatory, is_url, is_computed, 
+		show_empty, hidden, customizable,
+		is_final, is_protected, ancestor
+	)
+	SELECT 
+		x.new_uuid, 0x00, x.new_uuid, 'A', 'A',
+		mo.original, c.colid, c.colname,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+		
+		CASE WHEN la.calc_input_type = ga.calc_input_type THEN NULL ELSE la.calc_input_type END,
+		CASE WHEN la.calc_input_width = ga.calc_input_width THEN NULL ELSE la.calc_input_width END, 
+		NULL, 
+		CASE WHEN la.calc_max_length = ga.calc_max_length THEN NULL ELSE la.calc_max_length END,
+		NULL,
+		NULL, NULL, NULL, NULL, NULL, 
+		CASE WHEN la.calc_is_computed = ga.calc_is_computed THEN NULL ELSE la.calc_is_computed END, 
+		NULL, NULL, NULL,
+		1, 0, gc.original
 	FROM v_syscolumns c
-	JOIN meta_object mo ON mo.builtin_code = c.tabname COLLATE DATABASE_DEFAULT AND mo.object_type IN ('T', 'V', 'F') AND mo.record_type = 'A'
+	CROSS APPLY (
+		SELECT 
+			CASE 
+				WHEN c.typename IN ('bit') THEN 'checkbox'
+				WHEN c.typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN 'date'
+				WHEN c.typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN 'number'
+				WHEN c.typename IN ('varchar', 'nvarchar', 'text', 'ntext') AND c.prec = -1 THEN 'textarea'
+				ELSE 'text'
+			END AS calc_input_type,
+			CASE 
+				WHEN c.typename IN ('varchar', 'nvarchar', 'char', 'nchar') AND c.prec > 0 THEN c.prec
+				ELSE 0 
+			END AS calc_max_length,
+			ISNULL(c.iscomputed, 0) AS calc_is_computed,
+			CASE 
+				WHEN c.typename = 'bit' THEN 'auto'
+				WHEN c.typename = 'date' THEN '120px'
+				WHEN c.typename = 'smalldatetime' THEN '150px'
+				WHEN c.typename IN ('datetime', 'datetime2') THEN '180px'
+				WHEN c.typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '100px'
+				ELSE '100%'
+			END AS calc_input_width
+	) la
+	JOIN meta_object mo 
+		ON mo.builtin_code = c.tabname COLLATE DATABASE_DEFAULT 
+		AND mo.object_type IN ('T', 'V', 'F') 
+		AND mo.record_type = 'A'
+		AND mo.object_owner = 0x00
+	JOIN meta_column gc
+		ON gc.parent_object = @c_object
+		AND gc.column_name = c.colname COLLATE DATABASE_DEFAULT
+		AND gc.record_type = 'A'
+		AND gc.object_owner = 0x00
+	JOIN #global_attr ga
+		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
+	CROSS APPLY (SELECT NEWID() AS new_uuid) x
 	WHERE NOT EXISTS (
 		SELECT 1 FROM meta_column mc 
 		WHERE mc.parent_object = mo.original 
 		  AND mc.column_name = c.colname COLLATE DATABASE_DEFAULT 
 		  AND mc.record_type = 'A'
+		  AND mc.object_owner = 0x00
 	);
 
-	UPDATE meta_column SET original = uuid WHERE original <> uuid AND record_type = 'A';
-
 	-- -------------------------------------------------------------------------
-	-- 3. PROPOJENÍ PŘEDKŮ (ANCESTOR) U VIEWS (Pokročilá heuristika)
+	-- 4. KOREKCE EXISTUJÍCÍCH SLOUPCŮ BEZ PŘEDKA (Napojení na 'C' a zachování odchylek)
 	-- -------------------------------------------------------------------------
-	UPDATE mc_view
-	SET ancestor = best_match.ancestor_column
-	FROM meta_column mc_view
-	JOIN meta_object mo_view 
-		ON mo_view.original = mc_view.parent_object 
-		AND mo_view.record_type = 'A' 
-		AND mo_view.object_type = 'V'
+	UPDATE mc
+	SET ancestor = gc.original,
+		caption = NULL, caption_plural = NULL, description = NULL, label = NULL, 
+		header = NULL, helptext = NULL, placeholder = NULL, 
+		input_rows = NULL, css_class = NULL, translate = NULL, 
+		history = NULL, is_html = NULL, is_mandatory = NULL, is_url = NULL, 
+		show_empty = NULL, hidden = NULL, customizable = NULL,
+		
+		input_type = CASE WHEN la.calc_input_type = ga.calc_input_type THEN NULL ELSE la.calc_input_type END,
+		input_width = CASE WHEN la.calc_input_width = ga.calc_input_width THEN NULL ELSE la.calc_input_width END,
+		max_length = CASE WHEN la.calc_max_length = ga.calc_max_length THEN NULL ELSE la.calc_max_length END,
+		is_computed = CASE WHEN la.calc_is_computed = ga.calc_is_computed THEN NULL ELSE la.calc_is_computed END
+	FROM meta_column mc
+	JOIN meta_object mo 
+		ON mo.original = mc.parent_object 
+		AND mo.object_type IN ('T', 'V', 'F') 
+		AND mo.record_type = 'A' 
+		AND mo.object_owner = 0x00
+	JOIN v_syscolumns c
+		ON c.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
+		AND c.colname = mc.column_name COLLATE DATABASE_DEFAULT
 	CROSS APPLY (
-		SELECT TOP 1 mc_table.original AS ancestor_column
-		FROM sys.sql_expression_dependencies sed
-		JOIN meta_object mo_table 
-			ON mo_table.builtin_code = sed.referenced_entity_name COLLATE DATABASE_DEFAULT
-			AND mo_table.object_type = 'T' 
-			AND mo_table.record_type = 'A'
-		JOIN meta_column mc_table 
-			ON mc_table.parent_object = mo_table.original 
-			-- Porovnání s ořezáním speciálních přípon z vrepo_ view
-			AND mc_table.column_name = 
-				CASE 
-					WHEN RIGHT(mc_view.column_name, 7) = '_system' THEN LEFT(mc_view.column_name, LEN(mc_view.column_name) - 7)
-					WHEN RIGHT(mc_view.column_name, 11) = '_translated' THEN LEFT(mc_view.column_name, LEN(mc_view.column_name) - 11)
-					WHEN RIGHT(mc_view.column_name, 9) = '_original' THEN LEFT(mc_view.column_name, LEN(mc_view.column_name) - 9)
-					ELSE mc_view.column_name 
-				END COLLATE DATABASE_DEFAULT
-			AND mc_table.record_type = 'A'
-		WHERE sed.referencing_id = OBJECT_ID(mo_view.builtin_code)
-		ORDER BY 
-			-- Priorita 1: Název view obsahuje název tabulky (např. vrepo_organization -> organization)
-			CASE WHEN mo_view.builtin_code LIKE '%' + mo_table.builtin_code + '%' THEN 0 ELSE 1 END ASC,
-			-- Priorita 2: V případě více shodných závislostí vezme delší název (specifičtější tabulka)
-			LEN(mo_table.builtin_code) DESC
-	) AS best_match
-	WHERE mc_view.record_type = 'A'
-	  AND mc_view.ancestor IS NULL;
+		SELECT 
+			CASE 
+				WHEN c.typename IN ('bit') THEN 'checkbox'
+				WHEN c.typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN 'date'
+				WHEN c.typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN 'number'
+				WHEN c.typename IN ('varchar', 'nvarchar', 'text', 'ntext') AND c.prec = -1 THEN 'textarea'
+				ELSE 'text'
+			END AS calc_input_type,
+			CASE 
+				WHEN c.typename IN ('varchar', 'nvarchar', 'char', 'nchar') AND c.prec > 0 THEN c.prec
+				ELSE 0 
+			END AS calc_max_length,
+			ISNULL(c.iscomputed, 0) AS calc_is_computed,
+			CASE 
+				WHEN c.typename = 'bit' THEN 'auto'
+				WHEN c.typename = 'date' THEN '120px'
+				WHEN c.typename = 'smalldatetime' THEN '150px'
+				WHEN c.typename IN ('datetime', 'datetime2') THEN '180px'
+				WHEN c.typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '100px'
+				ELSE '100%'
+			END AS calc_input_width
+	) la
+	JOIN meta_column gc 
+		ON gc.parent_object = @c_object 
+		AND gc.column_name = mc.column_name 
+		AND gc.record_type = 'A' 
+		AND gc.object_owner = 0x00
+	JOIN #global_attr ga
+		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
+	WHERE mc.record_type = 'A' 
+	  AND mc.object_owner = 0x00 
+	  AND mc.ancestor IS NULL;
 
 END
 GO

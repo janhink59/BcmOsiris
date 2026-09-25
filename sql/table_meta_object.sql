@@ -1,55 +1,61 @@
-execute dropni 'meta_object'
+/* =============================================================================
+ * Tabulka: meta_object
+ * Popis:   Uchovává metadata objektů v databázi a aplikaci.
+ * ============================================================================= */
+
+-- Pokud tabulka existuje, ale constraint chk_meta_object_type ještě neobsahuje typ 'C', tabulku rovnou dropneme
+IF OBJECT_ID('meta_object') IS NOT NULL 
+	AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'chk_meta_object_type' AND definition LIKE '%''C''%')
+BEGIN
+	EXECUTE dropni 'meta_object';
+END
 GO
 
-/*
-    Tabulka meta_object slouží k uchování metadat objektů v databázi a aplikaci.
-    Obsahuje informace o názvu a dalších atributech objektu určených pro lokalizaci, stejně jako informace o modulu, ke kterému objekt patří.
-*/
-if object_id('meta_object') is null
-create table meta_object(
+IF OBJECT_ID('meta_object') IS NULL
+CREATE TABLE meta_object(
 	-- -------------------------------------------------------------------------
 	-- Standardní RAC a SSC sloupce
 	-- -------------------------------------------------------------------------
 	uuid uuid NOT NULL,
-	object_owner uuid NOT NULL DEFAULT 0x00,           -- Sem se bude zapisovat UUID organizace
-	original uuid NOT NULL DEFAULT 0x00,
-	record_type varchar(1) NOT NULL DEFAULT 'A',
-	approval_status varchar(1) NOT NULL DEFAULT 'A',
-	inactive bit NOT NULL DEFAULT 0,
-	removed bit NOT NULL DEFAULT 0,
-	language varchar(2) NOT NULL DEFAULT 'cs',
-	valid_from date NOT NULL DEFAULT '1970-01-01',
-	valid_to date NULL,
-	is_template bit NOT NULL DEFAULT 0,
-	template uuid NULL,
+	object_owner uuid NOT NULL DEFAULT 0x00,           -- UUID tenanta (organizace). 0x00 pro systémové záznamy.
+	original uuid NOT NULL DEFAULT 0x00,               -- Logický identifikátor záznamu napříč verzemi a tenant overridy.
+	record_type varchar(1) NOT NULL DEFAULT 'A',       -- 'A' = aktuálně schválený, 'L' = jazyková verze, 'H' = historie (audit).
+	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stavy schvalování v rámci SSC ('D', 'W', 'S', 'A', 'R', 'C', 'I').
+	inactive bit NOT NULL DEFAULT 0,                   -- Příznak deaktivace (používá se např. u systémových záznamů místo fyzického smazání).
+	removed bit NOT NULL DEFAULT 0,                    -- Příznak odstranění.
+	language varchar(2) NOT NULL DEFAULT 'cs',         -- Jazyková mutace (využito pro record_type = 'L').
+	valid_from date NOT NULL DEFAULT '1970-01-01',     -- Platnost od.
+	valid_to date NULL,                                -- Platnost do.
+	is_template bit NOT NULL DEFAULT 0,                -- Určuje, zda záznam slouží jako šablona.
+	template uuid NULL,                                -- Odkaz na šablonu, ze které byl záznam vytvořen.
 
 	-- -------------------------------------------------------------------------
 	-- Auditní stopy
 	-- -------------------------------------------------------------------------
 	date_created datetime NOT NULL DEFAULT getdate(),
-	who_created uuid NOT NULL DEFAULT 0x00,
+	who_created uuid NOT NULL DEFAULT 0x00,            -- Načítáno autonovně z dbsession.user_access_uuid.
 	date_modified datetime NOT NULL DEFAULT getdate(),
-	who_modified uuid NOT NULL DEFAULT 0x00,
+	who_modified uuid NOT NULL DEFAULT 0x00,           -- Načítáno autonovně z dbsession.user_access_uuid.
 
 	-- -------------------------------------------------------------------------
 	-- Specifické atributy objektu
 	-- -------------------------------------------------------------------------
-	object_type varchar(1) NOT NULL,                   -- T=Table,V=view,F=funkce,P=PHP Page,G=Global Phrase, M=Module
-	builtin_code varchar(80) NOT NULL,
-	caption varchar(200) NOT NULL,
-	caption_plural varchar(200) NOT NULL,
-	helptext varchar(max) NOT NULL,
+	object_type varchar(1) NOT NULL,                   -- T=Table, V=View, F=Function, P=PHP Page, G=Global Phrase, C=Column Ancestor, M=Module
+	builtin_code varchar(80) NOT NULL,                 -- Fyzický název objektu v DB (např. název tabulky, view) nebo kód.
+	caption varchar(200) NOT NULL,                     -- Zobrazovaný název (lokalizovatelný).
+	caption_plural varchar(200) NOT NULL,              -- Množné číslo názvu.
+	description varchar(max) NOT NULL DEFAULT '',      -- Podrobnější interní popis objektu a jeho účelu.
+	helptext varchar(max) NOT NULL,                    -- Text nápovědy určený pro UI.
 	
-	module varchar(80) NOT NULL DEFAULT '',            -- Modul, ke kterému objekt patří (odkaz na builtin_code v tabulce object_type=M)
-	generic_column_list varchar(200) NOT NULL DEFAULT 'builtin_code', -- Seznam sloupců, které slouží ke generování originálního UUID
+	module varchar(80) NOT NULL DEFAULT '',            -- Modul, ke kterému objekt patří (odkaz na builtin_code u object_type = 'M').
 
 	-- -------------------------------------------------------------------------
-	-- Ochrana systémových struktur
+	-- Ochrana systémových struktur a limitace overridu
 	-- -------------------------------------------------------------------------
-	is_final bit NOT NULL DEFAULT 0,                   -- 1 = Tenant nesmí vytvořit override záznamu (typ 'A'), povoleny jen překlady ('L')
-	is_protected bit NOT NULL DEFAULT 0,               -- 1 = Tenant smí vytvořit override, ale lze měnit jen vizuální vlastnosti (caption, helptext)
+	is_final bit NOT NULL DEFAULT 0,                   -- 1 = Zcela zakazuje tenantům vytvořit override záznamu (typ 'A'). Povoleny jen překlady ('L').
+	is_protected bit NOT NULL DEFAULT 0,               -- 1 = Povoluje tenantům vytvořit override, ale omezuje editaci v PHP výhradně na vizuální vlastnosti.
 
 	CONSTRAINT pk_meta_object PRIMARY KEY (uuid),
-	CONSTRAINT chk_meta_object_type CHECK (object_type IN ('T', 'V', 'F', 'P', 'G', 'M'))
+	CONSTRAINT chk_meta_object_type CHECK (object_type IN ('T', 'V', 'F', 'P', 'G', 'C', 'M'))
 );
 GO
