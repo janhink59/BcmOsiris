@@ -1,6 +1,7 @@
 /* =============================================================================
  * DÁVKA: Generátor deterministických triggerů (trgo_%)
  * Účel: Hromadné odstranění a znovuvytvoření triggerů pro vazební tabulky.
+ * OPRAVA: Podpora pro ruční hromadné opravy přidáním AFTER INSERT, UPDATE
  * ============================================================================= */
 DECLARE @drop_sql NVARCHAR(MAX) = '';
 
@@ -25,8 +26,8 @@ FETCH NEXT FROM cur_tables INTO @table_name, @key1, @key2;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-	DECLARE @key1_expr VARCHAR(200) = 'i.[' + @key1 + ']';
-	DECLARE @key2_expr VARCHAR(200) = CASE WHEN @key2 IS NOT NULL THEN 'i.[' + @key2 + ']' ELSE 'NULL' END;
+	DECLARE @key1_expr VARCHAR(200) = 'CAST(i.[' + @key1 + '] AS VARCHAR(MAX))';
+	DECLARE @key2_expr VARCHAR(200) = CASE WHEN @key2 IS NOT NULL THEN 'CAST(i.[' + @key2 + '] AS VARCHAR(MAX))' ELSE 'NULL' END;
 	DECLARE @join_expr VARCHAR(MAX) = 'parent.[' + @key1 + '] = i.[' + @key1 + ']';
 	
 	IF @key2 IS NOT NULL 
@@ -37,7 +38,7 @@ BEGIN
 	DECLARE @trg_sql NVARCHAR(MAX) = '
 CREATE TRIGGER trgo_' + @table_name + '
 ON [' + @table_name + ']
-AFTER INSERT
+AFTER INSERT, UPDATE             -- ZOHLEDNĚNÍ POŽADAVKU NA MANUÁLNÍ OPRAVY
 AS
 BEGIN
 	SET NOCOUNT ON;
@@ -66,7 +67,8 @@ BEGIN
 		ON ' + @join_expr + '
 		AND (parent.object_owner = 0x00 OR parent.object_owner = i.template)
 		AND parent.record_type = ''A''
-		AND parent.removed = 0;
+		AND parent.removed = 0
+		AND parent.uuid <> i.uuid
 END;';
 
 	EXEC(@trg_sql);

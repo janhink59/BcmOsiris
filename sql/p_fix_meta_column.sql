@@ -9,12 +9,16 @@ GO
  *       3. Synchronizuje fyzické objekty (T, V, F).
  *       4. Synchronizuje fyzické sloupce a zanese odchylky od globálu.
  * Poznámka: Pracuje striktně se systémovými záznamy (object_owner = 0x00).
+ * OPRAVA: Přidáno is_ms_shipped = 0 a SCHEMA_ID('dbo') pro prevenci duplicit PK.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
 BEGIN
 	SET NOCOUNT ON;
 	SET XACT_ABORT ON;
+
+	-- Explicitní přetypování pro f_generate_original, aby T-SQL hash přesně odpovídal triggeru
+	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 
 	-- -------------------------------------------------------------------------
 	-- 0. VÝPOČET NEJČASTĚJŠÍCH VLASTNOSTÍ (MÓDUS) PRO GLOBÁLNÍ SLOVNÍK
@@ -69,25 +73,21 @@ BEGIN
 	-- -------------------------------------------------------------------------
 	-- 1. PŘÍPRAVA GLOBÁLNÍHO SLOVNÍKU (Typ C)
 	-- -------------------------------------------------------------------------
-	DECLARE @c_object uniqueidentifier;
+	
+	-- ELEGANTNÍ VÝPOČET: Konstantní UUID slovníku známe předem, nepotřebujeme NEWID()
+	DECLARE @c_object uniqueidentifier = dbo.f_generate_original('meta_object', @sys_owner, 'C', 'sys_global_columns');
 
-	IF NOT EXISTS (SELECT 1 FROM meta_object WHERE builtin_code = 'sys_global_columns' AND object_type = 'C' AND record_type = 'A' AND object_owner = 0x00)
+	IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @c_object AND object_type = 'C' AND record_type = 'A' AND object_owner = 0x00)
 	BEGIN
-		DECLARE @new_c_uuid uniqueidentifier = NEWID();
 		INSERT INTO meta_object (
 			uuid, object_owner, original, record_type, approval_status,
 			object_type, builtin_code, caption, caption_plural, description, helptext,
 			module, is_final, is_protected
 		) VALUES (
-			@new_c_uuid, 0x00, @new_c_uuid, 'A', 'A',
+			@c_object, 0x00, @c_object, 'A', 'A',
 			'C', 'sys_global_columns', 'Globální definice sloupců', 'Globální definice sloupců', 'Systémový slovník pro výchozí vlastnosti databázových sloupců', 'Kontejner',
 			'', 1, 1
 		);
-		SET @c_object = @new_c_uuid;
-	END
-	ELSE
-	BEGIN
-		SELECT @c_object = original FROM meta_object WHERE builtin_code = 'sys_global_columns' AND object_type = 'C' AND record_type = 'A' AND object_owner = 0x00;
 	END
 
 	-- Plnění unikátních názvů sloupců do globálního slovníku (plné default hodnoty a módusy)
@@ -130,27 +130,22 @@ BEGIN
 		module, is_final, is_protected
 	)
 	SELECT 
-		x.new_uuid, 0x00, x.new_uuid, 'A', 'A',
-		CASE 
-			WHEN o.type = 'U' THEN 'T'
-			WHEN o.type = 'V' THEN 'V'
-			WHEN o.type IN ('FN', 'IF', 'TF') THEN 'F'
-		END, 
+		dbo.f_generate_original('meta_object', @sys_owner, CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END, o.name),
+		0x00, 
+		dbo.f_generate_original('meta_object', @sys_owner, CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END, o.name),
+		'A', 'A',
+		CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END, 
 		o.name, o.name, o.name, 'Popis pro ' + o.name, 
-		CASE 
-			WHEN o.type = 'U' THEN 'Nápověda pro tabulku ' + o.name
-			WHEN o.type = 'V' THEN 'Nápověda pro view ' + o.name
-			WHEN o.type IN ('FN', 'IF', 'TF') THEN 'Nápověda pro funkci ' + o.name
-			ELSE 'Nápověda pro ' + o.name
-		END,
+		CASE WHEN o.type = 'U' THEN 'Nápověda pro tabulku ' + o.name WHEN o.type = 'V' THEN 'Nápověda pro view ' + o.name ELSE 'Nápověda pro ' + o.name END,
 		'', 1, 0
 	FROM sys.objects o
-	CROSS APPLY (SELECT NEWID() AS new_uuid) x
 	WHERE o.type IN ('U', 'V', 'FN', 'IF', 'TF')
+	  AND o.is_ms_shipped = 0
+	  AND o.schema_id = SCHEMA_ID('dbo')
 	  AND NOT EXISTS (
 		SELECT 1 FROM meta_object mo
 		WHERE mo.builtin_code = o.name COLLATE DATABASE_DEFAULT 
-		  AND mo.object_type IN ('T', 'V', 'F') 
+		  AND mo.object_type = CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END
 		  AND mo.record_type = 'A'
 		  AND mo.object_owner = 0x00
 	  );

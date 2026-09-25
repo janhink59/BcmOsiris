@@ -1,2 +1,2 @@
-execute dropni 'meta_original_keys'
+--execute dropni 'meta_original_keys'
 GO
