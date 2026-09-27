@@ -5,7 +5,7 @@
 
 -- Pokud tabulka existuje, ale constraint chk_meta_object_type ještě neobsahuje typ 'C', tabulku rovnou dropneme
 IF OBJECT_ID('meta_object') IS NOT NULL 
-	AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'chk_meta_object_type' AND definition LIKE '%''C''%')
+	AND NOT EXISTS (SELECT 1 FROM v_syscolumns where tabname='meta_object' and colname='column_ancestor')
 BEGIN
 	EXECUTE dropni 'meta_object';
 END
@@ -48,6 +48,7 @@ CREATE TABLE meta_object(
 	helptext varchar(max) NOT NULL,                    -- Text nápovědy určený pro UI.
 	
 	module varchar(80) NOT NULL DEFAULT '',            -- Modul, ke kterému objekt patří (odkaz na builtin_code u object_type = 'M').
+	column_ancestor uuid null,                         -- Odkaz na jiný meta_object, ze kterého se dědí stejnojmenné sloupce
 
 	-- -------------------------------------------------------------------------
 	-- Ochrana systémových struktur a limitace overridu

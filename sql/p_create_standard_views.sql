@@ -26,6 +26,7 @@ GO
  * zůstane beze změny.
  * ============================================================================= */
 CREATE PROCEDURE p_create_standard_views
+	@verbose bit=0
 AS
 BEGIN
 	SET NOCOUNT ON;
@@ -40,7 +41,7 @@ BEGIN
 	IF @drop_sql <> '' 
 	BEGIN
 		EXEC(@drop_sql);
-		PRINT 'Existující pohledy vrepo_ byly úspěšně odstraněny.';
+		if @verbose=1 PRINT 'Existující pohledy vrepo_ byly úspěšně odstraněny.';
 	END
 
 	-- 2. Zjištění všech tabulek, které podléhají RAC architektuře
@@ -188,7 +189,7 @@ LEFT JOIN ' + @tabname + ' v ON v.original = m.original AND v.object_owner = s.o
 
 		-- 5. Exekuce vytvoření pohledu
 		EXEC (@sql);
-		PRINT 'Generován standardní pohled: vrepo_' + @tabname;
+		if @verbose=1 PRINT 'Generován standardní pohled: vrepo_' + @tabname;
 
 		FETCH NEXT FROM cur INTO @tabname;
 	END

@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-09-25 17:15
+ * Verze: 2026-09-27 11:15 (Aktualizováno)
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       1. Vypočítá nejčastější hodnoty metadat (módus) z DB včetně chytré šířky.
  *       2. Založí a naplní globální slovník sloupců (typ 'C').
@@ -11,7 +11,7 @@ GO
  *       4. Synchronizuje fyzické sloupce a zanese odchylky od globálu.
  * Poznámka: Pracuje striktně se systémovými záznamy (object_owner = 0x00).
  * OPRAVA: Využití nativního výpočtu f_generate_original pro prevenci duplicit.
- *         Odstranění @ parametrů a omezení na dbo aplikační objekty.
+ *         Odstranění @ parametrů. Zápis objektů čte přímo z v_syscolumns.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -119,7 +119,7 @@ BEGIN
 		is_final, is_protected, ancestor
 	)
 	SELECT 
-		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',                                -- uuid se plní vypočítaným hashem, trigger to potvrdí
+		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
 		@c_object, 
 		ROW_NUMBER() OVER(ORDER BY ga.colname), 
 		'C' + RIGHT('000' + CAST(ROW_NUMBER() OVER(ORDER BY ga.colname) * 10 AS varchar), 3),
@@ -148,22 +148,24 @@ BEGIN
 	)
 	SELECT 
 		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
-		x.obj_type, 
-		o.name, o.name, o.name, 'Popis pro ' + o.name, 
-		CASE WHEN o.type = 'U' THEN 'Nápověda pro tabulku ' + o.name WHEN o.type = 'V' THEN 'Nápověda pro view ' + o.name ELSE 'Nápověda pro ' + o.name END,
+		obj.obj_type, 
+		obj.tabname, obj.tabname, obj.tabname, 'Popis pro ' + obj.tabname, 
+		CASE WHEN obj.obj_type = 'T' THEN 'Nápověda pro tabulku ' + obj.tabname WHEN obj.obj_type = 'V' THEN 'Nápověda pro view ' + obj.tabname ELSE 'Nápověda pro ' + obj.tabname END,
 		'', 1, 0
-	FROM sys.objects o
-	CROSS APPLY (SELECT CASE WHEN o.type = 'U' THEN 'T' WHEN o.type = 'V' THEN 'V' ELSE 'F' END AS obj_type) ot
-	CROSS APPLY (SELECT dbo.f_generate_original('meta_object', @sys_owner, ot.obj_type, o.name) AS orig_uuid) x
-	WHERE o.type IN ('U', 'V', 'FN', 'IF', 'TF')
-	  AND o.is_ms_shipped = 0
-	  AND o.schema_id = SCHEMA_ID('dbo')
-	  AND NOT EXISTS (
+	FROM (
+		SELECT DISTINCT 
+			tabname,
+			CASE WHEN object_type = 'U' THEN 'T' WHEN object_type = 'V' THEN 'V' ELSE 'F' END AS obj_type
+		FROM v_syscolumns
+		WHERE colname NOT LIKE '@%'
+	) obj
+	CROSS APPLY (SELECT dbo.f_generate_original('meta_object', @sys_owner, obj.obj_type, obj.tabname) AS orig_uuid) x
+	WHERE NOT EXISTS (
 		SELECT 1 FROM meta_object mo
 		WHERE mo.original = x.orig_uuid
 		  AND mo.record_type = 'A'
 		  AND mo.object_owner = 0x00
-	  );
+	);
 
 	-- -------------------------------------------------------------------------
 	-- 3. SYNCHRONIZACE LOKÁLNÍCH SLOUPCŮ (Uložení NULL tam, kde je shoda s C)

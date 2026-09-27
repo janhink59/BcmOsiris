@@ -1,10 +1,10 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-09-25 16:46
+ * Verze: 2026-09-27
  * Soubor: page_meta_object.php
- * Účel: Hromadná editace metadat objektů a jejich sloupců.
- * Architektura: Master-Detail s rychlým klientským filtrem a hromadným gridem.
+ * Účel: Editace metadat databázových objektů (Master-Detail).
+ * Změna: Oprava dvojité sanitizace textových hodnot (odstraněn 2. parametr z getinput).
  * =============================================================================
  */
 
@@ -15,39 +15,30 @@ class page_meta_object extends abstract_page_master_detail {
 	private string $update_guid;
 
 	public function __construct() {
-		$this->page_title = 'Správa metadat objektů a sloupců';
+		$this->page_title = 'Správa metadat objektů';
 
 		// Extrakce ID upravovaného záznamu (pokud je)
 		$this->update_guid = (string)getinput('update_guid');
 
-		// Zpracování dávkového uložení
+		// Zpracování uložení detailu objektu
 		if (isset($_POST['btn_save'])) {
 			$this->process_save();
 		}
 	}
 
 	private function process_save(): void {
-		// 1. Zpracování hlavičky objektu
-		$obj_guid = guidliteral(getinput('update_guid'));
-		$caption = charliteral(getinput('obj_caption', 1));
-		$description = charliteral(getinput('obj_description', 1));
-		$helptext = charliteral(getinput('obj_helptext', 1));
+		$obj_guid = guidliteral($this->update_guid);
+		
+		// OPRAVA: Striktní přetypování na string a odstranění parametru "1", 
+		// který způsoboval dvojité přidávání apostrofů.
+		$caption = charliteral((string)getinput('obj_caption'));
+		$description = charliteral((string)getinput('obj_description'));
+		$helptext = charliteral((string)getinput('obj_helptext'));
+		
+		$ancestor_input = (string)getinput('obj_ancestor');
+		$column_ancestor = ($ancestor_input === '') ? 'NULL' : guidliteral($ancestor_input);
 
-		sqlrun("EXEC form_meta_object @object_original=$obj_guid, @caption=$caption, @description=$description, @helptext=$helptext");
-
-		// 2. Cyklické zpracování všech odeslaných sloupců
-		if (!empty($_POST['col']) && is_array($_POST['col'])) {
-			foreach ($_POST['col'] as $col_uuid => $data) {
-				$c_guid = guidliteral((string)$col_uuid);
-				$c_caption = charliteral($data['caption'] ?? '');
-				$c_label = charliteral($data['label'] ?? '');
-				$c_header = charliteral($data['header'] ?? '');
-				$c_width = charliteral($data['width'] ?? '');
-				$c_translate = empty($data['translate']) ? 0 : 1;
-
-				sqlrun("EXEC form_meta_column @col_original=$c_guid, @caption=$c_caption, @label=$c_label, @header=$c_header, @input_width=$c_width, @translate=$c_translate");
-			}
-		}
+		sqlrun("EXEC form_meta_object @object_original=$obj_guid, @caption=$caption, @description=$description, @helptext=$helptext, @column_ancestor=$column_ancestor");
 
 		autoredirect();
 	}
@@ -90,7 +81,7 @@ HTML;
 		</table>
 
 		<script>
-			// Rychlý klientský live-filter pro zamezení AJAX přetížení
+			// Rychlý klientský live-filter
 			document.getElementById('object-filter').addEventListener('input', function() {
 				const term = this.value.toLowerCase();
 				const rows = document.getElementById('object-list').querySelectorAll('tr');
@@ -111,7 +102,7 @@ HTML;
 			return;
 		}
 
-		// Načtení detailu objektu (1. resultset) a jeho sloupců (2. resultset)
+		// Načtení detailu objektu a číselníku předků
 		$q = sqlrun("EXEC page_meta_object @subpage='detail', @update_guid=" . guidliteral($this->update_guid));
 		if (!fetch_datarow($q)) {
 			echo "<div class='msg-err'>Objekt nebyl nalezen.</div>";
@@ -124,19 +115,44 @@ HTML;
 		$code = htmlspecialchars((string)$datarow['builtin_code']);
 		$description = htmlspecialchars((string)$datarow['description']);
 		$helptext = htmlspecialchars((string)$datarow['helptext']);
+		$current_ancestor = (string)$datarow['column_ancestor'];
 
-		// Sticky kontejner pro hlavičku s tlačítkem
+		// Sestavení options pro rozevírací seznam předků (využije 2. resultset)
+		$ancestor_options = '<option value="">--- Bez dědičnosti (vlastní sloupce) ---</option>';
+		next_result($q);
+		while (fetch_datarow($q)) {
+			$a_uuid = (string)$datarow['ancestor_uuid'];
+			$a_code = htmlspecialchars((string)$datarow['builtin_code']);
+			$a_caption = htmlspecialchars((string)$datarow['caption']);
+			
+			$selected = ($a_uuid === $current_ancestor) ? 'selected' : '';
+			$ancestor_options .= "<option value=\"{$a_uuid}\" {$selected}>{$a_code} ({$a_caption})</option>";
+		}
+		free_result($q);
+
+		// Sticky kontejner pro hlavičku s tlačítky
 		echo <<<HTML
 		<form method="post" action="index.php?page=meta_object&update_guid={$this->update_guid}">
 			<div style="position: sticky; top: -20px; background: #fff; padding: 20px 0 10px 0; z-index: 100; border-bottom: 2px solid #004488; display: flex; justify-content: space-between; align-items: flex-end;">
 				<h2 style="margin: 0; border: none; padding: 0;">Editace: {$code}</h2>
-				<button type="submit" name="btn_save" class="btn btn-success">Uložit všechny změny</button>
+				<div>
+					<a href="index.php?page=meta_column&parent_object={$this->update_guid}" class="btn btn-secondary" style="margin-right: 10px;">Spravovat sloupce</a>
+					<button type="submit" name="btn_save" class="btn btn-success">Uložit změny</button>
+				</div>
 			</div>
 
 			<table class="md-table" style="margin-bottom: 30px;">
 				<tr>
-					<td style="width: 20%;"><strong>Zobrazovaný název:</strong></td>
+					<td style="width: 25%;"><strong>Zobrazovaný název:</strong></td>
 					<td><input type="text" name="obj_caption" value="{$caption}" style="width: 100%;"></td>
+				</tr>
+				<tr>
+					<td><strong>Předek (dědičnost sloupců):</strong><br><small style="color: #666;">View/Tabulka ze které se zkopírují vlastnosti</small></td>
+					<td>
+						<select name="obj_ancestor" style="width: 100%; padding: 4px;">
+							{$ancestor_options}
+						</select>
+					</td>
 				</tr>
 				<tr>
 					<td><strong>Popis (interní):</strong></td>
@@ -144,57 +160,13 @@ HTML;
 				</tr>
 				<tr>
 					<td><strong>Nápověda (UI):</strong></td>
-					<td><input type="text" name="obj_helptext" value="{$helptext}" style="width: 100%;"></td>
+					<td><textarea name="obj_helptext" style="width: 100%; height: 80px;">{$helptext}</textarea></td>
 				</tr>
-			</table>
-
-			<h3>Seznam sloupců</h3>
-			<table class="md-table">
-				<thead>
-					<tr>
-						<th style="width: 20%;">Sloupec (DB)</th>
-						<th style="width: 20%;">Zobrazovaný název</th>
-						<th style="width: 20%;">Štítek / Hlavička</th>
-						<th style="width: 15%;">Šířka (UI)</th>
-						<th style="width: 5%; text-align: center;">Překlad</th>
-					</tr>
-				</thead>
-				<tbody>
-HTML;
-
-		// Přechod na 2. resultset (Sloupce vázané k objektu)
-		next_result($q);
-		while (fetch_datarow($q)) {
-			$c_uuid = htmlspecialchars((string)$datarow['original']);
-			$c_name = htmlspecialchars((string)$datarow['column_name']);
-			
-			$c_cap = htmlspecialchars((string)$datarow['caption']);
-			$c_lab = htmlspecialchars((string)$datarow['label']);
-			$c_head = htmlspecialchars((string)$datarow['header']);
-			$c_width = htmlspecialchars((string)$datarow['input_width']);
-			
-			$c_trans = !empty($datarow['translate']) ? 'checked' : '';
-			$is_protected = !empty($datarow['is_protected']) ? 'readonly style="background: #f4f4f4;"' : '';
-
-			echo <<<HTML
-				<tr>
-					<td style="font-family: monospace; color: #555;">{$c_name}</td>
-					<td><input type="text" name="col[{$c_uuid}][caption]" value="{$c_cap}" style="width: 100%;"></td>
-					<td>
-						<input type="text" name="col[{$c_uuid}][label]" value="{$c_lab}" style="width: 100%; margin-bottom: 4px;" placeholder="Label ve formuláři"><br>
-						<input type="text" name="col[{$c_uuid}][header]" value="{$c_head}" style="width: 100%;" placeholder="Hlavička v tabulce">
-					</td>
-					<td><input type="text" name="col[{$c_uuid}][width]" value="{$c_width}" style="width: 100%;" {$is_protected}></td>
-					<td style="text-align: center;"><input type="checkbox" name="col[{$c_uuid}][translate]" value="1" {$c_trans} {$is_protected}></td>
-				</tr>
-HTML;
-		}
-		free_result($q);
-
-		echo <<<HTML
-				</tbody>
 			</table>
 		</form>
 HTML;
+		
+		// Renderování standardní auditní stopy
+		$this->render_audit_trail();
 	}
 }

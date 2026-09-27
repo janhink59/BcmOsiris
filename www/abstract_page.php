@@ -12,6 +12,9 @@
  * - Slouží jako předek pro další šablony (např. `abstract_page_master_detail`) 
  *   nebo konkrétní stránky.
  * - Instancuje třídu `user_context` pro vykreslení horního informačního panelu.
+ * 
+ * Změny:
+ * 2026-09-27 - Přidána plošná JS ochrana proti opuštění stránky s neuloženým formulářem.
  * =============================================================================
  */
 
@@ -76,12 +79,23 @@ abstract class abstract_page {
 		.btn-danger:hover { background-color: #8e1515; }
 		.btn-success { background-color: #4CAF50; }
 		.btn-success:hover { background-color: #388E3C; }
+		.btn-secondary { background-color: #64748b; }
+		.btn-secondary:hover { background-color: #475569; }
 		.msg-err { 
 			color: #b71c1c; 
 			font-weight: bold; 
 			padding: 10px; 
 			border-left: 4px solid #b71c1c; 
 			background-color: #ffebee; 
+			line-height: 1.4; 
+			margin-bottom: 20px;
+		}
+		.msg-info { 
+			color: #004488; 
+			font-weight: bold; 
+			padding: 10px; 
+			border-left: 4px solid #004488; 
+			background-color: #e6f7ff; 
 			line-height: 1.4; 
 			margin-bottom: 20px;
 		}
@@ -100,6 +114,31 @@ HTML;
 
 		echo <<<HTML
 	</div>
+	
+	<script>
+		// Plošná ochrana proti opuštění stránky s neuloženými daty (Dirty state)
+		let isFormDirty = false;
+		
+		// Detekce změny v jakémkoliv inputu, selectu nebo textareji uvnitř formuláře
+		document.addEventListener('input', function(e) {
+			if (e.target.closest('form')) {
+				isFormDirty = true;
+			}
+		});
+		
+		// Při korektním odeslání formuláře (tlačítkem Uložit) dirty state zrušíme
+		document.addEventListener('submit', function() {
+			isFormDirty = false;
+		});
+		
+		// Zachycení pokusu o opuštění stránky (kliknutí na odkaz, zavření okna, zpět v prohlížeči, přechod v levém panelu)
+		window.addEventListener('beforeunload', function(e) {
+			if (isFormDirty) {
+				e.preventDefault();
+				e.returnValue = 'Máte neuložené změny. Opravdu chcete stránku opustit?';
+			}
+		});
+	</script>
 </body>
 </html>
 HTML;
