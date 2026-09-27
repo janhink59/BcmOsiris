@@ -7,6 +7,8 @@
  * Vazby: 
  * - Voláno z page_meta_object.php přes parametr parent_object.
  * - Formulář čte a zapisuje data přes SQL procedury page_meta_column a form_meta_column.
+ * Změny:
+ * - 2026-09-27 - Implementace sdílených CSS tříd pro sticky hlavičky z abstraktního předka.
  * =============================================================================
  */
 
@@ -99,14 +101,13 @@ class page_meta_column extends abstract_page_master_detail {
 		$safe_parent = htmlspecialchars($this->parent_name);
 		
 		echo <<<HTML
-		<div style="margin-bottom: 20px;">
+		<div class="md-sticky-header-master">
 			<a href="index.php?page=meta_object&update_guid={$this->parent_object}" class="btn btn-secondary" style="display: block; text-align: center; margin-bottom: 15px;">&larr; Zpět na detail objektu</a>
-			<h2 style="font-size: 16px; margin: 0;">Sloupce objektu: {$safe_parent}</h2>
+			<h2 style="font-size: 16px; margin: 0 0 10px 0; border: none; padding: 0;">Sloupce objektu: {$safe_parent}</h2>
+			<input type="text" id="column-filter" placeholder="Hledat sloupec..." style="width: 100%; padding: 6px; box-sizing: border-box;">
 		</div>
 		
-		<input type="text" id="column-filter" placeholder="Hledat sloupec..." style="width: 100%; margin-bottom: 10px; padding: 6px; box-sizing: border-box;">
-		
-		<table class="md-table">
+		<table class="md-table" style="margin-top: 0;">
 			<thead>
 				<tr>
 					<th style="width: 30px;">Poř.</th>
@@ -195,7 +196,7 @@ HTML;
 		// Rozložení formuláře do sekcí
 		echo <<<HTML
 		<form method="post" action="index.php?page=meta_column&parent_object={$this->parent_object}&update_guid={$this->update_guid}">
-			<div style="position: sticky; top: -20px; background: #fff; padding: 20px 0 10px 0; z-index: 100; border-bottom: 2px solid #004488; display: flex; justify-content: space-between; align-items: flex-end;">
+			<div class="md-sticky-header-detail">
 				<h2 style="margin: 0; border: none; padding: 0;">Sloupec: <span style="font-family: monospace; color: #555;">{$c_name}</span></h2>
 				<button type="submit" name="btn_save" class="btn btn-success">Uložit změny sloupce</button>
 			</div>

@@ -5,6 +5,10 @@
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupamelový layout.
  *       Nyní obsahuje očištěnou metodu pro renderování auditní stopy bez
  *       generování zbytečných dotazů na databázi.
+ *
+ * Změny:
+ * - 2026-09-27 - Přidány CSS třídy pro fixní (sticky) hlavičky panelů, aby 
+ *                ovládací prvky neodjížděly při scrollování dolů.
  * =============================================================================
  */
 
@@ -51,6 +55,30 @@ abstract class abstract_page_master_detail extends abstract_page {
 				margin-top: 0;
 				border-bottom: 2px solid #eee;
 				padding-bottom: 10px;
+			}
+			/* CSS třídy pro fixní hlavičky ovládacích prvků */
+			.md-sticky-header-master {
+				position: sticky;
+				top: -20px;
+				background-color: #fafafa;
+				padding: 20px 0 10px 0;
+				margin-top: -20px;
+				z-index: 10;
+				border-bottom: 2px solid #eee;
+				margin-bottom: 10px;
+			}
+			.md-sticky-header-detail {
+				position: sticky;
+				top: -20px;
+				background-color: #ffffff;
+				padding: 20px 0 10px 0;
+				margin-top: -20px;
+				z-index: 100;
+				border-bottom: 2px solid #004488;
+				display: flex;
+				justify-content: space-between;
+				align-items: flex-end;
+				margin-bottom: 20px;
 			}
 			.md-table {
 				width: 100%;

@@ -62,5 +62,5 @@ BEGIN
 	--PRINT 'Debug session byla úspěšně inicializována pro @@SPID = ' + CAST(@@SPID AS varchar(10));
 END
 GO
-execute p_debuglogin 'honza.hink@gmail.com'
+execute p_debuglogin 'sysadmin'
 GO
