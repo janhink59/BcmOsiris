@@ -1,15 +1,20 @@
 /* =============================================================================
  * Soubor: table_meta_column.sql
  * Tabulka: meta_column
- * Popis:   Uchovává metadata sloupců/proměnných v databázi a aplikacích.
- * Změna:   Zcela odstraněny check-constrainty pro ancestor (kontrola zacyklení 
- *          proběhne spolehlivěji na aplikační vrstvě nebo přes trigger).
+ * Popis:	Uchovává metadata sloupců/proměnných v databázi a aplikacích.
+ * Vazby:	Podklad pro entity_manager. Definuje vlastnosti formulářů a 
+ *			rozšíření základních definic globálního slovníku (meta_object.uuid).
+ *			Nově odkazuje na meta_codetable a meta_class pro datové <select> prvky.
+ * Změny:
+ * - 2026-09-27: Odstraněny check-constrainty pro ancestor.
+ * - 2026-09-28: Přidány sloupce referenced_codetable a referenced_class. Změněn 
+ *			způsob nasazení – při chybějících sloupcích se tabulka dropne.
  * ============================================================================= */
 
--- 1. Idempotentní odstranění případného původního i dočasného constraintu
-IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'chk_meta_columns_ancestor')
+-- Idempotentní odstranění tabulky, pokud chybí nové sloupce nebo existuje starý constraint
+IF NOT EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'meta_column' AND colname = 'referenced_codetable')
 BEGIN
-	execute dropni 'meta_column'
+	EXECUTE dropni 'meta_column';
 END
 GO
 
@@ -69,6 +74,10 @@ CREATE TABLE meta_column(
 	customizable bit NULL,
 	
 	ancestor uuid NULL,
+	
+	-- Odkazy pro dynamické <select> prvky v entity_manager
+	referenced_codetable varchar(80) NOT NULL DEFAULT '',
+	referenced_class uuid NULL,
 
 	-- -------------------------------------------------------------------------
 	-- Ochrana systémových struktur

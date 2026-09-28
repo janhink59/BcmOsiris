@@ -1,6 +1,11 @@
 /* =============================================================================
- * NAPLNĚNÍ METADAT: meta_original_keys
+ * Soubor: fillup_meta_original_keys.sql
  * Účel: Hromadné znovunaplnění definic pro generování sloupce "original".
+ * Vazby: Slouží jako podklad pro proceduru generate_trgo, která dynamicky 
+ *        skládá a zakládá triggery nad všemi definovanými tabulkami.
+ * Změny:
+ * - 2026-09-28: Přidána registrace nových metadatových tabulek (meta_class,
+ *               meta_link_def, meta_codetable, link).
  * ============================================================================= */
 SET NOCOUNT ON;
 GO
@@ -8,12 +13,16 @@ GO
 TRUNCATE TABLE meta_original_keys;
 GO
 
--- 1. Explicitní definice známých složených klíčů
+-- 1. Explicitní definice známých složených klíčů včetně nových metadat
 INSERT INTO meta_original_keys (table_name, key1_column, key2_column) 
 VALUES 
 	('user_organization_access', 'user_account_uuid', 'organization_uuid'),
 	('meta_object', 'object_type', 'builtin_code'),
-	('meta_column', 'parent_object', 'column_name');
+	('meta_column', 'parent_object', 'column_name'),
+	('meta_class', 'class_name', NULL),                           -- Třída je unikátní svým názvem
+	('meta_link_def', 'link_code', NULL),                         -- Definice vazby je unikátní kódem
+	('meta_codetable', 'codetable_name', 'value_code'),           -- Číselník je unikátní názvem a hodnotou
+	('link', 'link_def', 'from_object');                          -- Unikátní vazba od zdroje k cíli
 GO
 
 -- 2. Dynamické doplnění všech ostatních tabulek, které obsahují sloupec builtin_code
