@@ -38,7 +38,7 @@ BEGIN
 	WHERE mo.object_owner = 0x00 
 		AND mo.record_type = 'A' 
 		AND mo.removed = 0
-		AND mo.object_type IN ('T', 'V')
+		-- AND mo.object_type IN ('T', 'V') -- Beru všechny objekty, jinak bych se nedostal na jejich sloupce
 		AND NOT EXISTS (
 			SELECT 1 FROM meta_class mc 
 			WHERE mc.original = x.orig_uuid

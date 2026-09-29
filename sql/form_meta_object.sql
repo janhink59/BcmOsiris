@@ -54,13 +54,13 @@ BEGIN
 		INSERT INTO meta_object (
 			uuid, object_owner, original, record_type, approval_status,
 			object_type, builtin_code, caption, caption_plural, description, helptext,
-			module, column_ancestor, is_final, is_protected,
+			module, column_ancestor,
 			who_created, who_modified
 		)
 		SELECT 
 			NEWID(), @organization_uuid, original, 'A', 'A',
 			object_type, builtin_code, @caption, caption_plural, @description, @helptext,
-			module, @column_ancestor, is_final, is_protected,
+			module, @column_ancestor,
 			@user_access_uuid, @user_access_uuid
 		FROM meta_object
 		WHERE original = @object_original AND object_owner = 0x00 AND record_type = 'A';

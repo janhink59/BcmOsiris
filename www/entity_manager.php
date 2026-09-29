@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-09-29 15:00
+ * Verze: 2026-09-29 18:00
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
  *       Načítá logickou vrstvu z meta_class, zjišťuje fyzickou tabulku 
@@ -12,10 +12,8 @@
  * - Databáze musí obsahovat tabulky meta_class, meta_object, meta_column a v_syscolumns.
  *
  * Změny:
-  * 2026-09-29 - Přechod z fyzických tabulek na logické třídy ($class_name).
- *            - Přidána metoda save_post_data() zajišťující autonomní RAC zápis.
- *            - Implementována plná podpora dědičnosti metadat (ancestor).
- *            - Automatické sestavení seznamu sloupců pro master panel vč. fallbacku.
+ * 2026-09-29 - Přidána podpora automatického generování ORDER BY klauzule 
+ *              podle sloupců definovaných pro Master panel (list_order).
  * =============================================================================
  */
 
@@ -193,9 +191,10 @@ class entity_manager {
 	 * Tento dotaz si databáze zkompiluje ad-hoc a využije indexy.
 	 * 
 	 * @param string $where Volitelná WHERE podmínka pro dotaz
+	 * @param string $order_by Volitelné řazení. Pokud prázdné, odvodí se z list_order.
 	 * @return string T-SQL dotaz připravený ke spuštění
 	 */
-	public function build_select_query(string $where = ''): string {
+	public function build_select_query(string $where = '', string $order_by = ''): string {
 		if (!$this->is_initialized) {
 			fatal_error("Entity manager", "Metadata pro logickou třídu '{$this->class_name}' nebyla nalezena.");
 		}
@@ -260,6 +259,17 @@ class entity_manager {
 
 		if ($where !== '') {
 			$sql .= "\n\t\tWHERE {$where}";
+		}
+
+		// Automatické odvození klauzule ORDER BY
+		if ($order_by !== '') {
+			$sql .= "\n\t\tORDER BY {$order_by}";
+		} elseif (!empty($this->list_columns)) {
+			$order_cols = [];
+			foreach (array_keys($this->list_columns) as $col) {
+				$order_cols[] = "[{$col}]";
+			}
+			$sql .= "\n\t\tORDER BY " . implode(', ', $order_cols);
 		}
 
 		return $sql;
@@ -401,11 +411,13 @@ class entity_manager {
 		// Zápis směřuje do fyzické tabulky zjištěné přes meta_class
 		$table = $this->storage_table;
 
-		// 2. Získání skutečných fyzických sloupců (ignorujeme computed a identity)
-		$q_cols = sqlrun("SELECT colname FROM v_syscolumns WHERE tabname = " . charliteral($table) . " AND iscomputed = 0 AND is_identity = 0");
+		// 2. Získání skutečných fyzických sloupců (ignorujeme computed a identity) vč. datových typů
+		$q_cols = sqlrun("SELECT colname, typename FROM v_syscolumns WHERE tabname = " . charliteral($table) . " AND iscomputed = 0 AND is_identity = 0");
 		$physical_cols = [];
+		$col_types = [];
 		while ($c = fetch($q_cols)) {
 			$physical_cols[] = $c['colname'];
+			$col_types[$c['colname']] = $c['typename'];
 		}
 		free_result($q_cols);
 
@@ -429,7 +441,11 @@ class entity_manager {
 				} elseif ($col === 'who_created' || $col === 'who_modified') {
 					$insert_cols[] = "[$col]"; $insert_vals[] = $user_uuid;
 				} elseif (array_key_exists($col, $post_data)) {
-					$insert_cols[] = "[$col]"; $insert_vals[] = $post_data[$col];
+					$val = $post_data[$col];
+					if ($val === "''" && (($col_types[$col] ?? '') === 'uuid' || ($col_types[$col] ?? '') === 'uniqueidentifier')) {
+						$val = 'NULL';
+					}
+					$insert_cols[] = "[$col]"; $insert_vals[] = $val;
 				}
 			}
 
@@ -450,6 +466,9 @@ class entity_manager {
 			// UPDATE existujícího lokálního záznamu (overridu tenanta)
 			$set_clauses = [];
 			foreach ($post_data as $col => $val) {
+				if ($val === "''" && (($col_types[$col] ?? '') === 'uuid' || ($col_types[$col] ?? '') === 'uniqueidentifier')) {
+					$val = 'NULL';
+				}
 				$set_clauses[] = "[$col] = $val";
 			}
 			$set_clauses[] = "date_modified = GETDATE()";
@@ -478,7 +497,11 @@ class entity_manager {
 				} elseif ($col === 'original') {
 					$select_vals[] = "original"; 
 				} elseif (array_key_exists($col, $post_data)) {
-					$select_vals[] = $post_data[$col]; 
+					$val = $post_data[$col];
+					if ($val === "''" && (($col_types[$col] ?? '') === 'uuid' || ($col_types[$col] ?? '') === 'uniqueidentifier')) {
+						$val = 'NULL';
+					}
+					$select_vals[] = $val; 
 				} else {
 					$select_vals[] = "[$col]"; 
 				}
