@@ -3,15 +3,13 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-09-27 11:15 (Aktualizováno)
+ * Verze: 2026-09-29 14:30
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       1. Vypočítá nejčastější hodnoty metadat (módus) z DB včetně chytré šířky.
  *       2. Založí a naplní globální slovník sloupců (typ 'C').
  *       3. Synchronizuje fyzické objekty (T, V, F).
  *       4. Synchronizuje fyzické sloupce a zanese odchylky od globálu.
- * Poznámka: Pracuje striktně se systémovými záznamy (object_owner = 0x00).
- * OPRAVA: Využití nativního výpočtu f_generate_original pro prevenci duplicit.
- *         Odstranění @ parametrů. Zápis objektů čte přímo z v_syscolumns.
+ * Změny: Odstraněn zápis do zrušených sloupců is_final a is_protected u meta_object.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -100,11 +98,11 @@ BEGIN
 		INSERT INTO meta_object (
 			uuid, object_owner, original, record_type, approval_status,
 			object_type, builtin_code, caption, caption_plural, description, helptext,
-			module, is_final, is_protected
+			module
 		) VALUES (
 			@c_object, 0x00, @c_object, 'A', 'A',
 			'C', 'sys_global_columns', 'Globální definice sloupců', 'Globální definice sloupců', 'Systémový slovník pro výchozí vlastnosti databázových sloupců', 'Kontejner',
-			'', 1, 1
+			''
 		);
 	END
 
@@ -144,14 +142,14 @@ BEGIN
 	INSERT INTO meta_object (
 		uuid, object_owner, original, record_type, approval_status,
 		object_type, builtin_code, caption, caption_plural, description, helptext,
-		module, is_final, is_protected
+		module
 	)
 	SELECT 
 		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
 		obj.obj_type, 
 		obj.tabname, obj.tabname, obj.tabname, 'Popis pro ' + obj.tabname, 
 		CASE WHEN obj.obj_type = 'T' THEN 'Nápověda pro tabulku ' + obj.tabname WHEN obj.obj_type = 'V' THEN 'Nápověda pro view ' + obj.tabname ELSE 'Nápověda pro ' + obj.tabname END,
-		'', 1, 0
+		''
 	FROM (
 		SELECT DISTINCT 
 			tabname,

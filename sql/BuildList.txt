@@ -3,12 +3,11 @@ F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
 system_constant.sql
 table_*.sql
 f_*.sql
-generate_*.sql
+fillup_meta_original_keys.sql
+generate_trgo.sql
 v_*.sql
 p_*.sql
 page_*.sql
 form_*.sql
-fillup_meta_original_keys.sql
-generate_trgo.sql
 drop_abandoned_objects.sql
 final_scripts.sql

@@ -1,7 +1,8 @@
 /* =============================================================================
  * DÁVKA: Generátor deterministických triggerů (trgo_%)
  * Účel: Hromadné odstranění a znovuvytvoření triggerů pro vazební tabulky.
- * OPRAVA: Podpora pro ruční hromadné opravy přidáním AFTER INSERT, UPDATE
+ *       Triggery nastavují deterministické identifikátory (sloupce "uuid" a "original")
+ *       pro tabulky a jejich primární sloupce uvedené v tabulce "meta_original_keys"
  * ============================================================================= */
 DECLARE @drop_sql NVARCHAR(MAX) = '';
 
@@ -13,7 +14,7 @@ WHERE	name LIKE 'trgo\_%' ESCAPE '\';
 IF @drop_sql <> '' 
 BEGIN
 	EXEC(@drop_sql);
-	PRINT 'Existující triggery trgo_% byly úspěšně odstraněny.';
+	--PRINT 'Existující triggery trgo_% byly úspěšně odstraněny.';
 END
 
 -- 2. Kurzor načítá všechny hodnoty přímo do proměnných
@@ -72,11 +73,53 @@ BEGIN
 END;';
 
 	EXEC(@trg_sql);
-	PRINT 'Vytvořen trigger: trgo_' + @table_name;
+	--PRINT 'Vytvořen trigger: trgo_' + @table_name;
 
 	FETCH NEXT FROM cur_tables INTO @table_name, @key1, @key2;
 END
 
 CLOSE cur_tables;
 DEALLOCATE cur_tables;
+GO
+
+/* =============================================================================
+ * TRIGGER: trgo_link
+ * Účel: Nastavení deterministického identifikátoru vazby s využitím f_link_original.
+ * ============================================================================= */
+CREATE TRIGGER trgo_link
+ON [link]
+AFTER INSERT, UPDATE
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+	UPDATE t
+	SET 
+		original = dbo.f_link_original(
+			ISNULL(parent.object_owner, i.object_owner),
+			CAST(i.[link_def] AS varchar(36)),
+			CAST(i.[from_object] AS varchar(36)),
+			CAST(i.[to_object] AS varchar(36))
+		),
+		uuid = CASE 
+			WHEN parent.uuid IS NULL THEN 
+				dbo.f_link_original(
+					i.object_owner,
+					CAST(i.[link_def] AS varchar(36)),
+					CAST(i.[from_object] AS varchar(36)),
+					CAST(i.[to_object] AS varchar(36))
+				)
+			ELSE i.uuid 
+		END
+	FROM [link] t
+	JOIN inserted i ON i.uuid = t.uuid
+	LEFT JOIN [link] parent 
+		ON parent.[link_def] = i.[link_def]
+		AND parent.[from_object] = i.[from_object]
+		AND parent.[to_object] = i.[to_object]
+		AND (parent.object_owner = 0x00 OR parent.object_owner = i.template)
+		AND parent.record_type = 'A'
+		AND parent.removed = 0
+		AND parent.uuid <> i.uuid
+END;
 GO

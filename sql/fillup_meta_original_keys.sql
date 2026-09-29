@@ -21,18 +21,19 @@ VALUES
 	('meta_column', 'parent_object', 'column_name'),
 	('meta_class', 'class_name', NULL),                           -- Třída je unikátní svým názvem
 	('meta_link_def', 'link_code', NULL),                         -- Definice vazby je unikátní kódem
-	('meta_codetable', 'codetable_name', 'value_code'),           -- Číselník je unikátní názvem a hodnotou
-	('link', 'link_def', 'from_object');                          -- Unikátní vazba od zdroje k cíli
+	('meta_codetable', 'codetable_name', 'value_code')           -- Číselník je unikátní názvem a hodnotou
+	--('link', 'link_def', 'from_object'); -- Toto je vyřazeno, tabulka link vyžaduje ge generování originálu tři klíče
 GO
 
 -- 2. Dynamické doplnění všech ostatních tabulek, které obsahují sloupec builtin_code
 --    (Pokud tabulka ještě není v číselníku definována, použije se builtin_code jako jediný klíč)
 INSERT INTO meta_original_keys (table_name, key1_column, key2_column)
-SELECT 
-	tabname, 
-	'builtin_code', 
+SELECT
+	tabname,
+	'builtin_code',
 	NULL
 FROM v_syscolumns
-WHERE colname = 'builtin_code' 
-	AND tabname NOT IN (SELECT table_name FROM meta_original_keys);
+WHERE colname = 'builtin_code'
+	AND tabname NOT IN (SELECT table_name FROM meta_original_keys)
+	AND object_type = 'U';                                      -- Oprava: Omezí tvorbu triggerů pouze na fyzické tabulky
 GO

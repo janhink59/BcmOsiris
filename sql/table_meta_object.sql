@@ -1,11 +1,13 @@
 /* =============================================================================
  * Tabulka: meta_object
- * Popis:   Uchovává metadata objektů v databázi a aplikaci.
+ * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce).
+ * Změny:   - Odstraněny sloupce is_final a is_protected, protože fyzická vrstva 
+ *            je z principu vždy chráněna před tenant overridy. Ochrana se 
+ *            přesunula do logické vrstvy (meta_class).
  * ============================================================================= */
 
--- Pokud tabulka existuje, ale constraint chk_meta_object_type ještě neobsahuje typ 'C', tabulku rovnou dropneme
-IF OBJECT_ID('meta_object') IS NOT NULL 
-	AND NOT EXISTS (SELECT 1 FROM v_syscolumns where tabname='meta_object' and colname='column_ancestor')
+-- Idempotentní odstranění staré verze (pokud obsahuje zrušené sloupce)
+IF EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'meta_object' AND colname = 'is_final')
 BEGIN
 	EXECUTE dropni 'meta_object';
 END
@@ -49,12 +51,6 @@ CREATE TABLE meta_object(
 	
 	module varchar(80) NOT NULL DEFAULT '',            -- Modul, ke kterému objekt patří (odkaz na builtin_code u object_type = 'M').
 	column_ancestor uuid null,                         -- Odkaz na jiný meta_object, ze kterého se dědí stejnojmenné sloupce
-
-	-- -------------------------------------------------------------------------
-	-- Ochrana systémových struktur a limitace overridu
-	-- -------------------------------------------------------------------------
-	is_final bit NOT NULL DEFAULT 0,                   -- 1 = Zcela zakazuje tenantům vytvořit override záznamu (typ 'A'). Povoleny jen překlady ('L').
-	is_protected bit NOT NULL DEFAULT 0,               -- 1 = Povoluje tenantům vytvořit override, ale omezuje editaci v PHP výhradně na vizuální vlastnosti.
 
 	CONSTRAINT pk_meta_object PRIMARY KEY (uuid),
 	CONSTRAINT chk_meta_object_type CHECK (object_type IN ('T', 'V', 'F', 'P', 'G', 'C', 'M'))

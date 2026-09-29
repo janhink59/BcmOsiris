@@ -198,3 +198,5 @@ LEFT JOIN ' + @tabname + ' v ON v.original = m.original AND v.object_owner = s.o
 	DEALLOCATE cur;
 END
 GO
+execute p_create_standard_views --@verbose=1
+GO

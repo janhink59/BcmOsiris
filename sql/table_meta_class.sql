@@ -3,11 +3,15 @@
  * Tabulka: meta_class
  * Popis:   Logické třídy (entity) systému. Slouží jako nadstavba nad 
  *          fyzickými objekty (meta_object). Definuje konkrétní třídy 
- *          v rámci vzoru Single Table Inheritance (STI) a jejich chování,
- *          přístupová práva a prezentační vlastnosti.
- * Vazby:   - parent_object (UUID) ukazuje na meta_object (fyzická tabulka).
+ *          v rámci vzoru Single Table Inheritance (STI) a jejich chování.
+ * Vazby:   - storage_object (UUID) ukazuje na meta_object (fyzická tabulka).
  *          - ancestor_class (UUID) ukazuje na jinou meta_class (dědičnost logiky).
+ * Změny:   - Přejmenováno parent_object na storage_object.
+ *          - Textové vlastnosti změněny na NULLable pro podporu dědičnosti.
  * ============================================================================= */
+
+if not exists (select * from v_syscolumns where tabname='meta_class' and colname='storage_object')
+	execute dropni 'meta_class';
 
 IF OBJECT_ID('meta_class') IS NULL
 CREATE TABLE meta_class(
@@ -38,18 +42,18 @@ CREATE TABLE meta_class(
 	-- -------------------------------------------------------------------------
 	-- Specifické atributy logické třídy
 	-- -------------------------------------------------------------------------
-	class_name varchar(80) NOT NULL,                   -- Interní identifikátor třídy (např. 'server', 'employee')
-	parent_object uuid NOT NULL,                       -- Vazba na fyzickou tabulku z meta_object
+	class_name varchar(80) NOT NULL,                   -- Interní identifikátor třídy (např. 'asset_class', 'employee')
+	storage_object uuid NOT NULL,                      -- Vazba na fyzickou tabulku z meta_object
 	ancestor_class uuid NULL,                          -- Vazba na předka pro dědičnost vlastností (meta_class.original)
 	
-	-- Prezentační texty (přeložitelné v overridu typu 'L')
-	caption varchar(200) NOT NULL DEFAULT '',
-	caption_plural varchar(200) NOT NULL DEFAULT '',
-	description varchar(max) NOT NULL DEFAULT '',
-	helptext varchar(max) NOT NULL DEFAULT '',
+	-- Prezentační texty (přeložitelné v overridu typu 'L', NULL = dědí se)
+	caption varchar(200) NULL,
+	caption_plural varchar(200) NULL,
+	description varchar(max) NULL,
+	helptext varchar(max) NULL,
 	
 	-- Uživatelské rozhraní
-	iconname varchar(250) NOT NULL DEFAULT '',         -- Název ikony pro navigaci/seznamy
+	iconname varchar(250) NULL,                        -- Název ikony pro navigaci/seznamy
 	sort_code varchar(20) NOT NULL DEFAULT '',         -- Výchozí třídění v hierarchii
 	
 	-- Oprávnění (Vazba na role v rámci tenanta)
