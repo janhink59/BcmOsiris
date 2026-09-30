@@ -5,31 +5,37 @@
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupamelový layout.
  *       Slouží jako pevný základ pro veškeré administrační obrazovky BCM systému.
  *
+ * EXTERNÍ ZÁVISLOSTI PRO AI KONTEXT (Pokud chybí referenční soubory):
+ * - Třída dědí z `abstract_page`, která definuje základní HTML kostru, globální
+ *   CSS styly a instancuje horní pruh (`user_context`).
+ * - Zpracování POST dat a PRG vzor (Post-Redirect-Get) volá globální funkci 
+ *   `autoredirect()` z `OsirisLib.php`.
+ * - Bezpečné načítání parametrů z URL zajišťuje funkce `getinput()`.
+ * - Databázové dotazy se odesílají pomocí `sqlrun()` a `fetch()`.
+ * - Generování UI prvků, SQL dotazů a zápis je plně delegován na instanci
+ *   `entity_manager`, kterou tato třída inicializuje v metodě `render()`.
+ *
  * KLÍČOVÉ KONCEPTY A ARCHITEKTURA (PRO BUDOUCÍ VÝVOJ):
  *
  * 1. Plně datově řízená architektura (STI - Single Table Inheritance):
  *    - Potomek pouze definuje chráněnou proměnnou `$this->class_name`.
- *    - Pomocí objektu `entity_manager` je z databáze (`meta_class`, `meta_object`,
- *      `meta_column`) automaticky zjištěno, jaké sloupce se mají zobrazit,
- *      jak se validují a jak se ukládají.
+ *    - Pomocí objektu `entity_manager` je z databáze automaticky zjištěno, 
+ *      jaké sloupce se mají zobrazit, jak se validují a jak se ukládají.
  *
  * 2. PRG Vzor (Post-Redirect-Get):
  *    - Každé odeslání formuláře (`POST` s tlačítkem `btn_save`) je zachyceno
  *      ihned v metodě `render()` a předáno do `process_save()`.
  *    - Metoda `process_save()` zavolá autonomní RAC zápis a NÁSLEDNĚ provede
- *      striktní přesměrování (`autoredirect()`), čímž se vyčistí POST pole
- *      a zabrání se dvojitému uložení dat při obnovení stránky (F5).
+ *      striktní přesměrování, čímž zabrání dvojitému uložení při stisku F5.
  *
  * 3. Moderní Flexbox CSS (Bez závislosti na vnějších frameworcích):
  *    - Layout používá `flex-direction: column` pro interní panely (`md-master`
- *      a `md-detail`), což umožňuje fixní hlavičky a rolovatelný obsah bez 
- *      starého `float` či `position: absolute`.
+ *      a `md-detail`), což umožňuje fixní hlavičky a rolovatelný obsah.
  *    - Tabulky v obou panelech drží záhlaví vizuálně připnutá přes `position: sticky`.
  *
  * 4. Automatizované skupiny ve formuláři ($form_groups):
  *    - Potomek může v konstruktoru definovat pole `$this->form_groups`,
  *      čímž se formulář dynamicky rozdělí do vizuálních sekcí s vlastními nadpisy.
- *      Příklad: `['Sekce A' => ['sloupec1', 'sloupec2'], 'Sekce B' => ['sloupec3']]`.
  *
  * 5. Hook metody pro customizaci (Rozšiřitelnost bez přepisování jádra):
  *    - `render_master_top()`: Pro vložení tlačítek a HTML nad vyhledávací pole vlevo.
@@ -37,9 +43,10 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-09-30 - Obohaceno o architektonické komentáře pro AI kontext.
+ *            - Odstraněno řetězení příkazů na jeden řádek pro lepší čitelnost.
+ *            - Doplněna vizuální signalizace povinných polí a podpory překladu do UI.
  * 2026-09-29 - Přepracován CSS layout na Flexbox (fixní hlavičky, posuvné tělo).
- *            - Tabulkové hlavičky nyní bezpečně využívají position: sticky.
- *            - Potomci mají k dispozici hook render_master_top().
  * =============================================================================
  */
 
@@ -279,9 +286,12 @@ HTML;
 	 * Generuje strukturu levého panelu včetně dynamické stavby tabulky záznamů.
 	 */
 	protected function render_master(): void {
-		if ($this->em === null) return;
+		if ($this->em === null) {
+			return;
+		}
 		
 		$list_columns =$this->em->get_list_columns();
+		
 		if (empty($list_columns)) {
 			echo "<div class='msg-info'>Master panel nemá v metadatech (list_order) definované žádné sloupce.</div>";
 			return;
@@ -291,6 +301,7 @@ HTML;
 		
 		$class_meta =$this->em->get_class_meta();
 		$caption_plural = (string)($class_meta['caption_plural'] ?? '');
+		
 		if ($caption_plural === '') {$caption_plural = 'Seznam záznamů';
 		}
 
@@ -315,10 +326,12 @@ HTML;
 				<thead>
 					<tr>
 HTML;
+		
 		// Sestavení dynamických <th> ze struktury $list_columns
 		foreach ($list_columns as $col =>$header) {
 			echo "\t\t\t\t\t\t<th>" . htmlspecialchars($header) . "</th>\n";
 		}
+		
 		echo <<<HTML
 					</tr>
 				</thead>
@@ -328,6 +341,7 @@ HTML;
 		// Spuštění T-SQL dotazu (s automatickým tříděním z entity_manageru)
 		$sql = $this->em->build_select_query($this->master_where);
 		$q = sqlrun($sql);
+		
 		while ($row = fetch($q)) {
 			$uuid =$row['original'];
 			$rowClass = ($uuid === $update_guid) ? 'md-row-active' : '';$rowIdAttr = ($uuid ===$update_guid) ? 'id="active-row"' : '';
@@ -404,7 +418,9 @@ HTML;
 		
 		$is_mine = (bool)$datarow['object_is_mine'];
 		$page_param = htmlspecialchars((string)getinput('page'));$parent_param = (string)getinput('parent_object');
+		
 		$url_suffix =$parent_param !== '' ? "&parent_object=" . htmlspecialchars($parent_param) : '';$discard_url = "index.php?page={$page_param}{$url_suffix}";
+		
 		$header_html =$this->get_detail_header();
 
 		echo <<<HTML
@@ -445,13 +461,18 @@ HTML;
 			if ($group_title !== '') {
 				echo "\t\t\t\t<h3 style=\"margin-top: 20px; color: #004488; font-size: 15px;\">" . htmlspecialchars($group_title) . "</h3>\n";
 			}
+			
 			echo "\t\t\t\t<table class=\"md-table\" style=\"margin-bottom: 30px;\">\n";
 			
 			foreach ($columns as $colname) {$meta = $this->em->get_column_meta($colname);
 				
 				// Ignorovat neexistující nebo skryté prvky
-				if (empty($meta)) continue; 
-				if (!empty($meta['hidden'])) continue; 
+				if (empty($meta)) {
+					continue;
+				}
+				if (!empty($meta['hidden'])) {
+					continue;
+				}
 				
 				// Názvosloví s fallback mechanismem (Label -> Caption -> Colname)
 				$label = htmlspecialchars((string)($meta['label'] ?: $meta['caption'] ?:$colname));
@@ -460,12 +481,16 @@ HTML;
 				// Nápověda vložená jako bublinový tooltip do obalové <td>
 				$title_attr = $helptext !== '' ? " title=\"" . htmlspecialchars($helptext) . "\"" : "";
 				
+				// Nové vizuální indikátory převzaté ze starého systému
+				$req_html = !empty($meta['is_mandatory']) ? '<span style="color: #b91c1c; margin-left: 3px;" title="Povinné pole">*</span>' : '';
+				$trans_html = !empty($meta['translate']) ? '<br><small style="color: #2563eb; font-size: 10px;" title="Tato hodnota může být přeložena do jiných jazyků">(Podporuje překlad)</small>' : '';
+				
 				// Generování konkrétního tagu (<input>, <select>, <textarea>) dle metadat
 				$input_html =$this->em->render_dynamic_input($colname, (string)$datarow[$colname],$is_mine);
 				
 				echo <<<HTML
 					<tr>
-						<td style="width: 30%;"{$title_attr}><strong>{$label}:</strong></td>
+						<td style="width: 30%;"{$title_attr}><strong>{$label}{$req_html}:</strong>{$trans_html}</td>
 						<td>{$input_html}</td>
 					</tr>
 

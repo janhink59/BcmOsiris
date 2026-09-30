@@ -14,6 +14,8 @@
 	Obě tabulky jsou ve scriptu nejdřív odstraněny, protože neobsahují uživatelská data.
 */
 
+drop table if exists request_message
+drop table if exists request_variable
 drop table if exists wwwsession
 drop table if exists dbsession
 GO

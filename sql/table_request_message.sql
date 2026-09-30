@@ -1,4 +1,14 @@
-execute dropni 'request_message' -- Tabulku není třeba uchovávat mezi updaty databáze, protože se jedná o dočasné zprávy pro uživatele
+/*
+	Objekty v tomto souboru není třeba uchovávat mezi updaty databáze, protože se jedná o dočasné zprávy pro uživatele.
+	Všechno nejdřív dropnu.
+*/
+
+execute dropni 'request_message'
+execute dropni 'request_variable'
+execute dropni 'insert_request_message'
+execute dropni 'select_request_message'
+execute dropni 'p_session_variable'
+execute dropni 'f_session_variable'
 GO
 -- Tabulka request_message slouží k uchování zpráv, které se mají zobrazit uživateli při zpracování requestu. 
 -- Zprávy se ukládají do tabulky request_message a při ukončení requestu se vyčistí. 
@@ -21,6 +31,8 @@ create table request_message(
 )
 execute sp_create_index 'request_message','i_request_message_code','spid,code'
 GO
+-- Tabulka request_variable slouží k zápisu různých proměnných procedurami,
+-- typicky návratových hodnot, které může nadřízená procedura nebo klient pod stejným @@SPID získat
 create table request_variable(
 	spid int default @@spid not null references dbsession on delete cascade,
 	varname varchar(250) not null,

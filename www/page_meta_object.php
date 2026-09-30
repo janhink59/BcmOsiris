@@ -1,12 +1,9 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-09-29
+ * Verze: 2026-09-30
  * Soubor: page_meta_object.php
  * Účel: Editace metadat databázových objektů.
- * Změny: 
- * - Přechod z fyzické tabulky na logickou třídu ($class_name).
- * - Zcela odstraněna manuální konfigurace list_columns (nyní plně automatické).
  * =============================================================================
  */
 
@@ -16,14 +13,11 @@ class page_meta_object extends abstract_page_master_detail {
 
 	public function __construct() {
 		$this->page_title = 'Správa metadat objektů';
-		$this->class_name = 'meta_object'; // Navázáno na logickou třídu z meta_class
+		$this->class_name = 'meta_object';
 	}
 
 	protected function process_save(): void {
-		// Hack: entity_manager zatím neumí automaticky escapovat čisté UUID sloupce, 
-		// pokud k nim neexistuje meta_codetable definice. Prázdný string by v DB selhal.
-		// Proto prázdný předek dočasně převedeme na prázdné GUID.
-		if (isset($_POST['column_ancestor']) && $_POST['column_ancestor'] === '') {
+		if (isset($_POST['column_ancestor']) and $_POST['column_ancestor'] === '') {
 			$_POST['column_ancestor'] = '00000000-0000-0000-0000-000000000000';
 		}
 		parent::process_save();
@@ -52,13 +46,11 @@ class page_meta_object extends abstract_page_master_detail {
 		$is_mine = (bool)$datarow['object_is_mine'];
 		$code = htmlspecialchars((string)$datarow['builtin_code']);
 		
-		// Úprava vizuálního zobrazení prázdného GUID
 		$current_ancestor = (string)$datarow['column_ancestor'];
 		if ($current_ancestor === '00000000-0000-0000-0000-000000000000') {
 			$current_ancestor = '';
 		}
 
-		// Rozevírací seznam předků
 		$ancestor_options = '<option value="">--- Bez dědičnosti (vlastní sloupce) ---</option>';
 		$q_anc = sqlrun("SELECT original, builtin_code, caption FROM meta_object WHERE original <> " . guidliteral($update_guid) . " AND object_owner = 0x00 AND record_type = 'A' AND removed = 0 ORDER BY object_type, builtin_code");
 		while ($anc = fetch($q_anc)) {
