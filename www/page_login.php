@@ -3,12 +3,13 @@
  * =============================================================================
  * Stránka: page_login.php
  * Účel: Zajišťuje autentizaci uživatele proti tabulce user_account 
- *       nebo system_constant (System Admin).
+ *       nebo system_constant (System Admin) a úvodní nastavení jazyka.
  *       Podporuje zobrazení přesměrovaných chyb (např. z Google SSO).
  * 
  * Logika a vazby:
  * - Jelikož index.php přeskočí initsession() při $page == 'login', musíme
  *   zde session_start() zavolat sami, abychom získali platné $SID.
+ * - Instancuje language_manager pro obsluhu jazyka z cookies a vykreslení UI.
  * - Zpracovává POST požadavek s přihlašovacími údaji přes getinput().
  * - V případě zaškrtnutí "Zůstat přihlášen" generuje kryptograficky bezpečné
  *   tokeny (Selector & Validator) do tabulky auth_tokens a HTTP-only cookie.
@@ -29,6 +30,17 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 $SID = session_id();
 
+// 2. Inicializace jazykového manažera a ošetření přepnutí jazyka
+$requested_lang = (isset($_GET['set_lang']) && is_string($_GET['set_lang'])) ? $_GET['set_lang'] : null;
+$lang_manager = new language_manager($requested_lang);
+
+// Pokud uživatel přepnul jazyk, manažer zapsal cookie. Provedeme redirect pro čisté URL (PRG vzor).
+if ($requested_lang !== null) {
+	header('Location: index.php?page=login');
+	exit;
+}
+
+$current_lang = $lang_manager->get_current_language();
 $messageHtml = '';
 $isPost = ($_SERVER['REQUEST_METHOD'] === 'POST');
 
@@ -37,7 +49,7 @@ $isPost = ($_SERVER['REQUEST_METHOD'] === 'POST');
 // =========================================================================
 if (isset($_SESSION['login_error'])) {
 	$messageHtml = "<div class='msg-err'>" . $_SESSION['login_error'] . "</div>";
-	unset($_SESSION['login_error']); // Odstranění po prvním zobrazení
+	unset($_SESSION['login_error']);                                     // Odstranění po prvním zobrazení
 }
 
 // =========================================================================
@@ -85,7 +97,7 @@ if (!$isHttps && empty($http_allowed)) {
 }
 
 if ($isPost && $blockAction) {
-	$isPost = false; // Zahození POSTu při blokaci
+	$isPost = false;                                                     // Zahození POSTu při blokaci
 }
 
 // =========================================================================
@@ -112,7 +124,7 @@ if ($isPost) {
 			$hash = trim((string)$sysAdminRow['system_admin_pwd']);
 			if (password_verify($password, $hash)) {
 				$isAuthenticated = true;
-				$userUuid = '00000000-0000-0000-0000-000000000000'; // Rezervovaný NULL UUID pro systém
+				$userUuid = '00000000-0000-0000-0000-000000000000';      // Rezervovaný NULL UUID pro systém
 			}
 		}
 		
@@ -210,9 +222,9 @@ if ($isPost) {
 							$cookieOptions = [
 								'expires' => $expiresTime,
 								'path' => '/',
-								'secure' => $isHttps, // True pro HTTPS komunikaci
-								'httponly' => true,   // Skryje cookie před JavaScriptem (prevence XSS)
-								'samesite' => 'Strict' // Ochrana proti CSRF
+								'secure' => $isHttps,                            // True pro HTTPS komunikaci
+								'httponly' => true,                              // Skryje cookie před JavaScriptem (prevence XSS)
+								'samesite' => 'Strict'                           // Ochrana proti CSRF
 							];
 							setcookie('ramses_remember', $selector . ':' . $validator, $cookieOptions);
 						}
@@ -239,12 +251,12 @@ if ($isPost) {
 $disabledAttr = $blockAction ? 'disabled' : '';
 ?>
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="<?php echo htmlspecialchars($current_lang); ?>">
 <head>
 	<meta charset="utf-8">
 	<title>Přihlášení - BCM Osiris</title>
 	<style>
-		body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 50px; }
+		body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 50px; position: relative; }
 		.container { background-color: #fff; padding: 30px; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
 		h1 { font-size: 22px; color: #333; margin-top: 0; text-align: center; margin-bottom: 25px; }
 		label { display: block; margin-top: 15px; margin-bottom: 5px; color: #666; font-weight: bold; }
@@ -269,9 +281,17 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 		.remember-container { display: flex; align-items: center; margin-top: 15px; margin-bottom: 5px; }
 		.remember-container input[type="checkbox"] { width: auto; margin-right: 10px; margin-top: 0; cursor: pointer; }
 		.remember-container label { margin: 0; font-weight: normal; color: #333; cursor: pointer; }
+		
+		/* Obalový prvek pro výběr jazyka v pravém horním rohu */
+		.lang-switcher-wrapper { position: absolute; top: 15px; right: 20px; }
 	</style>
 </head>
 <body>
+	<!-- Integrace vizuální komponenty z language_manageru pro přepínání -->
+	<div class="lang-switcher-wrapper">
+		<?php echo $lang_manager->render_language_selector('index.php?page=login'); ?>
+	</div>
+
 	<div class="container">
 		<h1>Přihlášení do systému RAMSES</h1>
 		

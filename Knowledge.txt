@@ -26,8 +26,14 @@
 * Vlastníkem (tenantem) je object_owner. Systémové záznamy mají object_owner = 0x00. Objekty vlastněné systémem nelze běžně smazat, k jejich deaktivaci slouží příznak inactive.
 * Ochrana systémových metadat: Skripty a procedury modifikující sdílená metadata systému musí aplikovat striktní podmínku "object_owner = 0x00", aby se zabránilo destrukci tenant overridů.
 * Deterministický originál a Triggery: Záznamy používají deterministický hash pro sloupec original, generovaný automaticky po insertu pomocí triggerů (prefix trgo_) z tabulky "meta_original_keys" s využitím funkce f_generate_original. Triggery musí reagovat na AFTER INSERT, UPDATE.
-* Klientský override (Data-driven PHP vrstva): Aplikace opustila statická SQL view (vrepo_*). Místo nich třída `entity_manager` dynamicky skládá CTE dotazy (session -> system -> my -> mix) z metadat. Tím se automaticky uplatní priorita dat (tenant override > system). Sloupce s překladem (translate = 1) vracejí vedle zresolvované hodnoty také suffixy _system, _translated a _original.
-* AUTONOMNÍ RAC ZÁPIS V PHP (Konec procedur form_*): Třída `entity_manager` plně převzala zápis dat metodou `save_post_data()`. Zjišťuje kontext relace z `dbsession` a fyzickou strukturu z `v_syscolumns`. Pro nový záznam provádí INSERT, pro existující lokální záznam UPDATE a pro systémový záznam provádí INSERT klonováním předka (tenant override). Specifické ukládací SQL procedury (form_*) jsou pro standardní entity zcela vyřazeny.
+* Dynamické čtení (Konec vrepo_*): Aplikace opustila statická SQL view (vrepo_*). Místo nich třída `entity_manager` dynamicky skládá CTE dotazy (session -> system -> my -> mix) z metadat. Tím se automaticky uplatní priorita dat (tenant override > system). 
+* Dědičnost jazyků a Kaskádový COALESCE: Pro sloupce s atributem `translate = 1` skládá `entity_manager` kaskádový `COALESCE`, který se řídí fallback řetězcem z objektu `language_manager` a postupně propadá přes vlastní/systémový překlad, vlastní/systémový fallback překlad až po originální text.
+* AUTONOMNÍ ASYMETRICKÝ ZÁPIS V PHP: `entity_manager` autonomně řeší zápis dat metodou `save_post_data()`. Ochrana originálu: Univerzální atributy jdou vždy do 'A' záznamu. Překladové texty se zapisují do 'A' záznamu POUZE tehdy, shoduje-li se jazyk relace s jazykem originálu. Jinak se ukládají výhradně jako mutace do 'L' záznamu aktuálního jazyka relace.
+* Jednotná auditní stopa (who_modified): Jakákoliv úprava (i pouhé jazykové mutace 'L') vždy povinně zaktualizuje `date_modified` a `who_modified` na hlavním 'A' záznamu.
+* Oprávnění right_translate: Řídí, zda uživatel smí editovat překlady. Bez něj `entity_manager` vizuálně uzamkne překládaná pole (`readonly`) a ignoruje větev pro zápis do 'L' záznamů.
+* Výjimky z RAC/SSC: Statické systémové tabulky (jako `language`, `system_constant`) stojí zcela mimo složitost RAC. Mají prostý PK a slouží čistě pro globální konfiguraci a UI. 
+* Typy záznamů (record_type): 'A' = aktuálně schválený, 'L' = platná jazyková verze, 'H' = historický záznam.
+* Povinné auditní sloupce jsou date_created, who_created, date_modified, who_modified, language, removed, valid_from, valid_to. Auditní vazby využívají výhradně uuid.
 * Rozšířená správa metadat a STI architektura (Single Table Inheritance):
   - Fyzické struktury (tabulky, views, funkce) jsou evidovány v `meta_object`. Fyzické objekty nemají sloupce `is_final` a `is_protected`, protože fyzická vrstva je z principu neměnná.
   - Logické entity jsou abstrahovány do `meta_class` (přes vazbu `storage_object` na `meta_object`). Všechny stránky `page_{$class}` pracují výhradně s logickými třídami (`class_name`), nikoliv přímo s fyzickými tabulkami. Jedna fyzická tabulka může nést více logických tříd.
@@ -46,7 +52,7 @@
 * Přístup globálních uživatelů do konkrétních tenantů řídí vazební tabulka user_organization_access. View v_user_organization_access sjednocuje čtení oprávnění pro prvotní přihlášení i změnu kontextu.
 * Volitelná role: Role v rámci tenanta se pamatuje ve sloupci last_orgadmin. Uživatel si může při změně kontextu vybrat roli (Administrátor/Uživatel).
 * AUTONOMNÍ AUDITNÍ STOPA: Tabulky relací (wwwsession, dbsession) obsahují sloupec user_access_uuid. Zápisové mechanismy nesmí přijímat tyto hodnoty jako parametr z PHP; načítají hodnotu user_access_uuid a organization přímo z tabulky dbsession podle aktuálního @@SPID. To samé platí pro ověřování ochrany proti smazání vlastního účtu.
-* SSO integrace a autentizace probíhá plně v PHP vrstvě. Webový server má povolen anonymní přístup. Relaci zakládá p_set_login s ohledem na vyžádanou (@requested_org) či poslední navštívenou organizaci.
+* SSO integrace a autentizace probíhá plně v PHP vrstvě. Webový server má povolen anonymní přístup. Relaci zakládá p_set_login s ohledem na vyžádanou (@requested_org) či poslední navštívenou organizaci. Udržení relace ("Remember me") řeší tabulka `auth_tokens` kryptografickým tokenem.
 * Přepínání kontextu uživatele řídí statický příznak change_context_allowed. V UI se organizace přepíná přes dedikovanou stránku (page_change_user_context) s využitím PRG vzoru.
 * Pomocná ladicí relace se zakládá přes proceduru p_debuglogin.
 * Bezpečnost účtů: Skripty a procedury musí obsahovat hard-coded override (čtením identity z dbsession), aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe.
@@ -70,7 +76,7 @@
 * Jmenná konvence stránek je `page_{$class}.php`. Třída stránky nastavuje v konstruktoru `$this->class_name = '{$class}'`.
 * Potomci třídy `abstract_page_master_detail` zpravidla nepřepisují `render_master()` ani `process_save()`. Metodu `render_detail()` přepisují pouze v případě specifických tlačítek v hlavičce nebo rozdělení formuláře na nestandardní sekce.
 * Router v index.php podporuje hybridní běh a autoloader se stará o načítání tříd.
-* Globální uživatelský kontext zajišťuje třída user_context implementující __toString(), oddělující navigaci a session kontext.
+* Globální uživatelský kontext zajišťuje třída user_context implementující __toString(), oddělující navigaci a session kontext. Doplňuje ji prvek z `language_manageru` s integrovanými SVG vlaječkami.
 * Veškeré zpracování POST dat a přesměrování (PRG) probíhá přes metodu `process_save()` delegovanou na `entity_manager->save_post_data()`.
 
 6. Stromové struktury, CRMM a Infrastruktura

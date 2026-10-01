@@ -10,6 +10,8 @@
  * - Spoléhá na existenci globálního pole `$dbsession`.
  * - Dynamicky reaguje na efektivní roli (right_orgadmin), kterou si uživatel
  *   zvolil při přihlášení nebo explicitní změně kontextu.
+ * - Využívá `language_manager` pro zobrazení přepínače jazyků s vlaječkami
+ *   a plně odbavuje PRG přesměrování při změně jazyka (včetně zápisu do DB).
  * =============================================================================
  */
 
@@ -31,7 +33,7 @@ class user_context {
 
 		$displayName = (string)($dbsession['display_name'] ?? $dbsession['user_name'] ?? 'Uživatel');
 		$orgName = (string)($dbsession['organization_name'] ?? 'Organizace');
-		
+
 		// Využití stručnějších zkratek rolí pro úsporu místa v panelu
 		if (!empty($dbsession['right_sysadmin'])) {
 			$roleText = 'SYSADMIN';$roleClass = 'sys';
@@ -50,6 +52,48 @@ class user_context {
 			$orgHtml = '<span class="bcm-context-org" title="Aktuální organizace">' . $safeOrgName . '</span>';
 		}
 
+		// =====================================================================
+		// INTEGRACE JAZYKŮ A ZPRACOVÁNÍ ZMĚNY
+		// =====================================================================
+		
+		// Příprava URL pro návrat po změně jazyka (očištění od předchozího set_lang parametru)
+		$get_params =$_GET;
+		unset($get_params['set_lang']);$return_url = 'index.php';
+		if (!empty($get_params)) {
+			$return_url .= '?' . http_build_query($get_params);
+		}
+
+		// Zpracování případného požadavku na změnu jazyka z UI
+		$requested_lang = (isset($_GET['set_lang']) && is_string($_GET['set_lang'])) ?$_GET['set_lang'] : null;
+		$lang_manager = new language_manager($requested_lang);
+
+		// PRG vzor: Po přepnutí uložíme data do DB a přesměrujeme na čisté URL
+		if ($requested_lang !== null) {
+			$safe_lang = charliteral($requested_lang, 2);
+			
+			// 1. Aktualizace jazyka v běžících relacích aktuálního SPID
+			sqlrun("
+				UPDATE dbsession SET [language] = {$safe_lang} WHERE spid = @@SPID;
+				UPDATE wwwsession SET [language] = {$safe_lang} WHERE spid = @@SPID;
+			");
+			
+			// 2. Trvalé uložení jazykové preference k uživatelskému účtu
+			if (!empty($dbsession['user_account'])) {
+				$safe_user = guidliteral((string)$dbsession['user_account']);
+				sqlrun("UPDATE user_account SET [language] = {$safe_lang} WHERE original = {$safe_user} AND record_type = 'A'");
+			}
+			
+			header('Location: ' . $return_url);
+			exit;
+		}
+
+		// Vygenerování vizuálního přepínače pro hlavičku
+		$langSelectorHtml = $lang_manager->render_language_selector($return_url);
+
+		// =====================================================================
+		// HTML VÝSTUP A STYLY KOMPONENTY
+		// =====================================================================
+		
 		return <<<HTML
 <style>
 	.bcm-top-bar {
@@ -146,6 +190,8 @@ class user_context {
 		<a href="index.php?page=main" class="ctx-home" title="Hlavní panel">Domů</a>
 	</div>
 	<div class="bcm-top-bar-right">
+		{$langSelectorHtml}
+		<span style="color: #cbd5e1;">&#124;</span>
 		{$orgHtml}
 		<span style="color: #cbd5e1;">&#124;</span>
 		<span class="bcm-context-user" title="Přihlášený uživatel">{$safeDisplayName}</span>
