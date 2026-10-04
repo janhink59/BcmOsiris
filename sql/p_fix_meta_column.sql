@@ -9,6 +9,7 @@ GO
  *       2. Založí a naplní globální slovník sloupců (typ 'C').
  *       3. Synchronizuje fyzické objekty (T, V, F).
  *       4. Synchronizuje fyzické sloupce a zanese odchylky od globálu.
+ *       5. Opraví existující sloupce bez předka (napojí na globál a zachová odchylky).
  * Změny: Odstraněn zápis do zrušených sloupců is_final a is_protected u meta_object.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
@@ -295,5 +296,21 @@ BEGIN
 	  AND mc.ancestor IS NULL
 	  AND mc.column_name NOT LIKE '@%';
 
+	-- Výchozí nastavení hodnoty translate pro některé názvy sloupců
+
+	update meta_column
+		set translate=1
+	where parent_object=dbo.f_generate_original('meta_object', 0x00, 'C', 'sys_global_columns')
+		and column_name in(
+			'title',
+			'caption',
+			'caption_plural',
+			'label',
+			'header',
+			'shortname',
+			'description',
+			'helptext',
+			'note'
+		)
 END
 GO

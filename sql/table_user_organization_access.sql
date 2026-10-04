@@ -5,6 +5,7 @@
  * Vlastník: Záznam (object_owner) by měl patřit cílové organizaci, 
  *			která přístup uživateli uděluje.
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
+ * Změny:	Přidán sloupec right_translate pro novou architekturu překladů.
  * ============================================================================= */
 
 IF OBJECT_ID('user_organization_access') IS NULL
@@ -50,6 +51,12 @@ BEGIN
 		-- Poslední zvolená role (0 = User, 1 = Admin) pro obnovu kontextu session
 		last_orgadmin bit NOT NULL DEFAULT 0,
 
+		-- [ ARCHITEKTURA PŘEKLADŮ ]
+		-- Příznak, zda má uživatel v rámci této organizace právo překládat.
+		-- Do session (right_translate) se propíše pouze tehdy, pokud se jazyk relace 
+		-- shoduje s jazykem, pro který je tato organizace garantem (translator_org v tabulce language).
+		right_translate bit NOT NULL DEFAULT 0,
+
 		CONSTRAINT pk_user_organization_access PRIMARY KEY (uuid)
 	);
 	PRINT 'Tabulka user_organization_access byla vytvorena.';
@@ -58,8 +65,10 @@ GO
 
 -- -----------------------------------------------------------------------------
 -- Zajištění chybějících sloupců pro existující databáze (změnový příkaz)
+-- Idempotentní aktualizace struktury zachovávající stará data.
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'user_organization_access', 'last_orgadmin', 'bit NOT NULL DEFAULT 0';
+EXEC p_create_missing_column 'user_organization_access', 'right_translate', 'bit NOT NULL DEFAULT 0';
 GO
 
 -- -----------------------------------------------------------------------------
@@ -93,6 +102,7 @@ GO
 -- -----------------------------------------------------------------------------
 
 -- Ujistíme se, že sysadmin (uživatel 0x01) má přístup jako orgadmin do systémové organizace (0x00)
+-- a má zároveň právo globálního překladu.
 IF NOT EXISTS(
 	SELECT 1 FROM user_organization_access 
 	WHERE user_account_uuid = 0x01 
@@ -110,27 +120,27 @@ BEGIN
 		organization_uuid,
 		is_orgadmin,
 		last_orgadmin,
+		right_translate,
 		who_created,
 		who_modified
 	) VALUES (
 		NEWID(), -- unikátní GUID záznamu
 		0x00,    -- owner = systémová organizace
-		NEWID(), -- originál musí mít vlastní UUID, není to 0x00 systémový záznam v pravém slova smyslu, jen logické propojení
+		NEWID(), -- originál musí mít vlastní UUID
 		'A',
 		'A',
 		0x01,    -- user_account_uuid = id sysadmina
 		0x00,    -- organization_uuid = systémová org
 		1,       -- is_orgadmin
 		1,       -- last_orgadmin
+		1,       -- right_translate (sysadmin má právo překládat výchozí systémový jazyk)
 		0x01,
 		0x01
 	);
-	
 END
--- Originál zkopírujeme do UUID, abychom udrželi RAC standard 
---PRINT 'Vytvořen přístup System Administrátora do systémové organizace.';
+
+-- Originál zkopírujeme do UUID, abychom udrželi RAC standard u systémových iniciálních dat
 UPDATE user_organization_access 
 SET original = uuid 
-WHERE user_account_uuid = 0x01 AND organization_uuid = 0x00 AND record_type = 'A';
-	
+WHERE user_account_uuid = 0x01 AND organization_uuid = 0x00 AND record_type = 'A' AND original <> uuid;
 GO

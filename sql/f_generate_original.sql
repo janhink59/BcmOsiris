@@ -10,7 +10,7 @@ GO
 
 CREATE FUNCTION f_generate_original(
 	@table_name varchar(128),
-	@original_owner varchar(36),
+	@original_owner uuid,
 	@key1 varchar(max),
 	@key2 varchar(max)
 )
@@ -21,7 +21,7 @@ BEGIN
 	-- což funkce plynule a bez chyb vrátí jako uniqueidentifier.
 	RETURN HASHBYTES('MD5', 
 		LOWER(@table_name) + '|' + 
-		LOWER(@original_owner) + '|' + 
+		LOWER(convert(uniqueidentifier,@original_owner)) + '|' + 
 		LOWER(ISNULL(@key1, '')) + '|' + 
 		LOWER(ISNULL(@key2, ''))
 	);

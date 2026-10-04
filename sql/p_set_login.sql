@@ -27,11 +27,13 @@ BEGIN
 	DECLARE @user_name varchar(80) = 'admin';
 	DECLARE @display_name varchar(200) = 'System Administrator';
 	DECLARE @is_sysadmin bit = 1;
+	DECLARE @user_language varchar(2) = 'cs'; -- Přidáno pro novou architekturu překladů
 	
 	DECLARE @organization uniqueidentifier = NULL;
 	DECLARE @organization_name nvarchar(200) = '';
 	DECLARE @is_orgadmin bit = 0;
 	DECLARE @last_orgadmin bit = 0;
+	DECLARE @static_right_translate bit = 0;  -- Přidáno pro právo překladu z vazby
 	DECLARE @change_context_allowed bit = 0;
 	DECLARE @user_access_uuid uniqueidentifier = NULL;
 
@@ -43,7 +45,8 @@ BEGIN
 	BEGIN
 		SELECT	@user_name = login_name,
 			@display_name = LTRIM(RTRIM(ISNULL(first_name, '') + ' ' + ISNULL(last_name, ''))),
-			@is_sysadmin = is_system_admin
+			@is_sysadmin = is_system_admin,
+			@user_language = [language]
 		FROM	user_account
 		WHERE	original = @user_uuid AND record_type = 'A' AND removed = 0 AND inactive = 0;
 
@@ -54,6 +57,7 @@ BEGIN
 			@organization_name = v.organization_name,
 			@is_orgadmin = v.is_orgadmin,
 			@last_orgadmin = v.last_orgadmin,
+			@static_right_translate = v.right_translate,
 			@user_access_uuid = v.user_access_uuid
 		FROM	v_user_organization_access v
 		WHERE	v.user_account_uuid = @user_uuid
@@ -105,6 +109,7 @@ BEGIN
 		SET @is_orgadmin = 1;
 		SET @last_orgadmin = 1;
 		SET @is_sysadmin = 1;
+		SET @static_right_translate = 1; -- Sysadmin může překládat výchozí jazyk
 		SET @change_context_allowed = 1;
 		SET @user_access_uuid = 0x00;
 	END
@@ -117,13 +122,25 @@ BEGIN
 		SET @effective_orgadmin = 1;
 	END
 
+	-- [ ARCHITEKTURA PŘEKLADŮ ]
+	-- Dynamické vyhodnocení right_translate pro domovský/výchozí jazyk uživatele
+	DECLARE @effective_translate bit = 0;
+	IF @is_sysadmin = 1 
+	BEGIN
+		SET @effective_translate = 1;
+	END 
+	ELSE IF @static_right_translate = 1 AND EXISTS (SELECT 1 FROM [language] WHERE [language] = @user_language AND translator_org = @organization)
+	BEGIN
+		SET @effective_translate = 1;
+	END
+
 	-- Zápis do session se skutečně uplatňovanými právy
 	INSERT INTO wwwsession (
 		spid, wwwsession, user_account, user_access_uuid, user_name, organization, organization_name, display_name, 
-		session_log, client_ip, login_date, right_orgadmin, right_sysadmin, change_context_allowed
+		[language], session_log, client_ip, login_date, right_orgadmin, right_sysadmin, right_translate, change_context_allowed
 	) VALUES (
 		@@SPID, @wwwsession, @user_uuid, @user_access_uuid, @user_name, @organization, @organization_name, @display_name, 
-		0, @client_ip, GETDATE(), @effective_orgadmin, @is_sysadmin, @change_context_allowed
+		@user_language, 0, @client_ip, GETDATE(), @effective_orgadmin, @is_sysadmin, @effective_translate, @change_context_allowed
 	);
 
 	COMMIT;

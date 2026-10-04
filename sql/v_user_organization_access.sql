@@ -9,7 +9,7 @@ GO
  *
  * Vazby na okolí:
  * - Primárně voláno procedurou p_set_login pro rozhodnutí o cílové organizaci
- *   při přihlašování.
+ *   při přihlašování. Zpřístupňuje příznak right_translate pro další logiku.
  * - Bude sloužit UI komponentám (user_context) pro naplnění rozevíracího 
  *   seznamu tenantů.
  * - LEFT JOIN na tabulku dbsession zajišťuje, že pohled funguje i ve chvíli, 
@@ -22,6 +22,7 @@ SELECT	a.original AS user_access_uuid,
 	o.caption AS organization_name,
 	a.is_orgadmin,
 	a.last_orgadmin,
+	a.right_translate,
 	u.last_login_organization AS last_login_org,
 	s.organization AS current_organization,
 	a.date_created
