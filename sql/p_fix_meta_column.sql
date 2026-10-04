@@ -298,9 +298,26 @@ BEGIN
 
 	-- Výchozí nastavení hodnoty translate pro některé názvy sloupců
 
+	create table #list_order(column_name varchar(80) collate database_default, list_order int identity primary key)
+	insert into #list_order(column_name)
+	values('builtin_code')
+		,('column_name')
+		,('caption')
+		,('title')
+
+	-- Nastavení položky "list_column" dle výše uvedeného seznamu
+
+	update meta_column
+		set list_order=lc.list_order
+	from meta_column
+		left outer join #list_order lc on lc.column_name=meta_column.column_name
+	where parent_object=@c_object
+
+	-- Nastavení položky "translate" pro vyjmenované sloupce
+
 	update meta_column
 		set translate=1
-	where parent_object=dbo.f_generate_original('meta_object', 0x00, 'C', 'sys_global_columns')
+	where parent_object=@c_object
 		and column_name in(
 			'title',
 			'caption',
@@ -313,4 +330,11 @@ BEGIN
 			'note'
 		)
 END
+GO
+--execute p_fix_meta_column
+
+--select column_name,* from meta_column
+--where parent_object=dbo.f_generate_original('meta_object', 0x00, 'C', 'sys_global_columns')
+--	and list_order is not null
+--order by sort_code
 GO

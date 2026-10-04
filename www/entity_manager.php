@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-04 (Finální RAC architektura s plnou dokumentací)
+ * Verze: 2026-10-04 (Finální RAC architektura s plnou dokumentací + oprava dynamických auditních stop)
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
  * 
@@ -253,8 +253,53 @@ class entity_manager {
 		
 		$has_ancestor = isset($this->columns_meta['ancestor']);
 
+		// Sestavení seznamu tabulkových aliasů, abychom našli to nevyšší (nejnovější) datum 
+		// úpravy napříč všemi vrstvami a jazyky.
+		$mod_aliases = ['m', 'o'];
+		$has_trans = false;
+		foreach ($this->columns_meta as $meta) {
+			if (!empty($meta['translate'])) {
+				$has_trans = true;
+				break;
+			}
+		}
+		if ($has_trans) {
+			array_push($mod_aliases, 'l', 'v', 'l_fall', 'v_fall');
+		}
+		if ($has_ancestor) {
+			array_push($mod_aliases, 'anc');
+			if ($has_trans) {
+				array_push($mod_aliases, 'anc_l', 'anc_v', 'anc_l_fall', 'anc_v_fall');
+			}
+		}
+
+		// Poskládání T-SQL klauzule pro získání globálního data úpravy řádku
+		$values_arr = [];
+		foreach ($mod_aliases as $al) {
+			$values_arr[] = "({$al}.date_modified, {$al}.who_modified)";
+		}
+		$values_str = implode(', ', $values_arr);
+		
+		$cross_apply = "
+		OUTER APPLY (
+			SELECT TOP 1 d_mod, w_mod 
+			FROM (VALUES {$values_str}) AS mods(d_mod, w_mod) 
+			WHERE d_mod IS NOT NULL 
+			ORDER BY d_mod DESC
+		) AS last_mod";
+
 		// Průchod sloupci a sestavení klauzule SELECT na základě jejich překladových a bezpečnostních vlastností
 		foreach ($this->columns_meta as $colname => $meta) {
+			// Datum modifikace a autora převezmeme z našeho dynamického kalkulátoru nejmladšího záznamu
+			if ($colname === 'date_modified') {
+				$select_list .= "\n\t\t, last_mod.d_mod AS [date_modified]";
+				continue;
+			}
+			if ($colname === 'who_modified') {
+				$select_list .= "\n\t\t, last_mod.w_mod AS [who_modified]";
+				continue;
+			}
+
 			if (in_array($colname, $meta_columns_list, true)) {
 				// Technické RAC sloupce bereme přímo z vyhodnoceného mixu (m)
 				$select_list .= "\n\t\t, m.[{$colname}]";
@@ -321,6 +366,10 @@ class entity_manager {
 		$select_list = substr($select_list, 4);
 		// Příznak, zda výsledek (byť vznikl COALESCÍM z vícero zdrojů) obsahuje zásah tenanta v 'A' vrstvě
 		$select_list .= "\n\t\t, m.object_is_mine";
+		
+		// Dynamické připojení zformátovaných informací o uživatelích pro zobrazení auditní stopy
+		$select_list .= "\n\t\t, dbo.f_get_user_info(m.who_created) AS [who_created_info]";
+		$select_list .= "\n\t\t, dbo.f_get_user_info(last_mod.w_mod) AS [who_modified_info]";
 
 		// JOINy: Složité pole LEFT JOINŮ pro načtení všech jazykových vrstev 
 		// s ohledem na aktuální dbsession.language a language.fallback_language
@@ -344,6 +393,8 @@ class entity_manager {
 		LEFT JOIN {$table} anc_v_fall ON anc_v_fall.original = m.ancestor AND anc_v_fall.record_type = 'L' AND anc_v_fall.language = s.fallback_language AND anc_v_fall.object_owner = s.organization_uuid AND anc_v_fall.removed = 0
 		";
 		}
+
+		$joins .= $cross_apply;
 
 		// Sestavení CTE bloku (Common Table Expressions) s dynamickými dotazy
 		$sql = "
@@ -675,7 +726,8 @@ class entity_manager {
 
 		// BACKENDOVÁ POJISTKA 2 (is_final): Pokud je celá třída nedotknutelná (číselníky),
 		// tenantovi zamezíme jakémukoli vytváření vlastního 'A' overridu vymazáním polí.
-		if ($org_uuid !== '0x00' &&$org_uuid !== '00000000-0000-0000-0000-000000000000' && !empty($this->class_meta['is_final'])) {$a_post_data = []; 
+		if ($org_uuid !== '0x00' && $org_uuid !== '00000000-0000-0000-0000-000000000000' && !empty($this->class_meta['is_final'])) {
+			$a_post_data = []; 
 		}
 
 		// Obalení operací transakcí, aby se zamezilo nekonzistentním zápisům L bez A.
@@ -685,33 +737,36 @@ class entity_manager {
 		if ($orig_guid === '') {
 			// A) INSERT: Zcela nová identita vytvářená uživatelem
 			$new_uuid = "NEWID()";
-			$insert_cols = [];$insert_vals = [];
+			$insert_cols = [];
+			$insert_vals = [];
 			
-			foreach ($physical_cols as$col) {
+			foreach ($physical_cols as $col) {
 				if (in_array($col, ['uuid', 'original'], true)) {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$new_uuid;
+					$insert_vals[] = $new_uuid;
 				} elseif ($col === 'object_owner') {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$org_uuid;
+					$insert_vals[] = $org_uuid;
 				} elseif ($col === 'record_type') {
 					$insert_cols[] = "[$col]"; 
 					$insert_vals[] = "'A'";
 				} elseif ($col === 'language') {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$lang_literal;
+					$insert_vals[] = $lang_literal;
 				} elseif (in_array($col, ['date_created', 'date_modified'], true)) {
 					$insert_cols[] = "[$col]"; 
 					$insert_vals[] = "GETDATE()";
 				} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$user_uuid;
-				} elseif (array_key_exists($col, $a_post_data)) {$val = $a_post_data[$col];
+					$insert_vals[] = $user_uuid;
+				} elseif (array_key_exists($col, $a_post_data)) {
+					$val = $a_post_data[$col];
 					// Ošetření chyby s ukládáním prázdných řetězců do UUID polí
-					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
+					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {
+						$val = 'NULL';
 					}
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$val;
+					$insert_vals[] = $val;
 				}
 			}
 
@@ -730,10 +785,11 @@ class entity_manager {
 			if ($a_exists) {
 				// Tenant upravuje již svůj vlastní záznam
 				$set_clauses = [];
-				foreach ($a_post_data as $col =>$val) {
-					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
+				foreach ($a_post_data as $col => $val) {
+					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {
+						$val = 'NULL';
 					}
-					$set_clauses[] = "[$col] =$val";
+					$set_clauses[] = "[$col] = $val";
 				}
 				// Zaktualizování auditní stopy bezpodmínečně
 				$set_clauses[] = "date_modified = GETDATE()";
@@ -745,22 +801,30 @@ class entity_manager {
 				// OVERRIDE: Tenant zasahuje do systémového záznamu poprvé.
 				// Provedeme INSERT INTO ... SELECT, který zkopíruje všechna systémová 
 				// (is_protected) data, ale nahradí je těmi lokálními uživatelskými.
-				$insert_cols = [];$select_vals = [];
+				$insert_cols = [];
+				$select_vals = [];
 				
-				foreach ($physical_cols as$col) {
+				foreach ($physical_cols as $col) {
 					$insert_cols[] = "[$col]";
 					
-					if ($col === 'uuid') {$select_vals[] = "NEWID()";
+					if ($col === 'uuid') {
+						$select_vals[] = "NEWID()";
 					} elseif ($col === 'object_owner') {
-						$select_vals[] =$org_uuid;
-					} elseif ($col === 'record_type') {$select_vals[] = "'A'";
-					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {$select_vals[] = "GETDATE()";
+						$select_vals[] = $org_uuid;
+					} elseif ($col === 'record_type') {
+						$select_vals[] = "'A'";
+					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {
+						$select_vals[] = "GETDATE()";
 					} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
-						$select_vals[] =$user_uuid;
-					} elseif ($col === 'original') {$select_vals[] = "original"; 
-					} elseif ($col === 'language') {$select_vals[] = "language"; // Mateřský jazyk dědíme od systému
-					} elseif (array_key_exists($col, $a_post_data)) {$val = $a_post_data[$col];
-						if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
+						$select_vals[] = $user_uuid;
+					} elseif ($col === 'original') {
+						$select_vals[] = "original"; 
+					} elseif ($col === 'language') {
+						$select_vals[] = "language"; // Mateřský jazyk dědíme od systému
+					} elseif (array_key_exists($col, $a_post_data)) {
+						$val = $a_post_data[$col];
+						if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {
+							$val = 'NULL';
 						}
 						$select_vals[] =$val; 
 					} else {
