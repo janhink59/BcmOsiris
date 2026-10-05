@@ -1,8 +1,10 @@
 ﻿/* =============================================================================
+ * Verze: 2026-10-05
+ * Soubor: table_user_account.sql
  * Tabulka: user_account (Uživatelské účty)
- * Popis:	Evidence uživatelských účtů s plnou podporou multi-tenancy, RAC a SSC.
- *			Účty jsou nyní vlastněny globálně systémem (object_owner = 0x00).
- *			Přístup do konkrétních tenantů řeší vazební tabulka user_organization_access.
+ * Popis:   Evidence uživatelských účtů s plnou podporou multi-tenancy, RAC a SSC.
+ *          Účty jsou nyní vlastněny globálně systémem (object_owner = 0x00).
+ *          Přístup do konkrétních tenantů řeší vazební tabulka user_organization_access.
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
  * ============================================================================= */
 
@@ -13,7 +15,7 @@ BEGIN
 		-- Standardní RAC a SSC sloupce
 		-- -------------------------------------------------------------------------
 		uuid uuid NOT NULL,
-		object_owner uuid NOT NULL DEFAULT 0x00, -- Globální vlastnictví systémem
+		object_owner uuid NOT NULL DEFAULT 0x00,                   -- Globální vlastnictví systémem
 		original uuid NOT NULL,
 		record_type varchar(1) NOT NULL DEFAULT 'A',
 		approval_status varchar(1) NOT NULL DEFAULT 'A',
@@ -53,6 +55,7 @@ BEGIN
 		-- Řízení bezpečnostních politik pro SSO / Lokální přihlášení
 		allow_local_login bit NOT NULL DEFAULT 1,
 		is_system_admin bit NOT NULL DEFAULT 0,
+		is_developer bit NOT NULL DEFAULT 0,                       -- Příznak role vývojáře (Developer)
 		require_password_change bit NOT NULL DEFAULT 0,
 		failed_login_attempts int NOT NULL DEFAULT 0,
 		locked_until datetime NULL,
@@ -61,7 +64,7 @@ BEGIN
 		mfa_enabled bit NOT NULL DEFAULT 0,
 		mfa_secret varchar(100) NOT NULL DEFAULT '',
 		
-		-- NOVÉ: Kontext poslední navštívené organizace (pro automatické přihlášení)
+		-- Kontext poslední navštívené organizace (pro automatické přihlášení)
 		last_login_organization uuid NULL,
 		
 		-- Osobní a kontaktní údaje
@@ -88,6 +91,7 @@ GO
 -- Zajištění chybějících sloupců pro existující databáze (změnový příkaz)
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'user_account', 'last_login_organization', 'uuid NULL';
+EXEC p_create_missing_column 'user_account', 'is_developer', 'bit NOT NULL DEFAULT 0';
 GO
 
 -- -----------------------------------------------------------------------------
@@ -131,13 +135,20 @@ BEGIN
 		uuid, object_owner, original, record_type, approval_status,
 		caption, shortname, description_text,
 		login_name, email, first_name, last_name,
-		is_system_admin, allow_local_login, last_login_organization
+		is_system_admin, is_developer, allow_local_login, last_login_organization
 	) VALUES (
 		0x01, 0x00, 0x01, 'A', 'A',
 		'System Administrator', 'admin', 'Systémový master uživatelský účet.',
 		'sysadmin', 'hink@rac.cz', 'System', 'Administrator',
-		1, 1, 0x00
+		1, 1, 1, 0x00
 	);
 	PRINT 'Systémový účet 0x01 (sysadmin) byl vložen.';
+END
+ELSE
+BEGIN
+	-- Upgrade pro stávající fiktivní účet (zajištění vývojářské role po updatu struktury)
+	UPDATE user_account 
+	SET is_developer = 1 
+	WHERE original = 0x01 AND record_type = 'A' AND is_developer = 0;
 END
 GO

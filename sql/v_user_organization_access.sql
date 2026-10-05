@@ -4,24 +4,17 @@ GO
 /* =============================================================================
  * SOUBOR: v_user_organization_access.sql
  * Účel: Rozšířený pohled nad vazební tabulkou user_organization_access pro
- *       vyhodnocení oprávnění uživatele. Nyní vrací i user_access_uuid pro naplnění 
- *       kontextu operací a last_orgadmin pro uchování paměti zvolené role.
- *
- * Vazby na okolí:
- * - Primárně voláno procedurou p_set_login pro rozhodnutí o cílové organizaci
- *   při přihlašování. Zpřístupňuje příznak right_translate pro další logiku.
- * - Bude sloužit UI komponentám (user_context) pro naplnění rozevíracího 
- *   seznamu tenantů.
- * - LEFT JOIN na tabulku dbsession zajišťuje, že pohled funguje i ve chvíli, 
- *   kdy záznam relace (@@SPID) ještě neexistuje (prvotní login).
+ *       vyhodnocení oprávnění uživatele. 
+ * Změny: Nahrazen zrušený sloupec last_orgadmin novým sloupcem last_role.
+ *        Přejmenován alias na access_uuid pro zamezení zmatků se session.
  * ============================================================================= */
 CREATE VIEW v_user_organization_access AS
-SELECT	a.original AS user_access_uuid,
+SELECT	a.original AS access_uuid,
 	a.user_account_uuid,
 	a.organization_uuid AS organization,
 	o.caption AS organization_name,
 	a.is_orgadmin,
-	a.last_orgadmin,
+	a.last_role,
 	a.right_translate,
 	u.last_login_organization AS last_login_org,
 	s.organization AS current_organization,

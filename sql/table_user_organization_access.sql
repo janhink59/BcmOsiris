@@ -5,7 +5,7 @@
  * Vlastník: Záznam (object_owner) by měl patřit cílové organizaci, 
  *			která přístup uživateli uděluje.
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
- * Změny:	Přidán sloupec right_translate pro novou architekturu překladů.
+ * Změny:	Nahrazení last_orgadmin za last_role pro sjednocení kontextů.
  * ============================================================================= */
 
 IF OBJECT_ID('user_organization_access') IS NULL
@@ -48,8 +48,8 @@ BEGIN
 		-- Příznak, zda je uživatel administrátorem dané organizace
 		is_orgadmin bit NOT NULL DEFAULT 0,
 		
-		-- Poslední zvolená role (0 = User, 1 = Admin) pro obnovu kontextu session
-		last_orgadmin bit NOT NULL DEFAULT 0,
+		-- Poslední zvolená role (U=User, A=Admin, S=Sysadmin, D=Developer) pro obnovu kontextu
+		last_role varchar(1) NOT NULL DEFAULT 'U',
 
 		-- [ ARCHITEKTURA PŘEKLADŮ ]
 		-- Příznak, zda má uživatel v rámci této organizace právo překládat.
@@ -64,11 +64,19 @@ END
 GO
 
 -- -----------------------------------------------------------------------------
--- Zajištění chybějících sloupců pro existující databáze (změnový příkaz)
--- Idempotentní aktualizace struktury zachovávající stará data.
+-- Zajištění chybějících sloupců pro existující databáze a datová migrace
 -- -----------------------------------------------------------------------------
-EXEC p_create_missing_column 'user_organization_access', 'last_orgadmin', 'bit NOT NULL DEFAULT 0';
+EXEC p_create_missing_column 'user_organization_access', 'last_role', 'varchar(1) NOT NULL DEFAULT ''U''';
 EXEC p_create_missing_column 'user_organization_access', 'right_translate', 'bit NOT NULL DEFAULT 0';
+GO
+
+-- Migrace stávajícího sloupce last_orgadmin na novou sémantiku last_role a jeho odstranění
+IF EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'user_organization_access' AND colname = 'last_orgadmin')
+BEGIN
+	EXEC('UPDATE user_organization_access SET last_role = ''A'' WHERE last_orgadmin = 1 AND last_role = ''U''');
+	EXEC sp_drop_column 'user_organization_access', 'last_orgadmin';
+	PRINT 'Sloupec last_orgadmin byl úspěšně migrován a odstraněn.';
+END
 GO
 
 -- -----------------------------------------------------------------------------
@@ -101,7 +109,7 @@ GO
 -- Inicializace: Přístup System Administrátora do systémové organizace
 -- -----------------------------------------------------------------------------
 
--- Ujistíme se, že sysadmin (uživatel 0x01) má přístup jako orgadmin do systémové organizace (0x00)
+-- Ujistíme se, že sysadmin (uživatel 0x01) má přístup do systémové organizace (0x00)
 -- a má zároveň právo globálního překladu.
 IF NOT EXISTS(
 	SELECT 1 FROM user_organization_access 
@@ -119,7 +127,7 @@ BEGIN
 		user_account_uuid,
 		organization_uuid,
 		is_orgadmin,
-		last_orgadmin,
+		last_role,
 		right_translate,
 		who_created,
 		who_modified
@@ -132,7 +140,7 @@ BEGIN
 		0x01,    -- user_account_uuid = id sysadmina
 		0x00,    -- organization_uuid = systémová org
 		1,       -- is_orgadmin
-		1,       -- last_orgadmin
+		'S',     -- last_role (Výchozí role pro sysadmina)
 		1,       -- right_translate (sysadmin má právo překládat výchozí systémový jazyk)
 		0x01,
 		0x01

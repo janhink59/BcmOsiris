@@ -3,15 +3,9 @@
 	wwwsession - obsahuje záznam o přihlášeném uživateli s primárním klíčem na session_id prohlížeče
 	dbsession - obsahuje záznam o běžícím requestu s primárním klíčem na "spid"
 
-	Systém umožňuje vícenásobné přihlášení uživatele s různým "wwwsession".
-	Při přihlášení se zkopírují kontextové informace uživatele (jazyk, organizace ....)
-	z tabulky user_account a zůstávají v platnosti po celou dobu session.
-
-	Systém umožňuje rovněž provedení víc requestů v rámci jedné session.
-	Při zahájení requestu (procedura init_session) se odstraní řádek pro platné @@spid
-	a je do něj zkopírován aktuální záznam z wwwsession, kde je předtím aktualizován sloupec "spid".
-
-	Obě tabulky jsou ve scriptu nejdřív odstraněny, protože neobsahují uživatelská data.
+	Změny v architektuře:
+	- Sloupec user_access_uuid přejmenován na login_session_uuid (odkazuje do audit_login_session).
+	- Bitová práva right_sysadmin a right_orgadmin sloučena do active_role (U, A, S, D).
 */
 
 drop table if exists request_message
@@ -24,7 +18,7 @@ CREATE TABLE [dbo].[wwwsession](
 	[spid] [int] NOT NULL, -- @@spid posledního requestu
 	[wwwsession] [varchar](50) NOT NULL primary key,
 	[user_account] uuid not null,
-	[user_access_uuid] uuid not null,
+	[login_session_uuid] uuid not null, -- Odkaz na záznam v tabulce audit_login_session
 	[user_name] [varchar](80) NOT NULL,
 	[organization] uuid not null,
 	[organization_name] [nvarchar](200) default '' NOT NULL,
@@ -32,9 +26,10 @@ CREATE TABLE [dbo].[wwwsession](
 	[licence_level] [tinyint] default 0 NOT NULL,
 	[language] [varchar](2) default 'en' NOT NULL,
 	[working_date] [date] default getdate() NOT NULL,
-	[right_sysadmin] [bit] default 0 NOT NULL,
-	[right_orgadmin] [bit] default 0 NOT NULL,
-	[right_translate] [bit] default 0 NOT NULL,
+	
+	[active_role] [varchar](1) default 'U' NOT NULL, -- Efektivní role v aktuálním sezení (U, A, S, D)
+	[right_translate] [bit] default 0 NOT NULL,      -- Doplňkové oprávnění pro ukládání globálních překladů
+	
 	[login_date] [datetime] default getdate() NOT NULL,
 	[request_date] [datetime] default getdate() NOT NULL,
 	[session_log] [int] NOT NULL,
@@ -51,7 +46,7 @@ CREATE TABLE [dbo].[dbsession](
 	[spid] [int] primary key NOT NULL, -- @@spid requestu
 	[wwwsession] [varchar](50) NOT NULL,
 	[user_account] uuid not null,
-	[user_access_uuid] uuid not null,
+	[login_session_uuid] uuid not null, -- Odkaz na záznam v tabulce audit_login_session
 	[user_name] [varchar](80) NOT NULL,
 	[organization] uuid not null,
 	[organization_name] [nvarchar](200) default '' NOT NULL,
@@ -59,9 +54,10 @@ CREATE TABLE [dbo].[dbsession](
 	[licence_level] [tinyint] default 0 NOT NULL,
 	[language] [varchar](2) default 'en' NOT NULL,
 	[working_date] [date] default getdate() NOT NULL,
-	[right_sysadmin] [bit] default 0 NOT NULL,
-	[right_orgadmin] [bit] default 0 NOT NULL,
-	[right_translate] [bit] default 0 NOT NULL,
+	
+	[active_role] [varchar](1) default 'U' NOT NULL, -- Efektivní role v aktuálním sezení (U, A, S, D)
+	[right_translate] [bit] default 0 NOT NULL,      -- Doplňkové oprávnění pro ukládání globálních překladů
+	
 	[login_date] [datetime] default getdate() NOT NULL,
 	[request_date] [datetime] default getdate() NOT NULL,
 	[session_log] [int] NOT NULL,
