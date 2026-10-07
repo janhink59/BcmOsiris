@@ -1,12 +1,13 @@
 /* =============================================================================
  * Soubor: table_meta_column.sql
- * Verze: 2026-10-07 11:45
+ * Verze: 2026-10-08
  * Tabulka: meta_column
  * Popis:   Uchovává metadata sloupců/proměnných v databázi a aplikacích.
  * Vazby:   Podklad pro entity_manager. Definuje vlastnosti formulářů a 
  *          rozšíření základních definic globálního slovníku (meta_class.original).
  *          Odkazuje na meta_codetable a meta_class pro datové <select> prvky.
- * Změny:   - Přejmenováno parent_object na parent_class (vazba na logickou třídu).
+ * Změny:   - Přesnější okomentování sémantiky vazeb (parent_class, ancestor, referenced_class).
+ *          - Přejmenováno parent_object na parent_class (vazba na logickou třídu).
  *          - Přidán import_origin pro evidenci importů (Měkký audit).
  * ============================================================================= */
 
@@ -34,7 +35,7 @@ CREATE TABLE meta_column(
 	valid_to date NULL,
 	is_template bit NOT NULL DEFAULT 0,
 	template uuid NULL,
-	import_origin varchar(255) NULL,                   -- Původní textový autor/systém z importu (Měkký audit)
+	import_origin varchar(255) NULL,                                       -- Původní textový autor/systém z importu (Měkký audit)
 
 	-- -------------------------------------------------------------------------
 	-- Auditní stopy
@@ -47,13 +48,13 @@ CREATE TABLE meta_column(
 	-- -------------------------------------------------------------------------
 	-- Specifické atributy záznamu (Prezentační a aplikační logika)
 	-- -------------------------------------------------------------------------
-	parent_class uuid NOT NULL,                        -- Vazba na logickou třídu (meta_class)
+	parent_class uuid NOT NULL,                                            -- STRUKTURÁLNÍ VAZBA: Ukazuje na meta_class.original. Definuje, ke které logické třídě (entitě) tento sloupec fyzicky patří.
 	parent_order int NOT NULL DEFAULT 0,
 	sort_code varchar(20) NULL,
 	column_name varchar(80) NOT NULL,
 	
 	-- Nastavení pro Master panel (Seznam záznamů)
-	list_order int NULL,                               -- Pokud je vyplněno, sloupec se zobrazí v levém panelu v tomto pořadí
+	list_order int NULL,                                                   -- Pokud je vyplněno, sloupec se zobrazí v levém panelu v tomto pořadí
 	
 	caption varchar(200) NULL,
 	caption_plural varchar(200) NULL,
@@ -77,11 +78,11 @@ CREATE TABLE meta_column(
 	hidden bit NULL,
 	customizable bit NULL,
 	
-	ancestor uuid NULL,
+	ancestor uuid NULL,                                                    -- METADATOVÁ DĚDIČNOST: Ukazuje na meta_column.original (obvykle v sys_global_columns). Pokud je zdení hodnota NULL, převezme se z tohoto předka.
 	
 	-- Odkazy pro dynamické <select> prvky v entity_manager
-	referenced_codetable varchar(80) NOT NULL DEFAULT '',
-	referenced_class uuid NULL,
+	referenced_codetable varchar(80) NOT NULL DEFAULT '',                  -- DATOVÁ VAZBA: Název číselníku z meta_codetable, odkud se mají načítat hodnoty pro rozevírací seznamy.
+	referenced_class uuid NULL,                                            -- DATOVÁ VAZBA: Ukazuje na meta_class.original. Používá se pro relační vazby cizích klíčů na jiné entity.
 
 	-- -------------------------------------------------------------------------
 	-- Ochrana systémových struktur

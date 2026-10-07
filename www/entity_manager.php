@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-07 17:00
+ * Verze: 2026-10-08
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
  * 
@@ -36,10 +36,10 @@
  *    jeho 'L' záznam získá object_owner=0x00 a stane se globálním překladem.
  *    Zároveň se kvůli symetrii k 'A' záznamu vždy zakládá paralelní 'L' záznam.
  * 
- * 6. Delta Zápis (Override vzor)
- *    Při zápisu dat tenanta se hodnoty porovnávají se systémovým originálem 
- *    nebo definicí předka. Pokud je hodnota shodná, ukládá se fyzicky NULL,
- *    aby se zachovala kontinuita dědičnosti pro budoucí systémové změny.
+ * 6. Klonování s modifikací (Override vzor)
+ *    Při prvním zásahu tenanta do systémového záznamu se vytvoří kompletní fyzická kopie
+ *    záznamu ('A' i 'L'), ve které se nahradí upravené hodnoty. Databáze tak obsahuje vždy 
+ *    kompletní data bez nutnosti plošného využívání NULL.
  * =============================================================================
  */
 
@@ -54,6 +54,10 @@ class entity_manager {
 	private array $list_columns = [];
 	private bool $is_initialized = false;
 	private language_manager $lang_manager;
+	
+	private array $physical_cols = [];
+	private array $col_types = [];
+	private array $col_nulls = [];
 
 	/**
 	 * Konstruktor třídy.
@@ -90,6 +94,15 @@ class entity_manager {
 			$this->storage_table = $row['storage_table_name'];
 			$class_uuid = guidliteral($row['original']);
 			free_result($q_class);
+			
+			// Načtení fyzického databázového schématu pro přesné parsování a validaci
+			$q_syscols = sqlrun("SELECT colname, typename, nulls FROM v_syscolumns WHERE tabname = " . charliteral($this->storage_table) . " AND iscomputed = 0 AND is_identity = 0");
+			while ($c = fetch($q_syscols)) {
+				$this->physical_cols[] = $c['colname'];
+				$this->col_types[$c['colname']] = $c['typename'];
+				$this->col_nulls[$c['colname']] = strtolower(trim((string)$c['nulls']));
+			}
+			free_result($q_syscols);
 			
 			// 2. Načtení sloupců patřících k fyzické tabulce vč. dědičnosti (LEFT JOIN na ancestor)
 			$sql_cols = "
@@ -143,12 +156,12 @@ class entity_manager {
 				
 				foreach ($inherited_props as $prop) {
 					// Pokud je lokální hodnota u tenanta NULL, převezmeme hodnotu od předka
-					if ($col[$prop] === null and isset($col["anc_$prop"])) {
+					if ($col[$prop] === null && isset($col["anc_$prop"])) {
 						$col[$prop] = $col["anc_$prop"];
 					}
 					
 					// Speciální ošetření pro stringové vlastnosti, které by mohly mít výchozí hodnotu '' místo NULL
-					if (($prop === 'referenced_codetable' or $prop === 'input_type') and $col[$prop] === '' and !empty($col["anc_$prop"])) {
+					if (($prop === 'referenced_codetable' || $prop === 'input_type') && $col[$prop] === '' && !empty($col["anc_$prop"])) {
 						$col[$prop] = $col["anc_$prop"];
 					}
 				}
@@ -322,16 +335,16 @@ class entity_manager {
 			$is_protected = !empty($meta['is_protected']);
 			// U stringových a textových polí musíme dělat při skládání COALESCE přetypování na NVARCHAR(MAX),
 			// jinak by databáze hlásila chybu na neshodu délek (prec) varcharů.
-			$is_string = $translate or in_array($meta['input_type'], ['text', 'textarea', null, ''], true);
+			$is_string = $translate || in_array($meta['input_type'], ['text', 'textarea', null, ''], true);
 			
 			// Sestavení základního fallbacku pro 'A' záznam (Tenant vs Systém vs Předek)
 			$base_coal = [];
 			if (!$is_protected) {
-				$base_coal[] = "m.[{$colname}]";                                  // Tenant může ovlivnit hodnotu (pokud není chráněná)
+				$base_coal[] = "m.[{$colname}]";                                          // Tenant může ovlivnit hodnotu (pokud není chráněná)
 			}
-			$base_coal[] = "o.[{$colname}]";                                      // Systémový originál (0x00)
+			$base_coal[] = "o.[{$colname}]";                                              // Systémový originál (0x00)
 			if ($has_ancestor) {
-				$base_coal[] = "anc.[{$colname}]";                                // Zděděná hodnota z předka
+				$base_coal[] = "anc.[{$colname}]";                                        // Zděděná hodnota z předka
 			}
 
 			if ($is_string) {
@@ -504,7 +517,7 @@ class entity_manager {
 		
 		if (!empty($meta['is_computed'])) {
 			$is_readonly = true;
-		} elseif (!$is_mine and !empty($meta['is_protected'])) {
+		} elseif (!$is_mine && !empty($meta['is_protected'])) {
 			$is_readonly = true;
 		} 
 		
@@ -545,7 +558,7 @@ class entity_manager {
 				return "<textarea name=\"{$safe_name}\" {$rows} {$attr_string}>{$safe_val}</textarea>";
 				
 			case 'checkbox':
-				$checked = ($value === '1' or strtolower($value) === 'true') ? 'checked' : '';
+				$checked = ($value === '1' || strtolower($value) === 'true') ? 'checked' : '';
 				if ($is_readonly) {
 					// Zamčené checkboxy se neodesílají při POSTu. Podvrhujeme proto systémový stav 
 					// přes hidden pole, aby nedošlo k falešnému zahození záznamu.
@@ -588,7 +601,7 @@ class entity_manager {
 			}
 			
 			// Nativní chování HTML formulářů u checkboxů (neodesílá se, pokud není zaškrtnuto)
-			if (!isset($_POST[$colname]) and $meta['input_type'] === 'checkbox') {
+			if (!isset($_POST[$colname]) && $meta['input_type'] === 'checkbox') {
 				$data[$colname] = 0;
 				continue;
 			}
@@ -598,31 +611,15 @@ class entity_manager {
 			}
 
 			$raw_val = (string)$_POST[$colname];
+			$phys_type = $this->col_types[$colname] ?? '';
 
-			// Převody typů pro bezpečný T-SQL zápis
-			if ($meta['input_type'] === 'checkbox') {
-				if ($raw_val === '1' or strtolower($raw_val) === 'true') {
-					$data[$colname] = 1;  
-				} else {
-					$data[$colname] = 0;  
-				}  
+			// Typově přesné parsování podle fyzického schématu databáze a metadat
+			if (in_array($phys_type, ['uuid', 'uniqueidentifier'], true)) {
+				$data[$colname] = guidliteral($raw_val);
+			} elseif ($meta['input_type'] === 'checkbox') {
+				$data[$colname] = ($raw_val === '1' || strtolower($raw_val) === 'true') ? 1 : 0;
 			} elseif ($meta['input_type'] === 'number') {
-				if ($raw_val === '') {
-					$data[$colname] = 'NULL';
-				} else {
-					$data[$colname] = (float)$raw_val;
-				}
-			} elseif (!empty($meta['referenced_codetable']) or !empty($meta['referenced_class'])) {
-				// Pokud napojený číselník používá UUID klíče, přehodíme literál z textu na GUID
-				if ($raw_val === '') {
-					$data[$colname] = 'NULL';
-				} else {
-					if (preg_match('/^[a-f0-9]{8}-/i', $raw_val)) {
-						$data[$colname] = guidliteral($raw_val);
-					} else {
-						$data[$colname] = charliteral($raw_val);
-					}
-				}
+				$data[$colname] = ($raw_val === '') ? 'NULL' : (string)(float)$raw_val;
 			} else {
 				$data[$colname] = charliteral($raw_val);
 			}
@@ -632,14 +629,13 @@ class entity_manager {
 	}
 
 	/**
-	 * JÁDRO BACKENDU: Provede autonomní asymetrický zápis rozparsovaných dat.
+	 * JÁDRO BACKENDU: Provede autonomní zápis dat s uplatněním architektury "Klonování s modifikací".
 	 * 
 	 * 1. Zjistí aktuální oprávnění ze session (right_translate) a master data.
 	 * 2. Zfiltruje chráněná pole (`is_protected`), do kterých tenant nesmí zapisovat.
-	 * 3. Uloží nepřevezená data do 'A' záznamu (tvorba nebo aktualizace overridu).
-	 * 4. Vyčlení přeložená data (`translate=1`) a zapíše je do paralelního 'L' záznamu, 
-	 *    aby udržel konzistentní symetrii schématu. Záznamu L určí vlastníka (`0x00` vs `tenant_uuid`)
-	 *    podle systémového oprávnění `right_translate`.
+	 * 3. Zjistí shodu s předlohou (systémovým originálem) a uloží záznam s plně obsazenými 
+	 *    datovými poli, včetně případné dědičnosti z předka.
+	 * 4. Vyčlení přeložená data (`translate=1`) a zapíše je do paralelního 'L' záznamu.
 	 * 
 	 * @param string $update_guid Originální UUID záznamu (Prázdné pro INSERT)
 	 */
@@ -654,7 +650,7 @@ class entity_manager {
 		}
 
 		// 1. Zjištění kontextu přihlášeného uživatele a organizace (Tenanta)
-		$q_session = sqlrun("SELECT organization, user_access_uuid, language, right_translate FROM dbsession WHERE spid = @@SPID");
+		$q_session = sqlrun("SELECT organization, login_session_uuid, language, right_translate FROM dbsession WHERE spid = @@SPID");
 		$session = fetch($q_session);
 		free_result($q_session);
 
@@ -662,61 +658,66 @@ class entity_manager {
 			fatal_error("Uložení selhalo", "Nepodařilo se načíst kontext uživatele z dbsession.");
 		}
 
-		// Převod identity uživatele na SQL literály pro auditní stopu a filtry
-		$org_uuid = guidliteral($session['organization']);
-		$user_uuid = guidliteral($session['user_access_uuid']);
-		$lang_literal = charliteral($session['language']);
-		$sess_lang_raw = $session['language'];
+		// Identita uživatele: zachování surových hodnot pro PHP logiku a tvorba bezpečných SQL literálů
+		$org_uuid_raw = (string)$session['organization'];
+		$user_uuid_raw = (string)$session['login_session_uuid'];
+		$sess_lang_raw = (string)$session['language'];
 		$right_translate = !empty($session['right_translate']);
+
+		$org_uuid_sql = guidliteral($org_uuid_raw);
+		$user_uuid_sql = guidliteral($user_uuid_raw);
+		$lang_literal_sql = charliteral($sess_lang_raw);
 		
 		$table = $this->storage_table;
 
-		// 2. Získání skutečných fyzických sloupců z databáze
-		// Vyloučením 'iscomputed' a 'is_identity' zabráníme SQL chybám při zápisu (nelze vkládat do identity)
-		$q_cols = sqlrun("SELECT colname, typename FROM v_syscolumns WHERE tabname = " . charliteral($table) . " AND iscomputed = 0 AND is_identity = 0");
-		$physical_cols = [];
-		$col_types = [];
-		while ($c = fetch($q_cols)) {
-			$physical_cols[] = $c['colname'];
-			$col_types[$c['colname']] = $c['typename'];
-		}
-		free_result($q_cols);
+		$orig_guid_raw = $update_guid;
+		$orig_guid_sql = ($update_guid === '') ? '' : guidliteral($update_guid);
 
-		$orig_guid = ($update_guid === '') ? '' : guidliteral($update_guid);
-
-		// 3. Zjištění vlastníka a master jazyka původního 'A' záznamu
+		// 2. Zjištění vlastníka a master jazyka původního 'A' záznamu
 		$a_exists = false;
-		$a_uuid = '';
+		$a_uuid_sql = '';
 		$a_lang_raw = $sess_lang_raw; // Výchozí pro zcela nový záznam
-		$orig_owner = $org_uuid;
+		$orig_owner_raw = $org_uuid_raw;
 		$baseline_row = [];
 
-		if ($orig_guid !== '') {
-			$q_check = sqlrun("SELECT * FROM {$table} WHERE original = {$orig_guid} AND record_type = 'A' AND removed = 0 AND (object_owner = {$org_uuid} OR object_owner = 0x00) ORDER BY object_owner DESC");
-			if ($row = fetch($q_check)) {
-				// Vyhodnocení, zda se mění vlastní záznam, nebo se kopíruje systémový originál
-				$a_exists = ((string)$row['object_owner'] === (string)$session['organization'] || $org_uuid === '0x00');
-				$orig_owner = guidliteral($row['object_owner']);
-				$a_uuid = guidliteral($row['uuid']);
-				$a_lang_raw = $row['language'];
-				$baseline_row = $row;
+		$is_sysadmin_org = ($org_uuid_raw === '0x00' || $org_uuid_raw === '00000000-0000-0000-0000-000000000000');
+
+		if ($orig_guid_sql !== '') {
+			// Dohledání existujícího záznamu (buď tenantův override, nebo systémový originál)
+			$q_check = sqlrun("SELECT * FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND removed = 0 AND (object_owner = {$org_uuid_sql} OR object_owner = 0x00) ORDER BY object_owner DESC");
+			$current_row = null;
+			if ($current_row = fetch($q_check)) {
+				$a_exists = ((string)$current_row['object_owner'] === $org_uuid_raw || $is_sysadmin_org);
+				$orig_owner_raw = (string)$current_row['object_owner'];
+				$a_uuid_sql = guidliteral((string)$current_row['uuid']);
+				$a_lang_raw = (string)$current_row['language'];
 			}
 			free_result($q_check);
 			
-			// Příprava dat pro Delta zápis: Zjištění, proti čemu budeme porovnávat shodu
-			if (!$a_exists && $orig_owner === '0x00') {
-				$baseline_row = $row; // Jsme tenant tvořící svůj první override, porovnáváme se systémem
-			} elseif (isset($this->columns_meta['ancestor']) && !empty($row['ancestor'])) {
-				$anc_guid = guidliteral($row['ancestor']);
-				$q_anc = sqlrun("SELECT * FROM {$table} WHERE original = {$anc_guid} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00");
-				if ($anc_row = fetch($q_anc)) {
-					$baseline_row = $anc_row; // Záznam má dědičnost, porovnáváme s hodnotami předka
+			// Příprava dat pro Delta zápis (Override).
+			if (!$is_sysadmin_org) {
+				// Tenant vždy kopíruje čistý systémový záznam
+				$q_base = sqlrun("SELECT * FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00");
+				if ($base = fetch($q_base)) {
+					$baseline_row = $base;
 				}
-				free_result($q_anc);
+				free_result($q_base);
+			} else {
+				// Systémový administrátor dědí záznam výhradně z předka (pokud nějakého má)
+				$anc_val = $post_data['ancestor'] ?? ($current_row['ancestor'] ?? null);
+				if (!empty($anc_val) && $anc_val !== "''" && $anc_val !== 'NULL') {
+					$anc_raw = trim((string)$anc_val, "'");
+					$anc_guid = guidliteral($anc_raw);
+					$q_anc = sqlrun("SELECT * FROM {$table} WHERE original = {$anc_guid} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00");
+					if ($anc_row = fetch($q_anc)) {
+						$baseline_row = $anc_row;
+					}
+					free_result($q_anc);
+				}
 			}
 		}
 
-		// 4. Filtrace struktury: Rozdělení dat na 'A' (Základ) a 'L' (Lokalizace)
+		// 3. Filtrace struktury: Rozdělení dat na 'A' (Základ) a 'L' (Lokalizace) podle Override vzoru
 		$a_post_data = [];
 		$l_post_data = [];
 		$has_translated_cols = false;
@@ -725,18 +726,22 @@ class entity_manager {
 		foreach ($post_data as $col => $val) {
 			// BACKENDOVÁ POJISTKA (is_protected): Pokud se nejedná o sysadmina (0x00),
 			// všechny chráněné sloupce vyhodíme. Ignorujeme i případné podvrhy přes HTTP nástroje.
-			if ($org_uuid !== '0x00' && $org_uuid !== '00000000-0000-0000-0000-000000000000' && !empty($this->columns_meta[$col]['is_protected'])) {
+			if (!$is_sysadmin_org && !empty($this->columns_meta[$col]['is_protected'])) {
 				continue;
 			}
 
-			// Implementace vzoru Delta (Override vzor): Porovnání se základní linií (baseline)
-			// Pokud je hodnota shodná s předkem nebo systémovým originálem, uložíme fyzicky NULL
-			// pro zachování propisování budoucích změn z jádra systému dolů k tenantům.
+			// Implementace vzoru Override (Klonování s modifikací)
+			// Pro netknuté sloupce (shodné s předlohou) nahradíme NULL pouze v případě, 
+			// že to databázové schéma fyzicky podporuje (podmínka odstraněna, protože
+			// zapisujeme vždy kompletní data).
 			if (!empty($baseline_row) && isset($baseline_row[$col])) {
 				$baseline_val = $baseline_row[$col];
-				$compare_val = trim($val, "'");
-				if ((string)$compare_val === (string)$baseline_val) {
-					$val = 'NULL';
+				$compare_val = trim((string)$val, "'");
+				
+				if (isset($this->col_nulls[$col]) && $this->col_nulls[$col] !== 'not null') {
+					if ((string)$compare_val === (string)$baseline_val) {
+						$val = 'NULL';
+					}
 				}
 			}
 
@@ -758,167 +763,161 @@ class entity_manager {
 
 		// BACKENDOVÁ POJISTKA 2 (is_final): Pokud je celá třída nedotknutelná (číselníky),
 		// tenantovi zamezíme jakémukoli vytváření vlastního 'A' overridu vymazáním polí.
-		if ($org_uuid !== '0x00' && $org_uuid !== '00000000-0000-0000-0000-000000000000' && !empty($this->class_meta['is_final'])) {
+		if (!$is_sysadmin_org && !empty($this->class_meta['is_final'])) {
 			$a_post_data = []; 
 		}
 
 		// Obalení operací transakcí, aby se zamezilo nekonzistentním zápisům L bez A.
 		sqlrun("BEGIN TRAN");
 
-		// 5. Zápis do 'A' záznamu (Správa Master dat a auditních stop)
-		if ($orig_guid === '') {
+		// 4. Zápis do 'A' záznamu (Správa Master dat a auditních stop)
+		if ($orig_guid_sql === '') {
 			// A) INSERT: Zcela nová identita vytvářená uživatelem
-			$new_uuid = "NEWID()";
-			$insert_cols = []; $insert_vals = [];
 			
-			foreach ($physical_cols as$col) {
+			// VÝPOČET DETERMINISTICKÉHO ORIGINÁLU PŘED INSERTEM
+			$q_keys = sqlrun("SELECT key1_column, key2_column FROM meta_original_keys WHERE table_name = " . charliteral($table));
+			$key_info = fetch($q_keys);
+			free_result($q_keys);
+
+			if ($key_info) {
+				$k1_col = $key_info['key1_column'];$k2_col = $key_info['key2_column'];$k1_val = array_key_exists($k1_col,$a_post_data) ? $a_post_data[$k1_col] : "''";
+				$k2_val = ($k2_col && array_key_exists($k2_col,$a_post_data)) ? $a_post_data[$k2_col] : 'NULL';
+
+				$q_orig = sqlrun("SELECT dbo.f_generate_original(" . charliteral($table) . ", {$org_uuid_sql}, CAST({$k1_val} AS VARCHAR(MAX)), CAST({$k2_val} AS VARCHAR(MAX))) AS orig_guid");
+				if ($row = fetch($q_orig)) {
+					$orig_guid_sql = guidliteral((string)$row['orig_guid']);
+				}
+				free_result($q_orig);
+			} elseif ($table === 'link') {$link_def = array_key_exists('link_def', $a_post_data) ?$a_post_data['link_def'] : "''";
+				$from_obj = array_key_exists('from_object', $a_post_data) ?$a_post_data['from_object'] : "''";
+				$to_obj = array_key_exists('to_object', $a_post_data) ?$a_post_data['to_object'] : "''";
+
+				$q_orig = sqlrun("SELECT dbo.f_link_original(CAST({$org_uuid_sql} AS varchar(36)), CAST({$link_def} AS varchar(36)), CAST({$from_obj} AS varchar(36)), CAST({$to_obj} AS varchar(36))) AS orig_guid");
+				if ($row = fetch($q_orig)) {
+					$orig_guid_sql = guidliteral((string)$row['orig_guid']);
+				}
+				free_result($q_orig);
+			} else {
+				$q_orig = sqlrun("SELECT NEWID() AS orig_guid");
+				if ($row = fetch($q_orig)) {
+					$orig_guid_sql = guidliteral((string)$row['orig_guid']);
+				}
+				free_result($q_orig);
+			}
+
+			$insert_cols = [];$insert_vals = [];
+			
+			foreach ($this->physical_cols as$col) {
 				if (in_array($col, ['uuid', 'original'], true)) {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$new_uuid;
+					$insert_vals[] =$orig_guid_sql;
 				} elseif ($col === 'object_owner') {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$org_uuid;
+					$insert_vals[] =$org_uuid_sql;
 				} elseif ($col === 'record_type') {
 					$insert_cols[] = "[$col]"; 
 					$insert_vals[] = "'A'";
 				} elseif ($col === 'language') {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$lang_literal;
+					$insert_vals[] =$lang_literal_sql;
 				} elseif (in_array($col, ['date_created', 'date_modified'], true)) {
 					$insert_cols[] = "[$col]"; 
 					$insert_vals[] = "GETDATE()";
 				} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$user_uuid;
-				} elseif (array_key_exists($col, $a_post_data)) {$val = $a_post_data[$col];
-					// Ošetření chyby s ukládáním prázdných řetězců do UUID polí
-					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
-					}
+					$insert_vals[] =$user_uuid_sql;
+				} elseif (array_key_exists($col,$a_post_data)) {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$val;
+					$insert_vals[] = $a_post_data[$col];
 				}
 			}
 
-			// Pro úspěšný zápis paralelního 'L' záznamu potřebujeme získat original.
-			// Pošleme T-SQL konstrukci OUTPUT inserted.original, 
-			// protože u deterministických triggerů určuje klíč až databáze (trgo_*).
-			$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") OUTPUT inserted.original VALUES (" . implode(', ', $insert_vals) . ")";
-			$q_ins = sqlrun($sql);
-			if ($ins_row = fetch($q_ins)) {
-				$orig_guid = guidliteral($ins_row['original']);
-			}
-			free_result($q_ins);
+			$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") VALUES (" . implode(', ', $insert_vals) . ")";
+			sqlrun($sql);
 			
 		} elseif (!empty($a_post_data)) {
 			// B) UPDATE NEBO OVERRIDE 'A' ZÁZNAMU
-			if ($a_exists) {
-				// Tenant upravuje již svůj vlastní záznam
-				$set_clauses = [];
-				foreach ($a_post_data as $col =>$val) {
-					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
-					}
-					$set_clauses[] = "[$col] =$val";
+			if ($a_exists) {$set_clauses = [];
+				foreach ($a_post_data as$col => $val) {$set_clauses[] = "[$col] =$val";
 				}
-				// Zaktualizování auditní stopy bezpodmínečně
 				$set_clauses[] = "date_modified = GETDATE()";
-				$set_clauses[] = "who_modified = {$user_uuid}";
+				$set_clauses[] = "who_modified = {$user_uuid_sql}";
 
-				$sql = "UPDATE {$table} SET " . implode(', ', $set_clauses) . " WHERE uuid = {$a_uuid}";
+				$sql = "UPDATE {$table} SET " . implode(', ', $set_clauses) . " WHERE uuid = {$a_uuid_sql}";
 				sqlrun($sql);
 			} else {
 				// OVERRIDE: Tenant zasahuje do systémového záznamu poprvé.
-				// Provedeme INSERT INTO ... SELECT, který zkopíruje všechna systémová 
-				// (is_protected) data, ale nahradí je těmi lokálními uživatelskými.
 				$insert_cols = [];$select_vals = [];
 				
-				foreach ($physical_cols as$col) {
+				foreach ($this->physical_cols as$col) {
 					$insert_cols[] = "[$col]";
 					
 					if ($col === 'uuid') {$select_vals[] = "NEWID()";
 					} elseif ($col === 'object_owner') {
-						$select_vals[] =$org_uuid;
+						$select_vals[] =$org_uuid_sql;
 					} elseif ($col === 'record_type') {$select_vals[] = "'A'";
 					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {$select_vals[] = "GETDATE()";
 					} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
-						$select_vals[] =$user_uuid;
+						$select_vals[] =$user_uuid_sql;
 					} elseif ($col === 'original') {$select_vals[] = "original"; 
-					} elseif ($col === 'language') {$select_vals[] = "language"; // Mateřský jazyk dědíme od systému
-					} elseif (array_key_exists($col, $a_post_data)) {$val = $a_post_data[$col];
-						if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
-						}
-						$select_vals[] =$val; 
+					} elseif ($col === 'language') {$select_vals[] = "language";
+					} elseif (array_key_exists($col, $a_post_data)) {$select_vals[] = $a_post_data[$col]; 
 					} else {
-						// Veškerá is_protected a nenaplněná data si propíše SQL ze starého záznamu
 						$select_vals[] = "[$col]"; 
 					}
 				}
 
-				$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") \nSELECT " . implode(', ', $select_vals) . " \nFROM {$table} \nWHERE original = {$orig_guid} AND object_owner = 0x00 AND record_type = 'A'";
+				$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") \nSELECT " . implode(', ', $select_vals) . " \nFROM {$table} \nWHERE original = {$orig_guid_sql} AND object_owner = 0x00 AND record_type = 'A'";
 				sqlrun($sql);
 			}
 		}
 
-		// 6. Zápis 'L' záznamu (Zajištění asymetrického překladu a DB symetrie A-L)
-		if ($has_translated_cols and$orig_guid !== '') {
+		// 5. Zápis 'L' záznamu
+		if ($has_translated_cols &&$orig_guid_sql !== '') {
 			
-			// VYHODNOCENÍ VLASTNICTVÍ (right_translate)
-			// Uživatel si tvoří lokální překlad, ALE pokud má od administrátorů přidělené 
-			// právo a zároveň překládá záznam, který patří celému systému (0x00),
-			// pak i jeho 'L' záznam bude prohlášen za globální (0x00).
-			$l_owner =$org_uuid;
-			if ($orig_owner === '0x00' ||$orig_owner === '00000000-0000-0000-0000-000000000000') {
-				if ($right_translate) {$l_owner = '0x00';
+			$l_owner_sql =$org_uuid_sql;
+			if ($orig_owner_raw === '0x00' ||$orig_owner_raw === '00000000-0000-0000-0000-000000000000') {
+				if ($right_translate) {$l_owner_sql = '0x00';
 				}
 			}
 
-			$q_l_check = sqlrun("SELECT uuid FROM {$table} WHERE original = {$orig_guid} AND object_owner = {$l_owner} AND record_type = 'L' AND language = {$lang_literal} AND removed = 0");
+			$q_l_check = sqlrun("SELECT uuid FROM {$table} WHERE original = {$orig_guid_sql} AND object_owner = {$l_owner_sql} AND record_type = 'L' AND language = {$lang_literal_sql} AND removed = 0");
 			$l_exists = fetch($q_l_check);
 			free_result($q_l_check);
 
 			if ($l_exists) {
-				// L-UPDATE: Mutace ve slovníku existuje, přepíšeme pouze nové texty
 				if (!empty($l_post_data)) {$set_l = [];
-					foreach ($l_post_data as $col =>$val) {
-						if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
-						}
-						$set_l[] = "[$col] =$val";
+					foreach ($l_post_data as$col => $val) {$set_l[] = "[$col] =$val";
 					}
 					$set_l[] = "date_modified = GETDATE()";
-					$set_l[] = "who_modified = {$user_uuid}";
+					$set_l[] = "who_modified = {$user_uuid_sql}";
 					
-					$sql_l = "UPDATE {$table} SET " . implode(', ', $set_l) . " WHERE uuid = " . guidliteral($l_exists['uuid']);
+					$sql_l = "UPDATE {$table} SET " . implode(', ', $set_l) . " WHERE uuid = " . guidliteral((string)$l_exists['uuid']);
 					sqlrun($sql_l);
 				}
 			} else {
-				// ZAJIŠTĚNÍ SYMETRIE: Vždy vložíme klon do 'L', aby paralelně existoval k 'A'.
-				// To zamezí chybějícím spojením při LEFT JOINech v COALESCE konstrukci.
 				$insert_cols_l = [];$select_vals_l = [];
 				
-				foreach ($physical_cols as$col) {
+				foreach ($this->physical_cols as$col) {
 					$insert_cols_l[] = "[$col]";
 					
 					if ($col === 'uuid') {$select_vals_l[] = "NEWID()";
 					} elseif ($col === 'object_owner') {
-						$select_vals_l[] =$l_owner;
+						$select_vals_l[] =$l_owner_sql;
 					} elseif ($col === 'record_type') {$select_vals_l[] = "'L'";
 					} elseif ($col === 'language') {
-						$select_vals_l[] =$lang_literal;
+						$select_vals_l[] =$lang_literal_sql;
 					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {$select_vals_l[] = "GETDATE()";
 					} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
-						$select_vals_l[] =$user_uuid;
-					} elseif (array_key_exists($col, $l_post_data)) {$val = $l_post_data[$col];
-						if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
-						}
-						$select_vals_l[] =$val; 
+						$select_vals_l[] =$user_uuid_sql;
+					} elseif (array_key_exists($col, $l_post_data)) {$select_vals_l[] = $l_post_data[$col]; 
 					} else {
 						$select_vals_l[] = "[$col]"; 
 					}
 				}
 
-				// Zdroj pro kopii 'L' záznamu čerpáme přednostně z vlastního (aktuálního) 'A' záznamu. 
-				// Pokud si tenant override nedělal (protože je např. třída is_final), propadne čtení na originál (0x00).
-				$source_owner_sql = ($org_uuid !== '0x00') ? "object_owner IN ({$org_uuid}, 0x00)" : "object_owner = 0x00";
-				$sql_l = "INSERT INTO {$table} (" . implode(', ', $insert_cols_l) . ") \nSELECT TOP 1 " . implode(', ', $select_vals_l) . " \nFROM {$table} \nWHERE original = {$orig_guid} AND {$source_owner_sql} AND record_type = 'A' AND removed = 0 ORDER BY object_owner DESC";
+				$source_owner_sql = (!$is_sysadmin_org) ? "object_owner IN ({$org_uuid_sql}, 0x00)" : "object_owner = 0x00";
+				$sql_l = "INSERT INTO {$table} (" . implode(', ', $insert_cols_l) . ") \nSELECT TOP 1 " . implode(', ', $select_vals_l) . " \nFROM {$table} \nWHERE original = {$orig_guid_sql} AND {$source_owner_sql} AND record_type = 'A' AND removed = 0 ORDER BY object_owner DESC";
 				sqlrun($sql_l);
 			}
 		}

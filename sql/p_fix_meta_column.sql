@@ -3,11 +3,13 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-07 14:30
+ * Verze: 2026-10-08
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
  *       na logické třídy (meta_class). Obsahuje i integrovanou logiku
  *       z původní procedury p_generate_primitive_classes.
+ * Změny: - Doplněno automatické generování caption z názvu třídy
+ *        - Přidán class_name do #list_order pro zobrazení v Master panelu
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -118,13 +120,16 @@ BEGIN
 		uuid, object_owner, original, record_type, approval_status,
 		class_name, storage_object, ancestor_class,
 		is_final, is_protected,
-		who_created, who_modified
+		who_created, who_modified,
+		caption, caption_plural
 	)
 	SELECT 
 		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
 		mo.builtin_code, mo.original, NULL,
 		1, 0,
-		@sys_owner, @sys_owner
+		@sys_owner, @sys_owner,
+		UPPER(SUBSTRING(mo.builtin_code, 1, 1)) + SUBSTRING(mo.builtin_code, 2, LEN(mo.builtin_code)),
+		UPPER(SUBSTRING(mo.builtin_code, 1, 1)) + SUBSTRING(mo.builtin_code, 2, LEN(mo.builtin_code))
 	FROM meta_object mo
 	CROSS APPLY (
 		SELECT dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), mo.builtin_code, '') AS orig_uuid
@@ -339,7 +344,7 @@ BEGIN
 	-- Výchozí nastavení hodnoty translate pro některé názvy sloupců
 	create table #list_order(column_name varchar(80) collate database_default, list_order int identity primary key)
 	insert into #list_order(column_name)
-	values('builtin_code'), ('column_name'), ('caption'), ('title')
+	values('builtin_code'), ('column_name'), ('class_name'), ('caption'), ('title')
 
 	-- Nastavení položky "list_order" dle výše uvedeného seznamu
 	update meta_column
@@ -356,5 +361,16 @@ BEGIN
 			'title', 'caption', 'caption_plural', 'label', 'header', 
 			'shortname', 'description', 'helptext', 'note'
 		)
+
+	-- -------------------------------------------------------------------------
+	-- 6. OPRAVA HISTORICKÝCH DAT: Doplnění chybějícího caption u existujících tříd
+	-- -------------------------------------------------------------------------
+	UPDATE meta_class
+	SET caption = UPPER(SUBSTRING(class_name, 1, 1)) + SUBSTRING(class_name, 2, LEN(class_name)),
+		caption_plural = UPPER(SUBSTRING(class_name, 1, 1)) + SUBSTRING(class_name, 2, LEN(class_name))
+	WHERE caption IS NULL 
+	  AND record_type = 'A' 
+	  AND object_owner = 0x00;
+
 END
 GO

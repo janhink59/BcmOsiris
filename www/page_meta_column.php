@@ -1,12 +1,12 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-07
+ * Verze: 2026-10-08
  * Soubor: page_meta_column.php
  * Účel: Detailní editace metadat konkrétního sloupce (tenant override nebo překlad).
  * Změny:
  * - Přepojení vazby z fyzické tabulky (parent_object) na logickou třídu (parent_class).
- * - Úprava zpětného odkazu a načítání titulku z vrepo_meta_class.
+ * - Úprava zpětného odkazu a načítání titulku přes entity_manager (náhrada za vrepo_meta_class).
  * =============================================================================
  */
 
@@ -32,8 +32,10 @@ class page_meta_column extends abstract_page_master_detail {
 		if ($this->parent_class !== '') {
 			$this->master_where = "m.parent_class = " . guidliteral($this->parent_class);
 			
-			// Zjištění názvu nadřízeného objektu pro titulek (primárně caption, fallback na class_name)
-			$q = sqlrun("SELECT class_name, caption FROM vrepo_meta_class WHERE original = " . guidliteral($this->parent_class));
+			// Zjištění názvu nadřízeného objektu pro titulek přes dynamický dotaz z entity_manageru
+			$em_parent = new entity_manager('meta_class');
+			$q = sqlrun($em_parent->build_select_query("m.original = " . guidliteral($this->parent_class)));
+			
 			if ($row = fetch($q)) {
 				$this->parent_name = (string)$row['caption'] !== '' ? (string)$row['caption'] : (string)$row['class_name'];
 				$this->page_title = 'Sloupce: ' . $this->parent_name;

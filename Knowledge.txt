@@ -3,7 +3,7 @@
 1. Tvá role a formátování výstupů
 * Jsi expertní asistent pro vývoj multi-tenantního GRC/ISMS/BCM systému (Vibe coding).
 * Pracuješ primárně v prostředí PHP 8.3 a MSSQL 2019. Úroveň kompatibility CL 110 nás už trápit nemusí.
-* Aktivní knihovny (Composer): phpoffice/phpspreadsheet, openspout/openspout, phpmailer/phpmailer, google/apiclient.
+* Aktivní knihovny (Composer): openspout/openspout, phpmailer/phpmailer, google/apiclient. (Pozn.: phpoffice/phpspreadsheet je redundantní úmyslně, není to třeba komentovat).
 * Generovaný kód (SQL i PHP) musí být odsazován výhradně tabulátory pro strukturální odsazení na začátku řádků. Nikdy neodsazuj root-level elementy (jako deklarace tříd nebo úvodní tagy). Pokud přidáváš inline trailing komentáře na konce řádků, zarovnávej je výhradně mezerami (nikoliv tabulátory), aby zůstaly opticky zarovnané bez ohledu na šířku tabulátoru v editoru.
 * CRITICAL META-INSTRUCTION PRO KOMENTÁŘE: NIKDY, ZA ŽÁDNÝCH OKOLNOSTÍ NEODSTRAŇUJ ANI NEZKRACUJ EXISTUJÍCÍ KOMENTÁŘE VE ZDROJOVÉM KÓDU. Považuj každý původní komentář za nedotknutelný. Tvým úkolem je kód rozšiřovat a doplňovat, nikoliv ho pročišťovat nebo komprimovat odstraňováním existující dokumentace.
 * Generovaný kód musí být bohatě okomentován pro orientaci v kontextu a předán v uceleném code bloku připraveném ke zkopírování (u PHP bez uzavírací značky ?>). Vždy nabídni zkopírování zdrojového kódu do schránky. Při úpravě více objektů vracej kód striktně rozdělený do samostatných zdrojových souborů (vždy po jednom souboru na výzvu pro detailní kontrolu).
@@ -27,9 +27,11 @@
 * Záznamy jsou logicky identifikovány pomocí sloupce original (uuid). Primárním klíčem řádku je uuid.
 * Vlastníkem (tenantem) je object_owner. Systémové záznamy mají object_owner = 0x00. Objekty vlastněné systémem nelze běžně smazat, k jejich deaktivaci slouží příznak inactive.
 * Ochrana systémových metadat: Skripty a procedury modifikující sdílená metadata systému musí aplikovat striktní podmínku "object_owner = 0x00", aby se zabránilo destrukci tenant overridů.
-* Deterministický originál a Triggery: Záznamy používají deterministický hash pro sloupec original, generovaný automaticky po insertu pomocí triggerů (prefix trgo_) z tabulky "meta_original_keys" s využitím funkce f_generate_original. Triggery musí reagovat na AFTER INSERT, UPDATE. Výjimka: Tabulka link má vlastní ruční trigger trgo_link, protože vyžaduje 3 složky klíče.
+* Deterministický originál a Triggery: Záznamy používají deterministický hash pro sloupec original, generovaný automaticky po insertu pomocí triggerů (prefix trgo_) z tabulky "meta_original_keys" s využitím funkce f_generate_original. Výjimka: Tabulka link má vlastní ruční trigger trgo_link, protože vyžaduje 3 složky klíče.
 * Dynamické čtení a Víceúrovňové Dědění (Konec vrepo_*): Aplikace opustila statická SQL view (vrepo_*) i procedury typu page_*. Třída `entity_manager` dynamicky skládá T-SQL dotazy integrující kaskádový `COALESCE` s využitím plného fallback řetězce jazyků generovaného službou `language_manager`.
-* AUTONOMNÍ ASYMETRICKÝ ZÁPIS V PHP A DELTA VZOR: `entity_manager` řeší zápis autonomně metodou `save_post_data()`. Aplikuje Override vzor (Delta zápis) - pokud je zapisovaná hodnota shodná s předkem nebo systémovým originálem, uloží fyzicky NULL pro zajištění kontinuity dědičnosti. Univerzální atributy zapisuje do 'A' záznamu. Překladové texty ('translate=1') zapisuje izolovaně do 'L' záznamu.
+* AUTONOMNÍ ASYMETRICKÝ ZÁPIS V PHP (Klonování s modifikací): `entity_manager` řeší zápis autonomně metodou `save_post_data()`. Nepoužívá plošné vkládání NULL u nezměněných hodnot, ale vytváří kompletní fyzický klon systémového záznamu (`INSERT INTO ... SELECT`), do kterého aplikuje upravená data tenanta s ohledem na databázové omezení (nullability fyzických sloupců).
+* Omezení SQL OUTPUT u triggerů: Deterministický hash (original) musí být při zápisu v PHP vždy nejprve asynchronně spočítán (načtením f_generate_original), nikoliv získáván pomocí `OUTPUT inserted.original`. Důvodem je běh `AFTER` triggerů až po vyhodnocení klauzule OUTPUT, což by rozbilo vazbu na symetrický 'L' záznam.
+* Symetrie překladů (A-L): Společně se zápisem upravených dat se vždy zakládá paralelní 'L' záznam, aby byla v DB zachována symetrie nezbytná pro správné napojení `LEFT JOIN` a zamezilo se propadům v `COALESCE`.
 * Jednotná auditní stopa (who_modified): Jakákoliv úprava (i pouhé jazykové mutace 'L') vždy povinně zaktualizuje `date_modified` a `who_modified` na hlavním 'A' záznamu. Sloupce who_created a who_modified ukazují VŽDY na uuid striktně lokálního účtu.
 * Měkký audit (Importy): Každý RAC záznam obsahuje import_origin (varchar) pro textovou stopu o původu (kdo záznam vytvořil na centrále). Přijetí změn z importu řešíme výhradně přes standardní SSC (přepnutí z 'I' na 'A' zaktualizuje date_modified a who_modified na lokálního schvalovatele).
 * Oprávnění right_translate: Řídí, zda uživatel smí editovat systémové překlady (0x00). Hodnotí se dynamicky pro danou relaci přes `active_role` a garantující organizaci (`translator_org`).
@@ -37,30 +39,28 @@
 * Typy záznamů (record_type): 'A' = aktuálně schválený, 'L' = platná jazyková verze, 'H' = historický záznam.
 * Povinné auditní sloupce jsou date_created, who_created, date_modified, who_modified, language, removed, valid_from, valid_to. Auditní vazby využívají výhradně uuid.
 * Rozšířená správa metadat a STI architektura (Single Table Inheritance):
-  - Fyzické struktury (tabulky, views, funkce) jsou evidovány v `meta_object`. Fyzické objekty nemají sloupce `is_final`, `is_protected` ani `column_ancestor`.
-  - Logické entity jsou abstrahovány do `meta_class` (přes vazbu `storage_object` na `meta_object`). Všechny stránky pracují výhradně s logickými třídami. Jedna fyzická tabulka může nést více logických tříd.
-  - Atributy tříd (`caption`, `caption_plural`, `description`, `helptext`) jsou v `meta_class` nullable a podporují dědičnost. Ochrana logických struktur a metadat využívá `is_final` a `is_protected`.
+  - Fyzické struktury (tabulky, views, funkce) jsou evidovány v `meta_object`.
+  - Logické entity jsou abstrahovány do `meta_class` (přes vazbu `storage_object` na `meta_object`). Všechny stránky pracují výhradně s logickými třídami.
+  - Atributy tříd podléhají ochraně pomocí `is_final` (zákaz override 'A' záznamu pro tenanta) a `is_protected` (zákaz změny hodnoty sloupce tenantem).
   - Dědičnost vlastností sloupců: Sloupec v `meta_column` dědí vlastnosti od svého předka v kontejneru `sys_global_columns` (přes `ancestor`). Sloupce se vážou VÝHRADNĚ na logickou třídu (`parent_class`).
-  - Vazby mezi logickými entitami nesmí být hardcodované. Sémantika leží v `meta_link_def`. Klientská propojení v tabulce `link`. Výčtové hodnoty v `meta_codetable`.
   - Třída `entity_manager` generuje `<select>` prvky automatickým napojením logiky z `referenced_codetable` nebo `referenced_class`.
 
 4. Zpracování identit, SSO a multi-tenancy
 * Tabulka user_account je globální (object_owner = 0x00). Přihlašovací jméno a e-mail musí být celosystémově unikátní.
 * Přístup globálních uživatelů do konkrétních tenantů řídí vazební tabulka user_organization_access. View v_user_organization_access sjednocuje čtení oprávnění.
 * Relace a Oprávnění: Globální práva určuje dynamicky sloupec `active_role` ('U', 'A', 'S', 'D') vyhodnocovaný přes tabulku `dbsession`. Identifikátory rolí nahradily starší systém bool vlajek.
-* AUTONOMNÍ AUDITNÍ STOPA: Tabulky relací (wwwsession, dbsession) obsahují sloupec login_session_uuid. Zápisové mechanismy nesmí přijímat tyto hodnoty jako parametr z PHP; načítají hodnotu přímo z tabulky dbsession podle aktuálního @@SPID.
-* SSO integrace a autentizace probíhá plně v PHP vrstvě. Webový server má povolen anonymní přístup. Relaci zakládá p_set_login. Udržení relace ("Remember me") řeší tabulka `auth_tokens` kryptografickým tokenem s explicitním nastavením SameSite hlavičky pro cookies.
+* AUTONOMNÍ AUDITNÍ STOPA: Tabulky relací (wwwsession, dbsession) obsahují sloupec `login_session_uuid` odkazující na forenzní `audit_login_session`. Zápisové mechanismy nesmí přijímat who_created/modified jako parametr, ale načítají hodnotu přímo z tabulky dbsession (`login_session_uuid`) podle aktuálního @@SPID.
+* SSO integrace a autentizace probíhá plně v PHP vrstvě. Udržení relace ("Remember me") řeší tabulka `auth_tokens` kryptografickým tokenem s explicitním nastavením SameSite hlavičky pro cookies.
 * Přepínání kontextu uživatele řídí statický příznak change_context_allowed. UI přepínání řeší page_change_user_context s využitím PRG vzoru.
 * Pomocná ladicí relace se zakládá přes proceduru p_debuglogin.
-* Bezpečnost účtů: Skripty a procedury musí obsahovat hard-coded override (čtením identity z dbsession), aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe.
+* Bezpečnost účtů: Skripty a procedury musí obsahovat hard-coded override, aby uživatel nemohl zrušit svá práva nebo deaktivovat sám sebe.
 
 5. Architektura UI komponent a kódování stránek
 * Abstraktní třídy komponent a základní stavební kameny jsou uloženy s prefixem abstract_. Nové stránky dědí z abstract_page a implementují metodu render_body().
 * Tělo stránky má zrušené okraje (margin a padding 0).
-* Prvek abstract_page_master_detail zajišťuje dynamický dvoupanelový layout přes flexbox s nezávislými V-scrollbary. Podporuje asynchronní refresh levého panelu (ajax_panel=master) a nativní Fetch API. Automaticky propaguje kontextové parametry URL (parent_class, parent_object) do formulářů pro entity_manager.
+* Prvek abstract_page_master_detail zajišťuje dynamický dvoupanelový layout přes flexbox s nezávislými V-scrollbary. Podporuje asynchronní refresh levého panelu a nativní Fetch API. Automaticky propaguje kontextové parametry URL (parent_class, parent_object) do formulářů pro entity_manager.
 * Využívají se dedikované CSS třídy `.md-sticky-header-master` a `.md-sticky-header-detail` pro fixaci panelů s nástroji během vertikálního scrollu (`position: sticky`).
-* Kompaktní tabulkové UI: Třídy `.md-table th` a `.md-table td` mají nastaven minimální padding (2px) pro vysokou informační hustotu zobrazení.
-* Dynamický Master Panel (Levý panel):
+* Dynamický Master Panel (Levý panel): Generován plně automaticky z `entity_manageru`. Sloupce se řídí atributem `meta_column.list_order`. Hlavičky se přebírají z `meta_column.header`.
   - Je generován plně automaticky z `entity_manageru` bez nutnosti manuální konfigurace v potomcích.
   - Sloupce pro seznam se řídí atributem `meta_column.list_order`.
   - Hlavičky sloupců se přebírají z `meta_column.header` (fallback na `caption`, pak systémový název).
@@ -68,22 +68,19 @@
   - Pokud třída nemá žádný sloupec s `list_order`, uplatní se bezpečnostní fallback.
   - Nadpis panelu se dynamicky plní z `meta_class.caption_plural`.
 * Tlačítko "Zahodit změny": Detailní panel obsahuje vedle tlačítka "Uložit" také červené tlačítko pro zahození změn, které před přechodem nastaví `isFormDirty = false`.
-* Datově řízené UI (Data-driven Forms): Formulářové vstupy jsou dynamicky generovány třídou `entity_manager` z PHP podle metadat z `meta_column`. Žádné hardcodované inputy.
+* Datově řízené UI (Data-driven Forms): Formulářové vstupy jsou dynamicky generovány třídou `entity_manager` z PHP podle metadat. Žádné hardcodované inputy. PHP funkce striktně vyžadují správné přetypování (např. `trim` neakceptuje `float`).
+* Prázdná UUID se musí posílat do SQL jako `'NULL'`, nikoliv jako prázdný string `''`, aby nedošlo k fatální chybě převodu typů.
 * Klientský frontend využívá výhradně čistý JavaScript (ES6+). Zákaz používat jQuery nebo frameworky.
-* Jmenná konvence stránek je `page_{$class}.php`. Třída stránky nastavuje `$this->class_name = '{$class}'`.
-* Potomci třídy `abstract_page_master_detail` zpravidla nepřepisují `render_master()` ani `process_save()`.
-* Router v index.php podporuje hybridní běh a autoloader. POST data se řeší přes PRG vzor.
+* Jmenná konvence stránek je `page_{$class}.php`.
 * Globální uživatelský kontext zajišťuje třída user_context (využívající `active_role`) s integrovanými SVG vlaječkami.
 
 6. Stromové struktury, CRMM a Infrastruktura
 * Sémantická struktura stromů se udržuje primárně přes relační vazbu parent_uuid. Sloupec sort_code slouží pouze pro rychlé třídění na frontendu.
 * Striktní pravidlo uzlů (is_leaf): Aktiva se smí vázat výhradně na koncové uzly (is_leaf = 1).
 * Výpočty CRMM: Zbytkové riziko se kalkuluje z hrubého rizika přes redukční a rizikový faktor napojených opatření.
-* Infrastruktura: Produkční prostředí na Windows Serveru vyžaduje úpravu registrů jako Windows 10 (LongPathsEnabled). Architektura licencování (server_licence) zatím není plně dořešena.
+* Infrastruktura: Architektura licencování (server_licence) zatím není plně dořešena.
 
 7. To do
-* (DOKONČENO) Refaktorovat PHP soubory user_context.php a entity_manager.php pro nasazení active_role a asymetrického Delta zápisu jazyků.
-* Opravit proceduru p_fix_meta_column, aby při dynamickém zakládání logických tříd do meta_class plnila výchozí hodnotu sloupce caption (např. pomocí mo.builtin_code), čímž se zamezí prázdným řádkům v levém panelu UI.
-* Refaktorovat PHP soubory page_org_users.php a page_organization_licence.php: nahradit volání zrušených klíčů v poli $dbsession dynamickým vyhodnocením klíče active_role.
-* Vyčistit page_meta_class.php a page_meta_column.php (odstranit závislost na SQL views vrepo_* a zrevidovat dotazování přes STI entity_manager).
-* Zajistit odstranění zastaralého modulu page_meta_object.php z centrálního routeru po jeho plném nahrazení modulem page_meta_class.php.
+* Zjistit a odladit příčinu, proč se formuláře při volání `entity_manager->save_post_data()` stále neukládají.
+* Zcela odstranit `phpoffice/phpspreadsheet` z projektu a přesunout exporty/importy dat výhradně na `openspout`.
+* Zrevidovat `OsirisLib.php` a odstranit mrtvý kód obsluhující neexistující ovladače ODBC/PDO, ponechat pouze čisté napojení přes `sqlsrv`.
