@@ -1,13 +1,15 @@
 /* =============================================================================
  * Soubor: table_meta_class.sql
+ * Verze: 2026-10-07 11:18
  * Tabulka: meta_class
  * Popis:   Logické třídy (entity) systému. Slouží jako nadstavba nad 
  *          fyzickými objekty (meta_object). Definuje konkrétní třídy 
  *          v rámci vzoru Single Table Inheritance (STI) a jejich chování.
  * Vazby:   - storage_object (UUID) ukazuje na meta_object (fyzická tabulka).
- *          - ancestor_class (UUID) ukazuje na jinou meta_class (dědičnost logiky).
+ *          - ancestor_class (UUID) ukazuje na jinou meta_class (dědičnost logiky i sloupců).
  * Změny:   - Přejmenováno parent_object na storage_object.
  *          - Textové vlastnosti změněny na NULLable pro podporu dědičnosti.
+ *          - Přidán sloupec import_origin pro evidenci původu záznamu z importu (Měkký audit).
  * ============================================================================= */
 
 if not exists (select * from v_syscolumns where tabname='meta_class' and colname='storage_object')
@@ -30,6 +32,7 @@ CREATE TABLE meta_class(
 	valid_to date NULL,
 	is_template bit NOT NULL DEFAULT 0,
 	template uuid NULL,
+	import_origin varchar(255) NULL,                   -- Původní textový autor/systém z importu (Měkký audit)
 
 	-- -------------------------------------------------------------------------
 	-- Auditní stopy
@@ -44,7 +47,7 @@ CREATE TABLE meta_class(
 	-- -------------------------------------------------------------------------
 	class_name varchar(80) NOT NULL,                   -- Interní identifikátor třídy (např. 'asset_class', 'employee')
 	storage_object uuid NOT NULL,                      -- Vazba na fyzickou tabulku z meta_object
-	ancestor_class uuid NULL,                          -- Vazba na předka pro dědičnost vlastností (meta_class.original)
+	ancestor_class uuid NULL,                          -- Vazba na předka pro dědičnost (meta_class.original). Plně nahrazuje původní column_ancestor z meta_object.
 	
 	-- Prezentační texty (přeložitelné v overridu typu 'L', NULL = dědí se)
 	caption varchar(200) NULL,
@@ -67,6 +70,12 @@ CREATE TABLE meta_class(
 
 	CONSTRAINT pk_meta_class PRIMARY KEY (uuid)
 );
+GO
+
+-- -----------------------------------------------------------------------------
+-- Zajištění chybějících sloupců pro existující databáze (změnový příkaz)
+-- -----------------------------------------------------------------------------
+EXEC p_create_missing_column 'meta_class', 'import_origin', 'varchar(255) NULL';
 GO
 
 -- -----------------------------------------------------------------------------

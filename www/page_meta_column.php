@@ -1,11 +1,12 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-09-29
+ * Verze: 2026-10-07
  * Soubor: page_meta_column.php
  * Účel: Detailní editace metadat konkrétního sloupce (tenant override nebo překlad).
  * Změny:
- * - Tlačítko Zpět se dynamicky vkládá do fixní hlavičky přes render_master_top().
+ * - Přepojení vazby z fyzické tabulky (parent_object) na logickou třídu (parent_class).
+ * - Úprava zpětného odkazu a načítání titulku z vrepo_meta_class.
  * =============================================================================
  */
 
@@ -13,7 +14,7 @@ declare(strict_types=1);
 
 class page_meta_column extends abstract_page_master_detail {
 
-	private string $parent_object;
+	private string $parent_class;
 	private string $parent_name = '';
 
 	public function __construct() {
@@ -26,15 +27,15 @@ class page_meta_column extends abstract_page_master_detail {
 			'Behaviorální příznaky' => ['translate', 'history', 'is_mandatory', 'is_html', 'hidden', 'is_url', 'show_empty', 'is_computed', 'customizable']
 		];
 		
-		$this->parent_object = (string)getinput('parent_object');
+		$this->parent_class = (string)getinput('parent_class');
 		
-		if ($this->parent_object !== '') {
-			$this->master_where = "m.parent_object = " . guidliteral($this->parent_object);
+		if ($this->parent_class !== '') {
+			$this->master_where = "m.parent_class = " . guidliteral($this->parent_class);
 			
-			// Zjištění názvu nadřízeného objektu pro titulek (primárně caption, fallback na builtin_code)
-			$q = sqlrun("SELECT builtin_code, caption FROM vrepo_meta_object WHERE original = " . guidliteral($this->parent_object));
+			// Zjištění názvu nadřízeného objektu pro titulek (primárně caption, fallback na class_name)
+			$q = sqlrun("SELECT class_name, caption FROM vrepo_meta_class WHERE original = " . guidliteral($this->parent_class));
 			if ($row = fetch($q)) {
-				$this->parent_name = (string)$row['caption'] !== '' ? (string)$row['caption'] : (string)$row['builtin_code'];
+				$this->parent_name = (string)$row['caption'] !== '' ? (string)$row['caption'] : (string)$row['class_name'];
 				$this->page_title = 'Sloupce: ' . $this->parent_name;
 			}
 			free_result($q);
@@ -55,11 +56,11 @@ class page_meta_column extends abstract_page_master_detail {
 	}
 
 	protected function render_master_top(): void {
-		if ($this->parent_object !== '') {
+		if ($this->parent_class !== '') {
 			$safe_parent = htmlspecialchars($this->parent_name);
 			echo <<<HTML
 			<div style="margin-bottom: 15px;">
-				<a href="index.php?page=meta_object&update_guid={$this->parent_object}" class="btn btn-secondary" style="display: block; text-align: center;">&larr; Zpět na objekt: {$safe_parent}</a>
+				<a href="index.php?page=meta_class&update_guid={$this->parent_class}" class="btn btn-secondary" style="display: block; text-align: center;">&larr; Zpět na třídu: {$safe_parent}</a>
 			</div>
 HTML;
 		}

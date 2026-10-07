@@ -1,16 +1,17 @@
 /* =============================================================================
  * Soubor: table_meta_column.sql
+ * Verze: 2026-10-07 11:45
  * Tabulka: meta_column
  * Popis:   Uchovává metadata sloupců/proměnných v databázi a aplikacích.
  * Vazby:   Podklad pro entity_manager. Definuje vlastnosti formulářů a 
- *          rozšíření základních definic globálního slovníku (meta_object.original).
+ *          rozšíření základních definic globálního slovníku (meta_class.original).
  *          Odkazuje na meta_codetable a meta_class pro datové <select> prvky.
- * Změny:
- * - 2026-09-29: Přidán sloupec list_order pro automatické generování levého panelu.
+ * Změny:   - Přejmenováno parent_object na parent_class (vazba na logickou třídu).
+ *          - Přidán import_origin pro evidenci importů (Měkký audit).
  * ============================================================================= */
 
--- Idempotentní odstranění tabulky, pokud chybí nové sloupce
-IF NOT EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'meta_column' AND colname = 'list_order')
+-- Idempotentní odstranění tabulky, pokud obsahuje starou vazbu na fyzický objekt
+IF EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'meta_column' AND colname = 'parent_object')
 BEGIN
 	EXECUTE dropni 'meta_column';
 END
@@ -33,6 +34,7 @@ CREATE TABLE meta_column(
 	valid_to date NULL,
 	is_template bit NOT NULL DEFAULT 0,
 	template uuid NULL,
+	import_origin varchar(255) NULL,                   -- Původní textový autor/systém z importu (Měkký audit)
 
 	-- -------------------------------------------------------------------------
 	-- Auditní stopy
@@ -45,7 +47,7 @@ CREATE TABLE meta_column(
 	-- -------------------------------------------------------------------------
 	-- Specifické atributy záznamu (Prezentační a aplikační logika)
 	-- -------------------------------------------------------------------------
-	parent_object uuid NOT NULL,                       -- Vazba na fyzickou tabulku (meta_object)
+	parent_class uuid NOT NULL,                        -- Vazba na logickou třídu (meta_class)
 	parent_order int NOT NULL DEFAULT 0,
 	sort_code varchar(20) NULL,
 	column_name varchar(80) NOT NULL,

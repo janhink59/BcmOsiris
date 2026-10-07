@@ -1,10 +1,10 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-09-25 16:51
+ * Verze: 2026-10-07
  * Stránka: page_main.php
  * Účel: Hlavní rozcestník. Kód je maximálně zredukován na byznys logiku tlačítek.
- * OPRAVA: Přidán odkaz na správu metadat objektů pro systémové administrátory.
+ * OPRAVA: Řízení přístupu přepnuto na novou architekturu rolí (active_role).
  * =============================================================================
  */
 
@@ -24,8 +24,9 @@ class page_main extends abstract_page {
 			return;
 		}
 
-		$isSysadmin = !empty($dbsession['right_sysadmin']);
-		$isOrgadmin = !empty($dbsession['right_orgadmin']);
+		$active_role = $dbsession['active_role'] ?? 'U';
+		$isSysadmin = in_array($active_role, ['S', 'D'], true);
+		$isOrgadmin = ($active_role === 'A');
 
 		$sysadminActions = '';
 		if ($isSysadmin) {
@@ -33,7 +34,7 @@ class page_main extends abstract_page {
 				<div style="margin-top: 20px; padding-top: 15px;">
 					<h3 style="margin-top: 0; font-size: 16px;">Systémová administrace</h3>
 					<a href="index.php?page=organization_licence" class="btn" style="margin-right: 10px;">Správa licencí organizací</a>
-					<a href="index.php?page=meta_object" class="btn">Správa metadat objektů a sloupců</a>
+					<a href="index.php?page=meta_class" class="btn">Správa metadat tříd a sloupců</a>
 				</div>
 HTML;
 		}

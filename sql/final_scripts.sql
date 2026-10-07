@@ -1,6 +1,6 @@
 execute p_create_standard_views
 execute p_fix_meta_column
-execute p_generate_primitive_classes
+--execute p_generate_primitive_classes
 
 GO
 --update meta_object set date_created=date_created

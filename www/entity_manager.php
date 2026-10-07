@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-04 (Finální RAC architektura s plnou dokumentací + oprava dynamických auditních stop)
+ * Verze: 2026-10-07 (Aktualizace na STI architekturu - vazba sloupců na třídu)
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
  * 
@@ -83,6 +83,7 @@ class entity_manager {
 			$this->class_meta = $row;
 			$this->storage_table = $row['storage_table_name'];
 			$storage_uuid = guidliteral($row['storage_original']);
+			$class_uuid = guidliteral($row['original']);
 			free_result($q_class);
 			
 			// 2. Načtení sloupců patřících k fyzické tabulce vč. dědičnosti (LEFT JOIN na ancestor)
@@ -116,7 +117,7 @@ class entity_manager {
 					a.is_protected AS anc_is_protected
 				FROM meta_column c
 				LEFT JOIN meta_column a ON a.original = c.ancestor AND a.record_type = 'A' AND a.object_owner = 0x00 AND a.removed = 0
-				WHERE c.parent_object = {$storage_uuid} 
+				WHERE c.parent_class = {$class_uuid} 
 				  AND c.record_type = 'A' 
 				  AND c.object_owner = 0x00 
 				  AND c.removed = 0 
@@ -248,7 +249,7 @@ class entity_manager {
 			'uuid', 'object_owner', 'original', 'record_type', 'approval_status', 
 			'language', 'inactive', 'removed', 'valid_from', 'valid_to', 
 			'is_template', 'template', 'date_created', 'who_created', 
-			'date_modified', 'who_modified'
+			'date_modified', 'who_modified', 'import_origin'
 		];
 		
 		$has_ancestor = isset($this->columns_meta['ancestor']);
@@ -572,7 +573,7 @@ class entity_manager {
 			'uuid', 'object_owner', 'original', 'record_type', 'approval_status', 
 			'language', 'inactive', 'removed', 'valid_from', 'valid_to', 
 			'is_template', 'template', 'date_created', 'who_created', 
-			'date_modified', 'who_modified'
+			'date_modified', 'who_modified', 'import_origin'
 		];
 		
 		foreach ($this->columns_meta as $colname => $meta) {
@@ -720,14 +721,13 @@ class entity_manager {
 				}
 			} else {
 				// Číselná/Vazební data jdou do Master záznamu bez ohledu na jazyk vždy
-				$a_post_data[$col] = $val; 
+				$a_post_data[$col] =$val; 
 			}
 		}
 
 		// BACKENDOVÁ POJISTKA 2 (is_final): Pokud je celá třída nedotknutelná (číselníky),
 		// tenantovi zamezíme jakémukoli vytváření vlastního 'A' overridu vymazáním polí.
-		if ($org_uuid !== '0x00' && $org_uuid !== '00000000-0000-0000-0000-000000000000' && !empty($this->class_meta['is_final'])) {
-			$a_post_data = []; 
+		if ($org_uuid !== '0x00' &&$org_uuid !== '00000000-0000-0000-0000-000000000000' && !empty($this->class_meta['is_final'])) {$a_post_data = []; 
 		}
 
 		// Obalení operací transakcí, aby se zamezilo nekonzistentním zápisům L bez A.
@@ -737,36 +737,33 @@ class entity_manager {
 		if ($orig_guid === '') {
 			// A) INSERT: Zcela nová identita vytvářená uživatelem
 			$new_uuid = "NEWID()";
-			$insert_cols = [];
-			$insert_vals = [];
+			$insert_cols = [];$insert_vals = [];
 			
-			foreach ($physical_cols as $col) {
+			foreach ($physical_cols as$col) {
 				if (in_array($col, ['uuid', 'original'], true)) {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] = $new_uuid;
+					$insert_vals[] =$new_uuid;
 				} elseif ($col === 'object_owner') {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] = $org_uuid;
+					$insert_vals[] =$org_uuid;
 				} elseif ($col === 'record_type') {
 					$insert_cols[] = "[$col]"; 
 					$insert_vals[] = "'A'";
 				} elseif ($col === 'language') {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] = $lang_literal;
+					$insert_vals[] =$lang_literal;
 				} elseif (in_array($col, ['date_created', 'date_modified'], true)) {
 					$insert_cols[] = "[$col]"; 
 					$insert_vals[] = "GETDATE()";
 				} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] = $user_uuid;
-				} elseif (array_key_exists($col, $a_post_data)) {
-					$val = $a_post_data[$col];
+					$insert_vals[] =$user_uuid;
+				} elseif (array_key_exists($col, $a_post_data)) {$val = $a_post_data[$col];
 					// Ošetření chyby s ukládáním prázdných řetězců do UUID polí
-					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {
-						$val = 'NULL';
+					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
 					}
 					$insert_cols[] = "[$col]"; 
-					$insert_vals[] = $val;
+					$insert_vals[] =$val;
 				}
 			}
 
@@ -785,11 +782,10 @@ class entity_manager {
 			if ($a_exists) {
 				// Tenant upravuje již svůj vlastní záznam
 				$set_clauses = [];
-				foreach ($a_post_data as $col => $val) {
-					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {
-						$val = 'NULL';
+				foreach ($a_post_data as $col =>$val) {
+					if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
 					}
-					$set_clauses[] = "[$col] = $val";
+					$set_clauses[] = "[$col] =$val";
 				}
 				// Zaktualizování auditní stopy bezpodmínečně
 				$set_clauses[] = "date_modified = GETDATE()";
@@ -801,30 +797,22 @@ class entity_manager {
 				// OVERRIDE: Tenant zasahuje do systémového záznamu poprvé.
 				// Provedeme INSERT INTO ... SELECT, který zkopíruje všechna systémová 
 				// (is_protected) data, ale nahradí je těmi lokálními uživatelskými.
-				$insert_cols = [];
-				$select_vals = [];
+				$insert_cols = [];$select_vals = [];
 				
-				foreach ($physical_cols as $col) {
+				foreach ($physical_cols as$col) {
 					$insert_cols[] = "[$col]";
 					
-					if ($col === 'uuid') {
-						$select_vals[] = "NEWID()";
+					if ($col === 'uuid') {$select_vals[] = "NEWID()";
 					} elseif ($col === 'object_owner') {
-						$select_vals[] = $org_uuid;
-					} elseif ($col === 'record_type') {
-						$select_vals[] = "'A'";
-					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {
-						$select_vals[] = "GETDATE()";
+						$select_vals[] =$org_uuid;
+					} elseif ($col === 'record_type') {$select_vals[] = "'A'";
+					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {$select_vals[] = "GETDATE()";
 					} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
-						$select_vals[] = $user_uuid;
-					} elseif ($col === 'original') {
-						$select_vals[] = "original"; 
-					} elseif ($col === 'language') {
-						$select_vals[] = "language"; // Mateřský jazyk dědíme od systému
-					} elseif (array_key_exists($col, $a_post_data)) {
-						$val = $a_post_data[$col];
-						if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {
-							$val = 'NULL';
+						$select_vals[] =$user_uuid;
+					} elseif ($col === 'original') {$select_vals[] = "original"; 
+					} elseif ($col === 'language') {$select_vals[] = "language"; // Mateřský jazyk dědíme od systému
+					} elseif (array_key_exists($col, $a_post_data)) {$val = $a_post_data[$col];
+						if ($val === "''" and in_array($col_types[$col] ?? '', ['uuid', 'uniqueidentifier'])) {$val = 'NULL';
 						}
 						$select_vals[] =$val; 
 					} else {

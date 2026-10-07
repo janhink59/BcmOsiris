@@ -6,6 +6,11 @@ GO
  * Procedura: p_create_standard_views
  * Účel: Automatické generování RAC/SSC pohledů pro objektové tabulky s prefixem vrepo_
  * 
+ * ZMĚNA ARCHITEKTURY:
+ * Procedura nyní slouží výhradně k odstranění starých pohledů. Generování
+ * bylo přesunuto do PHP (entity_manager). Zbylý kód procedury je záměrně
+ * zachován pod příkazem RETURN jako referenční nápověda pro PHP vývojáře.
+ * 
  * POZNÁMKA K CHYBĚJÍCÍM METADATŮM (HISTORICKÝ KONTEXT):
  * Původní procedura p_repo_create_standard_views (z knihovny OsirisLib) spoléhala na 
  * metadatové tabulky (jako repo_attribute, php_page_column) k přesnému určení, 
@@ -43,6 +48,9 @@ BEGIN
 		EXEC(@drop_sql);
 		if @verbose=1 PRINT 'Existující pohledy vrepo_ byly úspěšně odstraněny.';
 	END
+
+	-- UKONČENÍ BĚHU: Následující kód slouží pouze jako statická nápověda.
+	RETURN;
 
 	-- 2. Zjištění všech tabulek, které podléhají RAC architektuře
 	DECLARE @t TABLE (tabname VARCHAR(128) NOT NULL PRIMARY KEY);

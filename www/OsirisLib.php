@@ -1854,9 +1854,12 @@ function initsession(){
 	
 	after_login_recovery:
 
-	// Extrakce oprávnění do samostatných globálních proměnných pro zpětnou kompatibilitu ostatních funkcí
-	$right_sysadmin = $dbsession['right_sysadmin'];
-	$right_orgadmin = $dbsession['right_orgadmin'];
+	// Extrakce oprávnění do samostatných globálních proměnných z nové struktury active_role
+	$active_role = $dbsession['active_role'] ?? 'U';
+	$right_developer = ($active_role === 'D') ? 1 : 0;
+	$right_sysadmin  = ($active_role === 'S' || $active_role === 'D') ? 1 : 0;
+	$right_orgadmin  = ($active_role === 'A') ? 1 : 0;
+	
 	return;
 }
 

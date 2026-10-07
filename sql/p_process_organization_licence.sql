@@ -14,6 +14,10 @@ GO
  *   (dokáže zaktualizovat caption u chybné instalace bez zásahu do uuid).
  * - Zápis auditních stop (who_created, who_modified) přebírá UUID přístupové vazby
  *   automaticky z tabulky dbsession pro aktuální @@SPID. Nevyžaduje parametr.
+ * 
+ * Změny:
+ * - Oprava názvu sloupce z user_access_uuid na login_session_uuid pro načtení 
+ *   ze session.
  * ============================================================================= */
 CREATE PROCEDURE p_process_organization_licence
 	@licence_original uniqueidentifier
@@ -35,13 +39,13 @@ BEGIN
 	DECLARE @user_uuid uniqueidentifier;
 
 	-- Získání kontextu přístupu PŘÍMO ze session
-	DECLARE @user_access_uuid uniqueidentifier;
+	DECLARE @login_session_uuid uniqueidentifier;
 	
-	SELECT	@user_access_uuid = user_access_uuid
+	SELECT	@login_session_uuid = login_session_uuid
 	FROM	dbsession 
 	WHERE	spid = @@SPID;
 	
-	IF @user_access_uuid IS NULL
+	IF @login_session_uuid IS NULL
 	BEGIN
 		RAISERROR('Bezpečnostní chyba: Nelze ověřit identitu relace (dbsession chybí).', 16, 1);
 		RETURN;
@@ -83,7 +87,7 @@ BEGIN
 		) VALUES (
 			@org_uuid, @org_uuid, @org_uuid, 'A', 'A',
 			@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @licence_level,
-			@user_access_uuid, @user_access_uuid
+			@login_session_uuid, @login_session_uuid
 		);
 	END
 	ELSE
@@ -95,7 +99,7 @@ BEGIN
 			shortname = SUBSTRING(@org_name, 1, 40),
 			login_domain = @login_domain,
 			date_modified = GETDATE(),
-			who_modified = @user_access_uuid
+			who_modified = @login_session_uuid
 		WHERE original = @org_uuid AND record_type = 'A';
 	END
 
@@ -116,7 +120,7 @@ BEGIN
 		) VALUES (
 			@user_uuid, 0x00, @user_uuid, 'A', 'A',
 			@admin_first_name + ' ' + @admin_last_name, @admin_login, @admin_email, @admin_first_name, @admin_last_name,
-			@user_access_uuid, @user_access_uuid
+			@login_session_uuid, @login_session_uuid
 		);
 	END
 
@@ -135,7 +139,7 @@ BEGIN
 		) VALUES (
 			@access_uuid, @org_uuid, @access_uuid, 'A', 'A',
 			@user_uuid, @org_uuid, 1,
-			@user_access_uuid, @user_access_uuid
+			@login_session_uuid, @login_session_uuid
 		);
 	END
 
@@ -145,7 +149,7 @@ BEGIN
 		organization_uuid = @org_uuid,
 		activation_date = CAST(GETDATE() AS DATE),
 		date_modified = GETDATE(),
-		who_modified = @user_access_uuid
+		who_modified = @login_session_uuid
 	WHERE original = @licence_original AND record_type = 'A';
 
 	COMMIT;
