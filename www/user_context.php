@@ -1,6 +1,7 @@
 <?php
 /**
  * =============================================================================
+ * Verze: 2026-10-07 16:15
  * Třída: user_context
  * Účel: Kompaktní vizuální komponenta (logo, uživatel, organizace, role, odhlášení)
  *       zobrazená jako standardní fixovaný horní pruh na stránce.
@@ -8,7 +9,7 @@
  * Vazby na okolí:
  * - Instancuje se a vykresluje výhradně uvnitř metody render() v `abstract_page`.
  * - Spoléhá na existenci globálního pole `$dbsession`.
- * - Dynamicky reaguje na efektivní roli (right_orgadmin), kterou si uživatel
+ * - Dynamicky reaguje na efektivní roli (active_role: U, A, S, D), kterou si uživatel
  *   zvolil při přihlášení nebo explicitní změně kontextu.
  * - Využívá `language_manager` pro zobrazení přepínače jazyků s vlaječkami
  *   a plně odbavuje PRG přesměrování při změně jazyka (včetně zápisu do DB).
@@ -34,13 +35,22 @@ class user_context {
 		$displayName = (string)($dbsession['display_name'] ?? $dbsession['user_name'] ?? 'Uživatel');
 		$orgName = (string)($dbsession['organization_name'] ?? 'Organizace');
 
-		// Využití stručnějších zkratek rolí pro úsporu místa v panelu
-		if (!empty($dbsession['right_sysadmin'])) {
-			$roleText = 'SYSADMIN';$roleClass = 'sys';
-		} elseif (!empty($dbsession['right_orgadmin'])) {
-			$roleText = 'ADMIN';$roleClass = 'org';
-		} else {
-			$roleText = 'USER';$roleClass = 'usr';
+		// Využití stručnějších zkratek rolí pro úsporu místa v panelu dle nové architektury active_role
+		$active_role = (string)($dbsession['active_role'] ?? 'U');
+		switch ($active_role) {
+			case 'D':
+				$roleText = 'DEV';$roleClass = 'sys';
+				break;
+			case 'S':
+				$roleText = 'SYSADMIN';$roleClass = 'sys';
+				break;
+			case 'A':
+				$roleText = 'ADMIN';$roleClass = 'org';
+				break;
+			case 'U':
+			default:
+				$roleText = 'USER';$roleClass = 'usr';
+				break;
 		}
 
 		$safeDisplayName = htmlspecialchars($displayName, ENT_QUOTES, 'UTF-8');
@@ -69,7 +79,9 @@ class user_context {
 
 		// PRG vzor: Po přepnutí uložíme data do DB a přesměrujeme na čisté URL
 		if ($requested_lang !== null) {
-			$safe_lang = charliteral($requested_lang, 2);
+			// K zápisu použijeme bezpečně zvalidovaný jazyk z objektu language_manager
+			$valid_lang =$lang_manager->get_current_language();
+			$safe_lang = charliteral($valid_lang, 2);
 			
 			// 1. Aktualizace jazyka v běžících relacích aktuálního SPID
 			sqlrun("

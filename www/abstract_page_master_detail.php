@@ -43,6 +43,8 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-07 - Přidána dynamická propagace kontextových parametrů (parent_class, parent_object)
+ *              do URL a skrytých polí formuláře pro správný běh entity_manageru.
  * 2026-09-30 - Obohaceno o architektonické komentáře pro AI kontext.
  *            - Odstraněno řetězení příkazů na jeden řádek pro lepší čitelnost.
  *            - Doplněna vizuální signalizace povinných polí a podpory překladu do UI.
@@ -79,11 +81,13 @@ abstract class abstract_page_master_detail extends abstract_page {
 		}
 
 		// Záchyt uložení dat (PRG vzor)
-		if (isset($_POST['btn_save'])) {$this->process_save();
+		if (isset($_POST['btn_save'])) {
+			$this->process_save();
 		}
 
 		// Záchyt pro asynchronní obnovu pouze levého panelu
-		if (isset($_GET['ajax_panel']) && $_GET['ajax_panel'] === 'master') {$this->render_master();
+		if (isset($_GET['ajax_panel']) && $_GET['ajax_panel'] === 'master') {
+			$this->render_master();
 			exit;
 		}
 		
@@ -346,8 +350,14 @@ HTML;
 			$uuid =$row['original'];
 			$rowClass = ($uuid === $update_guid) ? 'md-row-active' : '';$rowIdAttr = ($uuid ===$update_guid) ? 'id="active-row"' : '';
 			
-			$page_param = htmlspecialchars((string)getinput('page'));
-			$parent_param = (string)getinput('parent_object');$url_suffix = $parent_param !== '' ? "&parent_object=" . htmlspecialchars($parent_param) : '';
+			$page_param = htmlspecialchars((string)getinput('page'));$url_suffix = '';
+			
+			// Dynamická propagace kontextových parametrů (např. parent_class)
+			foreach (['parent_object', 'parent_class'] as $ctx_param) {
+				$val = (string)getinput($ctx_param);
+				if ($val !== '') {$url_suffix .= "&{$ctx_param}=" . htmlspecialchars($val);
+				}
+			}
 
 			echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}'\">\n";
 			
@@ -416,16 +426,24 @@ HTML;
 			return;
 		}
 		
-		$is_mine = (bool)$datarow['object_is_mine'];
-		$page_param = htmlspecialchars((string)getinput('page'));$parent_param = (string)getinput('parent_object');
+		$is_mine = (bool)$datarow['object_is_mine'];$page_param = htmlspecialchars((string)getinput('page'));
 		
-		$url_suffix =$parent_param !== '' ? "&parent_object=" . htmlspecialchars($parent_param) : '';$discard_url = "index.php?page={$page_param}{$url_suffix}";
+		// Dynamická propagace kontextových parametrů do URL i do skrytých polí
+		$url_suffix = '';$hidden_inputs = '';
+		foreach (['parent_object', 'parent_class'] as $ctx_param) {
+			$val = (string)getinput($ctx_param);
+			if ($val !== '') {
+				$url_suffix .= "&{$ctx_param}=" . htmlspecialchars($val);$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">";
+			}
+		}
+		
+		$discard_url = "index.php?page={$page_param}{$url_suffix}";
 		
 		$header_html =$this->get_detail_header();
 
 		echo <<<HTML
 		<!-- Obalový form využívá celou výšku (flex) pro rolovatelný obsah -->
-		<form method="post" action="index.php?page={$page_param}{$url_suffix}&update_guid={$update_guid}" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
+		<form method="post" action="index.php?page={$page_param}{$url_suffix}&update_guid={$update_guid}" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">{$hidden_inputs}
 			
 			<!-- Fixní hlavička (Zahodit / Uložit) -->
 			<div class="md-detail-header">

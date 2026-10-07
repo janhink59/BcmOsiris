@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-01
+ * Verze: 2026-10-07 16:00
  * Třída: language_manager
  * Účel: Izolovaná služba pro správu aktuálního jazyka, generování UI prvku
  *       a sestavení bezpečného fallback řetězce (dědičnosti) pro entity_manager.
@@ -37,9 +37,11 @@ class language_manager {
 	}
 
 	/**
-	 * Určí finální jazyk relace na základě priorit: Explicitní žádost > Cookie > Výchozí DB > Nouzový Fallback
+	 * Určí finální jazyk relace na základě priorit: Explicitní žádost > Databáze relace > Cookie > Výchozí DB > Nouzový Fallback
 	 */
 	private function resolve_current_language(?string $requested_lang): void {
+		global $dbsession;
+
 		// 1. Explicitní požadavek z UI (přepnutí)
 		if ($requested_lang !== null && isset($this->languages[$requested_lang])) {
 			$this->current_lang = $requested_lang;
@@ -47,13 +49,20 @@ class language_manager {
 			return;
 		}
 
-		// 2. Načtení z předchozí relace (cookie)
+		// 2. Načtení z existující databázové relace přihlášeného uživatele
+		if (!empty($dbsession['language']) && isset($this->languages[$dbsession['language']])) {
+			$this->current_lang = $dbsession['language'];
+			$this->save_cookie();
+			return;
+		}
+
+		// 3. Načtení z předchozí relace (cookie)
 		if (isset($_COOKIE['bcm_language']) && isset($this->languages[$_COOKIE['bcm_language']])) {
 			$this->current_lang = $_COOKIE['bcm_language'];
 			return;
 		}
 
-		// 3. Fallback na výchozí jazyk systému (z databáze)
+		// 4. Fallback na výchozí jazyk systému (z databáze)
 		foreach ($this->languages as $code => $lang) {
 			if (!empty($lang['is_default'])) {
 				$this->current_lang = $code;
@@ -62,7 +71,7 @@ class language_manager {
 			}
 		}
 
-		// 4. Nouzový fallback, pokud chybí is_default vlajka
+		// 5. Nouzový fallback, pokud chybí is_default vlajka
 		$this->current_lang = isset($this->languages['cs']) ? 'cs' : (string)array_key_first($this->languages);
 	}
 
@@ -90,8 +99,18 @@ class language_manager {
 	 */
 	private function save_cookie(): void {
 		$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
-		// Platnost cookie 1 rok
-		setcookie('bcm_language', $this->current_lang, time() + (365 * 24 * 60 * 60), '/', '', $isHttps, true);
+		
+		// PHP 7.3+ a 8.3 podpora pro předání hlavičky SameSite pomocí pole
+		$options = [
+			'expires'  => time() + (365 * 24 * 60 * 60),
+			'path'     => '/',
+			'domain'   => '',
+			'secure'   => $isHttps,
+			'httponly' => true,
+			'samesite' => 'Lax'
+		];
+		
+		setcookie('bcm_language', $this->current_lang, $options);
 	}
 
 	public function get_current_language(): string {
