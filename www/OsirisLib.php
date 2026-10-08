@@ -8,7 +8,7 @@ include_once("html_classes.php");
 /*
 ################################################################################
 
-		Univerzální funkce - jejich jména jsou malými písmeny
+		Univerzální knihovna OsirisLib
 		
 		27.12.2010 - Změna funkce "sqlpagerun", zcela jiná struktura prvního resultu,
 					 aby bylo dosaženo nezávislosti na PHP - eval
@@ -28,6 +28,8 @@ include_once("html_classes.php");
 		17.08.2016 - Podpora PDO driverů
 		02.12.2016 - Memory leak v "csv_export()"
 		04.01.2017 - Do výpisu při chybě přidán backtrace
+		XX.10.2026 - REFAKTORING BCM Osiris: Odstraněna podpora pro ODBC a PDO. Ponecháno čistě SQLSRV.
+					 Oprava kritického bugu inicializace relace.
 ################################################################################
 */
 
@@ -35,11 +37,11 @@ include_once("html_classes.php");
 // a neciselne hodnoty vraci beze změny
 
 function numberFormat($n,$dec=0,$sep='.',$th=' '){
-  if(is_numeric($n)){
-    $r=number_format($n,$dec,$sep,$th);
-    return ($r[0]==$sep)?$r="0$r":$r;
-  }
-  return (string)$n??'';
+	if(is_numeric($n)){
+		$r=number_format($n,$dec,$sep,$th);
+		return ($r[0]==$sep)?$r="0$r":$r;
+	}
+	return (string)$n??'';
 }
 
 function fform($url,$body,$params=''){return "<form name=f id=f action=\"$url\" method=post enctype=\"multipart/form-data\" $params>$body</form>";}
@@ -54,16 +56,12 @@ function xmlliteral($xml){return jsliteral(htmlspecialchars(str_replace('&','%26
 
 // jsliteral vytvoří z předané hodnoty textový literál pro použití v JavaScriptu, nahrazuje pouze nové řádky a dvojité uvozovky
 function jsliteral($s){
-	//return '"'.str_replace("\r","\\r",str_replace("\n","\\n",htmlspecialchars($s))).'"';
-	//return '"'.str_replace("\r","\\r",str_replace("\n","\\n",addslashes($s))).'"';
 	if($s===null) return '""';
 	$s = str_replace("\\","\\\\",$s);
 	return '"'.str_replace("\r","\\r",str_replace("\n","\\n",str_replace('"','\"',($s)))).'"';
 }
 
-
 // regfile: vrátí jméno dočasného souboru, pokud byl úspěšně uploadnut
-
 function regfile($fn,&$full_name=null){
 	if(array_key_exists($fn,$_FILES)){
 		$F=&$_FILES[$fn];
@@ -80,236 +78,159 @@ function regfile($fn,&$full_name=null){
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 function sqlrun($cmd) { 
- 
-GLOBAL $sqlcmdlist,$dbms,$dbconnection,$debugmode,$dbquery,$sqlrun_debugonly,$result_wwwsession,
-	$logSqlCmdList,$sqlRows,$lastSql; 
+	global $sqlcmdlist, $dbconnection, $debugmode, $dbquery, $sqlrun_debugonly, $result_wwwsession, $logSqlCmdList, $sqlRows, $lastSql; 
 
-$cmd=str_replace('@o@',intliteral(array_item($result_wwwsession,'organization','0')),$cmd);
-$cmd=str_replace('@p@',intliteral(array_item($result_wwwsession,'crp_profile','0')),$cmd);
-$lastSQL=$cmd=str_replace('@r@',intliteral(array_item($result_wwwsession,'crr_review','0')),$cmd);
+	$cmd = str_replace('@o@', intliteral(array_item($result_wwwsession,'organization','0')), $cmd);
+	$cmd = str_replace('@p@', intliteral(array_item($result_wwwsession,'crp_profile','0')), $cmd);
+	$lastSql = $cmd = str_replace('@r@', intliteral(array_item($result_wwwsession,'crr_review','0')), $cmd);
 
-if($sqlrun_debugonly){debugitem('sqlrun',$cmd); return true;}
+	if($sqlrun_debugonly) {
+		debugitem('sqlrun', $cmd); 
+		return true;
+	}
 
-if($debugmode and $logSqlCmdList) $sqlcmdlist .= "\r\n$cmd";
+	if($debugmode && $logSqlCmdList) $sqlcmdlist .= "\r\n$cmd";
 
-if ($dbms == 'sqlsrv') {
-    if (is_resource($dbquery) or is_object($dbquery)) {
-        sqlsrv_free_stmt($dbquery);
-    }
-    $options = ['ReturnDatesAsStrings' => true];
-    $dbquery = sqlsrv_query($dbconnection, $cmd, [], $options);
-    if ($dbquery !== false) {
-        return $dbquery;
-    }
-    if ($e = sqlsrv_errors(SQLSRV_ERR_ERRORS)) {
-        $m = '';
-        foreach ($e as $ei){
-        	//if(substr($ei['SQLSTATE'],0,2)=='01') continue;
-					$m .= var_export($ei,true) . "\n";
-				}
+	if (is_resource($dbquery) || is_object($dbquery)) {
+		sqlsrv_free_stmt($dbquery);
+	}
+	
+	$options = ['ReturnDatesAsStrings' => true];
+	$dbquery = sqlsrv_query($dbconnection, $cmd, [], $options);
+	
+	if ($dbquery !== false) {
+		return $dbquery;
+	}
+	
+	if ($e = sqlsrv_errors(SQLSRV_ERR_ERRORS)) {
+		$m = '';
+		foreach ($e as $ei) {
+			$m .= var_export($ei, true) . "\n";
+		}
 		if(!$m) return false;
 		$msg = "\r\nError at SQL command:\r\n$cmd\r\n\r\nSQL command history:\r\n$sqlcmdlist\r\n\r\n$m";
-		fatal_error("Ramses SQL Error",$msg,strpos($m,"deadlock"));
-    }
-} elseif($dbms=='pdo') {
-	if(is_object($dbquery)) $dbquery->closeCursor();
-	if ($dbquery = $dbconnection->query("/**/$cmd")){
-		$sqlRows=$dbquery->rowCount();
-		return $dbquery;
+		fatal_error("Ramses SQL Error", $msg, strpos($m, "deadlock"));
 	}
-	if (($m = $dbconnection->errorInfo()) && ($m=$m[2])) {
-		$sqlcmdlist .= "\r\nMessage: $m\r\n$cmd";
-		if($debugmode) $sqlcmdlist .= "\r\nMessage: $m\r\n";
-		if (substr_count($m, "Changed database context") > 0
-		|| substr_count($m, "Warning:") > 0) return 1;
-		else {fatal_error("SQL Error","$sqlcmdlist\r\n\r\nMessage: $m"); return false; }
-	};
-} elseif($dbms!='odbc') {
-	if(is_resource($dbquery) or is_object($dbquery)) mssql_free_result($dbquery);
-	if ($dbquery = @mssql_query($cmd)){
-		$sqlRows=mssql_num_rows($dbquery);
-		return $dbquery;
-	}
-	if ($m = mssql_get_last_message()) {
-		if($debugmode) $sqlcmdlist .= "\r\nMessage: $m\r\n";
-		if (substr_count($m, "Changed database context") > 0
-		|| substr_count($m, "Warning:") > 0) return 1;
-		else {fatal_error("SQL Error",nl2br("$sqlcmdlist\r\n\r\n$cmd\r\n$m")); return false; }
-	};
-} else { // Tato část je řešení pro ODBC
-	cleanup_result();
-	if ($dbquery = @odbc_do($dbconnection,$cmd)){
-		$sqlRows=odbc_num_rows($dbquery);
-		return $dbquery;
-	};
+	
+	return false;
+}
 
-	if ($m = odbc_errormsg()) {
-		if(($smeti=strpos($m,"\x00"))!==false) $m=substr($m,0,$smeti);
-		//debugitem("smeti",$smeti);
-		//debugitem("sqlrun error: $cmd",bin2hex(odbc_errormsg()));
-		$msg = "\r\nSQL command history:\r\n$sqlcmdlist\r\n\r\nError at SQL command:\r\n$cmd\r\n\r\n$m";
-		if (substr_count($m, "Changed database context") > 0
-		|| substr_count($m, "Warning:") > 0) return 1;
-		else {
-			fatal_error("Ramses SQL Error",$msg,strpos($m,"deadlock"));
-		}
-	}; 
-	return 1;
-	};
-};
-//
 // NEXT_RESULT: Odstíní platformově toto volání
-// 08.09.2009: POZOR !!! pro ODBC není třeba explicitně tuto funkci volat, pokud předešlý result-set byl načten do konce
-//		Proto byl přidán parametr $force, který vynutí volání i v případě ODBC k zahození zbytku result-setu
-//		Pak jsem zjistil, že je to blbost, ale v jednom místě mi přeskočí jeden result-set, ošetřil jsem to extra na stránce page_info2_rpt_crosstab
-function next_result($res=null,$force=true){
-	global $dbms,$dbconnection,$dbquery;
-	static $count=0;
-	$count++;
-	static $notSupportedPDO=array("sqlite","pgsql");
+function next_result($res=null, $force=true) {
+	global $dbquery;
 	if(!$res) $res=$dbquery;
 	if($res===false) return false;
-	if (@$dbms=="sqlsrv") return sqlsrv_next_result($res);
-	if (@$dbms=="odbc") return $force?odbc_next_result($res):true;
-	if (@$dbms=='pdo'){
-		if(in_array($dbconnection->getAttribute(PDO::ATTR_DRIVER_NAME),$notSupportedPDO)) return false;
-		$nrstatus='XX';
-		//print "<div>Calling next rowset force=$force, count=$count</div>";
-		//if($count==5) return;
-		$r=$force?($nrstatus=$res->nextRowset()):true;
-		//print "<div>nrstatus=$nrstatus $count</div>";
-		return ;
-	}
-	return @mssql_next_result($res);
+	
+	return sqlsrv_next_result($res);
 }
 
 // DATA_SEEK: Odstíní platformově toto volání
-function data_seek($res, $num){
-	global $dbms;
-	if (@$dbms=="odbc") return odbc_data_seek($res, $num);	
-	return mssql_data_seek($res, $num);
+function data_seek($res, $num) {
+	// SQLSRV nepodporuje přímý data_seek na defaultních server-side kurzorech.
+	// V nové STI architektuře BCM Osiris tuto funkci již nepotřebujeme.
+	return false;
 }
 
 // FREE_RESULT: Odstíní platformově toto volání
-function free_result($res=null){
-	global $dbms,$dbquery;
+function free_result($res=null) {
+	global $dbquery;
 	if(!$res) $res=$dbquery;
-	//debugitem("FREE RESULT",$res);
-	if (@$dbms=="sqlsrv") return @sqlsrv_cancel($res);
-	if (@$dbms=="sybase") return sybase_free_result($res);
-	if (@$dbms=="pdo") return $res->closeCursor();
-	if (@$dbms=="odbc") {
-		while((is_resource($res) or ($res instanceof ODBCResult)) and @odbc_next_result($res)) odbc_free_result($res);
-		return;
-	};
-	return mssql_free_result($res);
+	
+	return @sqlsrv_cancel($res);
 }
 
 // NUM_ROWS: Odstíní platformově toto volání
-function num_rows($res){
-	global $dbms,$dbconnection;
-	if ($dbms=="odbc") return odbc_num_rows($res);
-	if ($dbms=="sybase") return sybase_num_rows($res);
-	if ($dbms=="sqlsrv") return sqlsrv_rows_affected($res);
-	if ($dbms=="pdo") return $res->rowCount();
-	return mssql_num_rows($res);
+function num_rows($res) {
+	return sqlsrv_rows_affected($res);
 }
 
 function db_field_type($colname) {
-    global $dbms, $dbquery;
+	global $dbquery;
 
-    if ($dbms === 'sqlsrv') {
-        $fields = sqlsrv_field_metadata($dbquery);
-        if ($fields !== false) {
-            $names = array_column($fields, 'Name');
-            $index = array_search($colname, $names);
-            if ($index !== false) {
-                $typeNum = $fields[$index]['Type'];
-                return sqlsrv_type_to_string($typeNum);
-            }
-        }
-    } elseif ($dbms === 'odbc') {
-        $colnum = odbc_field_num($dbquery, $colname);
-        if ($colnum !== false) {
-            return strtolower(odbc_field_type($dbquery, $colnum));
-        }
-    }
-    return null;
+	$fields = sqlsrv_field_metadata($dbquery);
+	if ($fields !== false) {
+		$names = array_column($fields, 'Name');
+		$index = array_search($colname, $names);
+		if ($index !== false) {
+			$typeNum = $fields[$index]['Type'];
+			return sqlsrv_type_to_string($typeNum);
+		}
+	}
+	
+	return null;
 }
 
 function sqlsrv_type_to_string($type) {
-    static $map = [
-        // === PŮVODNÍ KLÍČE (Legacy / System ID) ===
+	static $map = [
+		// === PŮVODNÍ KLÍČE (Legacy / System ID) ===
         // Tyto tam necháme, aby se nic nerozbilo, pokud by přišly ze starší části kódu
-        56 => 'int',
-        127 => 'bigint',
-        62 => 'float',
-        59 => 'real',
-        108 => 'numeric',
-        106 => 'decimal',
-        175 => 'char',
-        167 => 'varchar',
-        231 => 'nvarchar',
-        239 => 'nchar',
-        61 => 'datetime',
-        58 => 'smalldatetime',
-        40 => 'date',
-        41 => 'time',
-        104 => 'bit',
-        128 => 'binary',
-        129 => 'varbinary',
-        130 => 'image',
+		56 => 'int',
+		127 => 'bigint',
+		62 => 'float',
+		59 => 'real',
+		108 => 'numeric',
+		106 => 'decimal',
+		175 => 'char',
+		167 => 'varchar',
+		231 => 'nvarchar',
+		239 => 'nchar',
+		61 => 'datetime',
+		58 => 'smalldatetime',
+		40 => 'date',
+		41 => 'time',
+		104 => 'bit',
+		128 => 'binary',
+		129 => 'varbinary',
+		130 => 'image',
 
-        // === NOVÉ KLÍČE (Nutné pro PHP 8.x + sqlsrv driver) ===
+		// === NOVÉ KLÍČE (Nutné pro PHP 8.x + sqlsrv driver) ===
         // Hodnoty, které reálně vrací sqlsrv_field_metadata()
         
         // 1. Binární data (to je váš aktuální problém s -4)
         -4  => 'image',      // SQL_LONGVARBINARY -> reprezentuje Image / Varbinary(max)
-        -3  => 'varbinary',  // SQL_VARBINARY
-        -2  => 'binary',     // SQL_BINARY
+		-3  => 'varbinary',  // SQL_VARBINARY
+		-2  => 'binary',     // SQL_BINARY
         
         // 2. Textová data
         -1  => 'text',       // SQL_LONGVARCHAR -> reprezentuje Text / Varchar(max)
-        1   => 'char',       // SQL_CHAR
-        12  => 'varchar',    // SQL_VARCHAR
-        -8  => 'nchar',      // SQL_WCHAR
-        -9  => 'nvarchar',   // SQL_WVARCHAR
-        -10 => 'ntext',      // SQL_WLONGVARCHAR
+		1   => 'char',       // SQL_CHAR
+		12  => 'varchar',    // SQL_VARCHAR
+		-8  => 'nchar',      // SQL_WCHAR
+		-9  => 'nvarchar',   // SQL_WVARCHAR
+		-10 => 'ntext',      // SQL_WLONGVARCHAR
         
         // 3. Čísla
-        4   => 'int',        // SQL_INTEGER
-        5   => 'smallint',   // SQL_SMALLINT
-        -6  => 'tinyint',    // SQL_TINYINT
-        -5  => 'bigint',     // SQL_BIGINT
-        6   => 'float',      // SQL_FLOAT
-        7   => 'real',       // SQL_REAL
-        2   => 'numeric',    // SQL_NUMERIC
-        3   => 'decimal',    // SQL_DECIMAL
-        -7  => 'bit',        // SQL_BIT
+		4   => 'int',        // SQL_INTEGER
+		5   => 'smallint',   // SQL_SMALLINT
+		-6  => 'tinyint',    // SQL_TINYINT
+		-5  => 'bigint',     // SQL_BIGINT
+		6   => 'float',      // SQL_FLOAT
+		7   => 'real',       // SQL_REAL
+		2   => 'numeric',    // SQL_NUMERIC
+		3   => 'decimal',    // SQL_DECIMAL
+		-7  => 'bit',        // SQL_BIT
         
         // 4. Datum a čas
-        91  => 'date',       // SQL_TYPE_DATE
-        93  => 'datetime',   // SQL_TYPE_TIMESTAMP
-        -154 => 'time',      // SQL_SS_TIME2
-        -155 => 'datetimeoffset',
-    ];
+		91  => 'date',       // SQL_TYPE_DATE
+		93  => 'datetime',   // SQL_TYPE_TIMESTAMP
+		-154 => 'time',      // SQL_SS_TIME2
+		-155 => 'datetimeoffset',
+	];
 
-    return $map[$type] ?? "unknown type: $type";
+	return $map[$type] ?? "unknown type: $type";
 }
-//
-// SQLPAGERUN: Zavolá proceduru s parametry a převezme první result set, ve kterém je seznam přeložených frází
-// 27.12.2010 - změněná struktura prvního result-setu
 
+// SQLPAGERUN: Zavolá proceduru s parametry a převezme první result set
 function sqlpagerun($cmd,$printtitle=1){
-	global $T_PAGE_TITLE, $sqlprocresult, $dbms, $xmloutput, $private_file, $ajaxpage, $dbquery, $menu_title,
+	global $T_PAGE_TITLE, $sqlprocresult, $xmloutput, $private_file, $ajaxpage, $dbquery, $menu_title,
 		$PAGE_ACCESS_DENIED, $T_PAGE_ACCESS_DENIED, $pageitem_array, $pagetable_array, $cbxCenter, $myOrgShortname;
-	//print "pagerun start";
+	
 	$PAGE_ACCESS_DENIED=false;
 	$cbxCenter=true;
 	
 	// Zavolám proceduru a první result-set zpracuju
-	
 	getCloseWindowImg();
+	
 	if($r=$dbquery=sqlrun($cmd)){
 		$anyItem=0;
 		while($a=fetch($r)){
@@ -318,7 +239,7 @@ function sqlpagerun($cmd,$printtitle=1){
 			$vn=$a['varname'];
 			if($a['charvalue']===null) $a['charvalue']='';
 			$val=str_replace('{$myOrgShortname}',$myOrgShortname??'',$a['charvalue']??'');
-			// 
+			
 			if($ot=='pageColumn'){
 				$colname=$a['objname'];
 				unset($pi);
@@ -331,9 +252,6 @@ function sqlpagerun($cmd,$printtitle=1){
 				}
 				$pi->$vn=$val;
 				$GLOBALS["pageitem_$colname"]=&$pi;
-				//debugitem('A',$a);
-				//debugitem('PI '.$colname,$pi);
-				//debugitem('keys',array_keys($pageitem_array));
 				unset($pi);
 			} elseif($ot=='pageTable'){
 				$colname=$a['objname'];
@@ -346,9 +264,6 @@ function sqlpagerun($cmd,$printtitle=1){
 				}
 				$pi->$vn=$val;
 				$GLOBALS["pagetable_$colname"]=&$pi;
-				//debugitem('A',$a);
-				//debugitem('PI',$pi);
-				//debugitem('keys',array_keys($pageitem_array));
 				unset($pi);
 			}
 			
@@ -360,9 +275,7 @@ function sqlpagerun($cmd,$printtitle=1){
 			print "<script>document.location='page_enter_licence.php?redirectFrom=pagePhrases';</script>";
 			die();
 		}
-		//debugg('pageitem_status');
-		//debugg('T_PAGE_ACCESS_DENIED');
-		if($menu_title) $T_PAGE_TITLE=$menu_title; // Je-li předán název menu, pak má přednost jako název stránky
+		if($menu_title) $T_PAGE_TITLE=$menu_title;
 		if($PAGE_ACCESS_DENIED){
 			print $T_PAGE_ACCESS_DENIED;
 			die();
@@ -377,47 +290,14 @@ function sqlpagerun($cmd,$printtitle=1){
 	return $r;
 };
 
-function sqlpagerun_old($cmd,$printtitle=1){
-	global $T_PAGE_TITLE, $sqlprocresult, $dbms, $xmloutput, $private_file, $ajaxpage, $dbquery, $menu_title,
-		$PAGE_ACCESS_DENIED, $T_PAGE_ACCESS_DENIED;
-	//print "pagerun start";
-	$PAGE_ACCESS_DENIED=false;
-	if($r=$dbquery=sqlrun($cmd)){
-		while($a=fetch($r)){
-			//print "Eval (".strlen($a[0])."): $a[0]<BR />";
-			
-			//if(!strpos($a['php_command'],'note_target')){
-			//debugitem('ANO eval '.$cmd,$a['php_command']);
-				eval($a[0]);
-				//print "$a[0]<br>";
-			 //} else debugitem('NE eval '.$cmd,$a['php_command']);
-		};
-		if($menu_title) $T_PAGE_TITLE=$menu_title; // Je-li předán název menu, pak má přednost jako název stránky
-		if($PAGE_ACCESS_DENIED){
-			print $T_PAGE_ACCESS_DENIED;
-			die();
-		}
-		if(!$xmloutput and !$private_file and $printtitle and !$ajaxpage){
-			if($printtitle!==1) set_pagetitle($printtitle);
-			else
-				print_to_ElementById('pagetitle',htmlspecialchars($T_PAGE_TITLE));
-		};
-	};
-	next_result($r);
-	return $r;
-};
-
 // SQLPROCRESULT: Funkce s volání procedury, zabezpečující převzetí chybové zprávy
-
 function sqlprocresult($cmd){
 	global $sqlprocresult, $sqlnrows, $dbquery;
 	if(sqlrun($cmd)){
 		$sqlprocresult=fetch();
-		//debugitem("sqlprocresult OK",$sqlprocresult);
 		free_result();
 		if(($i=array_item($sqlprocresult,0,0))<0) $sqlnrows=$sqlprocresult[0]; else @$sqlnrows += $i;
 	} else {
-		//debugitem("Chyba SQLRUN");
 		return -1;
 	}
 	return 1;
@@ -432,7 +312,6 @@ function print_to_ElementById($id,$txt,$mousetip=''){
 		$mousetip=str_replace("\r","\\r",str_replace("\n","\\n",addslashes($mousetip)));
 		$pt=jsliteral("<span title=\"$mousetip\">$txt</span>");
 	}
-	//print "<SCRIPT>if(e=document.getElementById('$id')) e.innerHTML=$pt;</SCRIPT>";
 	$jsyntax .= "\r\nif(e=document.getElementById('$id')) e.innerHTML=$pt;";
 }
 
@@ -463,68 +342,39 @@ function print_sqlprocresult(){
 	if($sqlprocresult and !$no_title) print_to_ElementById('sqlprocresult',$msg);
 	return $msg;
 };
+
 /*
 	FETCH: fetchne řádek do pole, přičemž odstraní MSSQL chybu, která vrací mezeru místo empty
-	zároveň konvertuje datum z objektu DateTime na ODBC formát
+	zároveň konvertuje datum z objektu DateTime
 */
-
 function fetch($q=null){
-	global $dbms,$dbquery;
+	global $dbquery;
 	if(!$q) $q=$dbquery;
-	$r='';
-	if($dbms=="mssql"){
-		$r=mssql_fetch_array($q,MSSQL_BOTH);
-		if($r) {
-			foreach($r as $k => $v){
-				//if($v == '0') continue;
-				if($v === ' ') {$r[$k]='';};
-			};
+	
+	znovu:
+	$r = sqlsrv_fetch_array($q, SQLSRV_FETCH_BOTH);
+	
+	if($r === false){
+		$m = sqlsrv_errors();
+		$m1 = end($m);
+		if(array_item($m1, 'code', 0) == -26) return array();
+		if(in_array(array_item($m1, 'code', 0), array(-28, -22))){
+			$r = next_result($q);
+			goto znovu;
 		}
+		debugitem("ERROR", $m);
 	}
-	if($dbms=="pdo"){
-		$r=$q->fetch();
-		//debugitem('datarow',$r);
-		if($r) {
-			foreach($r as $k => $v){
-				//if($v == '0') continue;
-				if($v === ' ') {$r[$k]='';};
-			};
-		}
-	}
-	elseif($dbms=="sqlsrv"){
-		znovu:
-		$r=sqlsrv_fetch_array($q,SQLSRV_FETCH_BOTH);
-		// Prozkoumám chyby, jestli to nezpůsobil pouhý print
-		if($r===false){
-			$m=sqlsrv_errors();
-			$m1=end($m);
-			if(array_item($m1,'code',0)==-26) return array();
-			if(in_array(array_item($m1,'code',0),array(-28,-22))){
-				$r=next_result();
-				goto znovu;
+	
+	if($r) {
+		foreach($r as $k => &$v){
+			if(is_object($v)) {
+				$v = $v->format('Y-m-d H:i:s');
+				if(substr($v, -3) == ':00') $v = substr($v, 0, -3);
 			}
-			debugitem("ERROR",$m);
-		}
-		if($r) {
-			foreach($r as $k => &$v){
-				if(is_object($v)) {
-					$v=$v->format('Y-m-d H:i:s');
-					if(substr($v, -3)==':00') $v=substr($v,0,-3);
-				}
-				if($v === ' ') {$r[$k]='';};
-			};
-		}
+			if($v === ' ') { $r[$k] = ''; };
+		};
 	}
-	else {
-		//debugitem('fetch1',"$q");
-		$o=@odbc_fetch_object($q);
-		//debugitem('fetch2',$o);
-		if(!is_object($o)) return false;
-		$ret=@get_object_vars($o);
-		$i=0;
-		if($ret) foreach($ret as $v) $ret[$i++]=$v;
-		return $ret;
-	};
+	
 	return $r;
 };
 
@@ -538,11 +388,10 @@ function fatal_error($usr='', $x="Unspecified error", $deadlock=0){
 	$cn=getenv('COMPUTERNAME');
 	$cookie=@$_SERVER['HTTP_COOKIE'];
 	$time=date("d.m.Y H:i:s");
-	//$dbname=array_item($result_wwwsession,'database_name');
 	$host=gethostname();
-	$bt=debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+	
 	ob_start(); debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS); $bt=ob_get_clean(); ob_end_clean();
-	//print nl2br($bt);
+	
 	@$msg="
 Time=$time
 Server=$_SERVER[SERVER_NAME] on \"$host\" $cn
@@ -565,13 +414,13 @@ ORIGINAL_REMOTE_ADDR=$ORIGINAL_REMOTE_ADDR
 SESSIONID=$SID
 COOKIES=$cookie
 GET=$get$post$sess";
+
 	$msg=str_replace('<br />',"\r\n",$msg);
 	$msg=str_replace("\n","\r\n",$msg);
 	$msg=str_replace("\r\r","\r",$msg);		
-	//mail("hink@rac.cz","Unexpected error",$msg,'');
 	write_log($msg);
 	syslog(LOG_ERR,$msg);
-	//$msg=str_replace("\r","RRRRRR",$msg); $msg=str_replace("\n","NNNNNN",$msg); $debugmode=1;debugitem('MSG',$msg);debugprint();
+
 	if($debugmode){
 		debugprint();
 		$x = nl2br(htmlspecialchars($msg));
@@ -627,9 +476,7 @@ function to_string($val){
 }
 
 // CHARLITERAL: Převede znaky na literál v apostrofech
-
 function charliteral($c,$len=0){
-	//debugitem('charliteral ',$c);
 	if($c===null) return "NULL";
 	if($len>0) $c=substr($c,0,$len);
 	$c=str_replace("\r\n","\n",$c);
@@ -637,20 +484,17 @@ function charliteral($c,$len=0){
 	return "'".str_replace("'","''",$c)."'";
 };
 
-// GUIDLITERAL: Převede UUID ve stringu na literál v apostrofech, pokud je syntaxe špatná, generuje NULL
-
+// GUIDLITERAL: Převede UUID ve stringu na literál v apostrofech
 function guidliteral($c){
 	if(!$c) return 'NULL';
 	if($c[0]=='{') $c=substr($c,1,-1);
 	return is_guid($c)?"'$c'":'NULL';
 };
 
-
 // INTLITERAL: Převede znaky na literál v apostrofech
-
 function intliteral($c,$prec=0){
 	if(($c??'')==="") return 'NULL';
-	if(substr($c,0,2)=='ID') $c=substr($c,2); // Kvůli CSV v Excelu je třeba předřadit ID pro bigint 
+	if(substr($c,0,2)=='ID') $c=substr($c,2);
 	$c=str_replace(' ','',$c);
 	$c=str_replace(',','.',$c);
 	if(!is_numeric($c)) return 'NULL';
@@ -658,7 +502,6 @@ function intliteral($c,$prec=0){
 };
 
 // INTLITERALLIST: Převede znaky na seznam čísel v apostrofech
-
 function intliterallist($c){
 	$c=$c??'';
 	if($c!==''){
@@ -673,25 +516,15 @@ function intliterallist($c){
 }
 
 // Vrati datum v ODBC formatu nebo false
-
 function date_from_string($s){
 	$s=$s??'';
 	if(!$s || strtolower($s)=='null') return false;
 	$formatList=array(
-		"j.n.Y",
-		"j.n.y",
-		"j.n.y H:i",
-		"j.n.Y H:i",
-		"Y-m-d H:i:s",
-		"Y-m-d H:i",
-		"dmy",
-		"dmy H:i",
-		"Y-m-d",
-		);
-	//debugitem("date from string",$s);
+		"j.n.Y", "j.n.y", "j.n.y H:i", "j.n.Y H:i",
+		"Y-m-d H:i:s", "Y-m-d H:i", "dmy", "dmy H:i", "Y-m-d"
+	);
 	foreach($formatList as $format){
 		$d=date_parse_from_format($format,$s);
-		//debugitem($format,$d);
 		if($d['error_count']) continue;
 		if(($year=$d['year'])<30) $year += 2000;
 		if($year<100) $year += 1900;
@@ -706,27 +539,24 @@ function date_from_string($s){
 }
 
 // DATELITERAL: Převádí datum do formátu vhodného pro zápis do databáze
-
 function dateliteral($input){
-	//prevadi ceske datum pro zapis do databaze
 	$input=trim($input??'');
 	while(($temp=str_replace('  ',' ',$input))!=$input) $input=$temp;
 	if (strpos($input, ".")):
 		 $a=explode(".", $input);
 		 if(count($a)<2) return 'NULL';
 		 if(count($a)<3) $a[2]= $rok=date("Y");
-		 list($den, $mesic, $rok)=$a; //predpokladame cesky datum ve formatu den.mesic.rok
+		 list($den, $mesic, $rok)=$a;
 	else:
 		$a=explode("-", $input);
 		if(count($a)<3) return 'NULL';
 		if(count($a)<3) $a[2]= $rok=date("Y");
-		list($rok, $mesic, $den)=$a; // nebo ODBC formátu yyyy-mm-dd
+		list($rok, $mesic, $den)=$a;
 	endif;
-	$den=(int)$den; $mesic=(int)$mesic; $rok=(int)$rok; //bereme jen ciselne hodnoty
+	$den=(int)$den; $mesic=(int)$mesic; $rok=(int)$rok; // bereme jen číselné hodnoty
 	if ($rok<100) { $rok += 2000; if($rok>date("Y")+2) $rok -= 100;};
 	if (!checkdate($mesic, $den, $rok)) return 'NULL';
 	
-	//if (@ereg("([0123456789]{1,2}:[0123456789]{2})", $input, $casti))
 	$hodina=$minuta=0;
 	$i=strrpos($input," ");
 	if($i>0) $input=substr($input,$i); else $input="";
@@ -741,8 +571,7 @@ function dateliteral($input){
 	return "'$datum'";
 };
 
-// BinLiteral: Převádí a kontroluje binární string, povoleny jsou běžné blank-znaky
-
+// BinLiteral: Převádí a kontroluje binární string
 function varbinliteral($input){
 	$output='0x';
 	$input=trim(strtolower($input));
@@ -762,24 +591,8 @@ function varbinliteral($input){
 		return 'NULL';
 	}
 }
-// LOGGED slouží jen pro kontrolu, zda je uživatel nalogován (pokud ne, na ostatních stránkách nebude tato funkce
-// známá - volá se s @ aby nehlásila chyby
 
 function logged() {};
-
-/*
-// T_COLOR spočte rozdíl vyplněných otázek od celkového počtu a určí src obrázku
-
-function t_color($count, $filled) {
-	switch($count-$filled) {
-		case 0: return "images/16x16_dot_g.gif"; break;
-		case $count: return "images/16x16_dot_r.gif"; break;
-		default: return "images/16x16_dot_b.gif"; break;
-	}
-}
-*/
-
-// ACTIVE
 
 function active($stav) {
 	if ($stav == 0) return "images/16x16/BulbOff.png";
@@ -787,21 +600,12 @@ function active($stav) {
 }
 
 // SESSREG: jednoduchá registrace session proměnné jako globální
-
 function sessreg($nazev){
-	// Pro registraci proměnné $xy stačí zavolat sessreg('xy')
-	// Změna oproti session_register:
-	//		je-li session-proměnná již nastavena, pak její hodnota má přednost
-	//		zatímco u session_register má přednost aktuální hodnota globální proměnné
-	
-	//if($r=isset($_SESSION[$nazev])) $GLOBALS[$nazev]=&$_SESSION[$nazev];
-	//session_register($nazev);
-	//return $r;
-	if(isset($_SESSION[$nazev])) {$GLOBALS[$nazev]=&$_SESSION[$nazev];
-		 //print "Session->GLOBALS[$nazev]=".$GLOBALS[$nazev];
-		 return 1;};
+	if(isset($_SESSION[$nazev])) {
+		$GLOBALS[$nazev]=&$_SESSION[$nazev];
+		return 1;
+	};
 	if(!$r=isset($GLOBALS[$nazev])) $GLOBALS[$nazev]="";
-	//print "Zůstává ->GLOBALS[$nazev]=".$GLOBALS[$nazev]."<br />";
 	$_SESSION[$nazev]=&$GLOBALS[$nazev];
 	return $r;
 };
@@ -826,9 +630,7 @@ function sessioninput($name,$opt=0){
 }
 
 // POSTGETREG: jednoduchá registrace globální proměnné předané pomocí POST nebo GET
-
 function postgetreg($nazev,$opt=0)	{
-	// Pro registraci proměnné $xy stačí zavolat sessreg('xy')
 	if(isset($_POST[$nazev])) {$GLOBALS[$nazev]=stripsl($_POST[$nazev],$opt); return 1;};
 	if(isset($_GET[$nazev])) {$GLOBALS[$nazev]=stripsl($_GET[$nazev],$opt); return 1;};
 	if(!isset($GLOBALS[$nazev])){$GLOBALS[$nazev]=""; return 0;};
@@ -836,56 +638,38 @@ function postgetreg($nazev,$opt=0)	{
 };
 
 // HTMLSPEC: vylepšená funkce HTMLSpecialChars, která žere i pole
-
 function htmlspec($a){
 	if($a===null) return '';
 	if(is_resource($a) || is_object($a)) return $a;
-	if(is_array($a))
-		{
-			foreach($a as $arg => $v) $a[$arg]=htmlspec($v);
-			return $a;
-		}
+	if(is_array($a)){
+		foreach($a as $arg => $v) $a[$arg]=htmlspec($v);
+		return $a;
+	}
 	else return HTMLSpecialChars($a);
 };
 
-// HTMLSPECBR: vylepšená funkce HTMLSpecialChars, která žere i pole, navíc
-
+// HTMLSPECBR: vylepšená funkce HTMLSpecialChars, která žere i pole, navíc s br
 function htmlspecbr($a){
 	if($a===null) return '';
 	if(is_resource($a) || is_object($a)) return $a;
-	if(is_array($a))
-		{
-			foreach($a as $arg => $v) $a[$arg]=htmlspecbr($v);
-			return $a;
-		}
+	if(is_array($a)){
+		foreach($a as $arg => $v) $a[$arg]=htmlspecbr($v);
+		return $a;
+	}
 	else return nl2br(htmlspecialchars($a));
 };
 
 /*
-	stripsl: vylepšená funkce stripslashes, která žere i pole a umožňuje převod na literály pouitelné přímo v databázi.
-	$opt	=	typ parametru (1=text, 2=číslo, 3=date/datetime, 4=bit, dále trim, html)
-					default(0) = sanitizace na html nebezpečné znaky
-					raw = úmyslně bez sanitizace
+	stripsl: vylepšená funkce stripslashes, která žere i pole a umožňuje převod na literály
 */
 function stripsl($a,$opt=0,$len=0){
 	global $form;
-	if(is_array($a))
-		{
-			foreach($a as $arg => $v) $a[$arg]=stripsl($v,$opt,$len);
-			return $a;
-		}
-	else {
-		//debugitem("stripsl 1+ $opt ",$a);
-		//if(get_magic_quotes_gpc()) $a=stripslashes($a);
+	if(is_array($a)){
+		foreach($a as $arg => $v) $a[$arg]=stripsl($v,$opt,$len);
+		return $a;
+	} else {
 		if($opt==='date' or $opt==='datetime' or $opt==='smalldatetime') $opt=3;
-		//debugitem("stripsl 2+ $opt ",$a);
 		
-		// Následující řádky odstraňují vracejí zpět znaky <>, které explorer nahradil v TEXTAREA
-		/*
-		$a=str_replace('&lt;','<',$a);
-		$a=str_replace('&gt;','>',$a);
-		$a=str_replace('&amp;','&',$a);
-		*/
 		switch("$opt"){
 			case 'trim':
 				return charliteral(trim($a),$len);
@@ -914,10 +698,7 @@ function stripsl($a,$opt=0,$len=0){
 			case '3': case 'date': case 'datetime': case 'smalldatetime':
 				return dateliteral($a);
 			case '4': case 'bit': case 'checkbox':
-				//debugitem('BIT value',$a);
-				//if($a==0) $a=0; else $a=1;
 				if($a) return 1; return 0;
-				//return $a;
 			case '5': // string with integer list
 				return intliterallist($a);
 			case '6': // HTML string
@@ -935,8 +716,6 @@ function stripsl($a,$opt=0,$len=0){
 };
 
 // GETINPUT: získání proměnné předané pomocí POST nebo GET
-// 30.11.2024 - Originální požadovaná hodnota bude vždy přítomna v poli $reginputs
-
 function getinput($nazev, $dbLiteralType=0, $len=0)	{
 	global $reginputs;
 	if($dbLiteralType==='html'){
@@ -950,8 +729,6 @@ function getinput($nazev, $dbLiteralType=0, $len=0)	{
 };
 
 // REGINPUT: získání proměnné předané pomocí POST nebo GET, registrace globální proměnné
-// 30.11.2024 - Současně zajišťuje, že žádaná proměnná (key) bude přítomna v poli $reginputs, ať byla předána v GET, POST nebo vůbec
-
 function reginput($nazev, $dbLiteralType=0, $len=0)	{
 	global $reginputs;
 	$arr=explode(',',$nazev);
@@ -970,8 +747,7 @@ function reginput($nazev, $dbLiteralType=0, $len=0)	{
 	return $GLOBALS[$nazev]=stripsl($r,$dbLiteralType,$len);
 };
 
-// REGINPUT_SUFFIX: Funguje jako REGINPUT, jako první však má parametr, který se připojí k názvu zdrojové proměnné
-
+// REGINPUT_SUFFIX: Funguje jako REGINPUT s fixním prefixem/suffixem
 function reginput_suffix($suffix,$nazvy,$dbLiteralType=0, $len=0){
 	global $reginputs;
 	$arr=explode(',',$nazvy);
@@ -998,7 +774,6 @@ function reginputs($s){
 }
 
 // EVALSTRING: Vyčíslí hodnotu stringu, který obsahuje jména proměnných
-
 function evalstring(&$s){
 	eval('global $'.implode(',$',array_keys($GLOBALS)).';');
 	eval('$s = "'.addslashes($s).'";');
@@ -1044,31 +819,28 @@ class PageItem{
 };
 
 function pageitem($name,$label,$header,$helptext,$input_type,$datatype,$width,$rows,$cols,$maxlength){
-		global $pageitem_array;
-		$o=new PageItem();
-		$o->name=$name??'';
-		$o->label=$label??'';
-		$o->header=$header??'';
-		$o->helptext=$helptext??'';
-		$o->input_type=$input_type??'';
-		$o->datatype=$datatype??'';
-		$o->width=$width??'';
-		$o->rows=$rows??'';
-		$o->cols=$cols??'';
-		$o->maxlength=$maxlength;
-		$o->input_style='';
-		//if($input_type=='text') $this->input_style='width:100%';
-		//$this->input_size='150px';
-		$o->displayonly=0;
-		$o->td_style="";
-		$o->td_attr="";
-		$o->input_attr="";
-		$o->value='';
-		$o->htmlvalue='';
-		//$this->ta_attr="rows=4 cols=60";
-		$pageitem_array[$name]=&$o;
-		$GLOBALS['pageitem_'.$name]=&$o;
-	}
+	global $pageitem_array;
+	$o=new PageItem();
+	$o->name=$name??'';
+	$o->label=$label??'';
+	$o->header=$header??'';
+	$o->helptext=$helptext??'';
+	$o->input_type=$input_type??'';
+	$o->datatype=$datatype??'';
+	$o->width=$width??'';
+	$o->rows=$rows??'';
+	$o->cols=$cols??'';
+	$o->maxlength=$maxlength;
+	$o->input_style='';
+	$o->displayonly=0;
+	$o->td_style="";
+	$o->td_attr="";
+	$o->input_attr="";
+	$o->value='';
+	$o->htmlvalue='';
+	$pageitem_array[$name]=&$o;
+	$GLOBALS['pageitem_'.$name]=&$o;
+}
 
 class PageTable{
 	var $name,$title,$helptext;
@@ -1107,7 +879,6 @@ function td1_label($name,$td=""){
 	$item=array_item($pageitem_array,$name,new pageitem($name));
 	$helptext=htmlspecialchars($item->helptext);
 	$man=(is_array($mandatory_columns) && in_array($name,$mandatory_columns))?'<span style=color:red;float:right;>*</span>':'';
-	//$w=($item->width)?" width=$item->width":'';
 	return "
 	<td title=\"$helptext\" $td>$man".htmlspec($item->label)."</td>";
 };
@@ -1115,7 +886,6 @@ function td1_label($name,$td=""){
 function td1_value($name,$td="",$optval=null,$moreHTML=''){
 	global $pageitem_array, $datarow, $php_errormsg;
 	$item=array_item($pageitem_array,$name,new PageItem($name));
-	//if($name=='audit_date') debugitem('item',$item);
 	$tds=$item->td_style?(" style=\"".$item->td_style."\" "):"";
 	$val=$optval?$optval:nl2br(@$item->htmlvalue??'');
 	if($item->datatype=='dateonly' || $item->datatype=='datetime' || $item->datatype=='smalldatetime' || $item->datatype=='date') $val=$item->value;
@@ -1125,7 +895,6 @@ function td1_value($name,$td="",$optval=null,$moreHTML=''){
 	if($td_title) $td_title=" title=\"$td_title\"";
 	if($item->input_type=='checkbox'){
 		$ch = $val?' checked':'';
-		//if(!$item->td_attr) $item->td_attr=' align=center';
 		return "
 		<td$td_title$tds $td $item->td_attr><input type=checkbox style=margin-top:2px name=$name value=$val disabled$ch>$moreHTML</td>";
 	}
@@ -1160,7 +929,6 @@ function th_pageitemheader($name,$td=""){
 		$val=$name;
 		$w='';
 	}
-	//print "th_helptext:$helptext<br />";
 	return "
 	<th title=\"$helptext\" $w $td>$val</th>";
 };
@@ -1169,10 +937,9 @@ function td1_input($name,$inputname='',$optval=1,$moreHTML=''){
 	global $pageitem_array,$datarow,$tag_select,$page_readonly,$cbxCenter;
 
 	// Otestování, zda na stránce nebo v načtených datech není příznak editable
-	
+
 	$rn=str_replace('[]','',$name);
 	if(!$inputname) $inputname=$name;
-	//$item=$pageitem_array[$rn];
 	$item=array_item($pageitem_array,$rn,new pageitem($rn));
 	$itype=$item->input_type;
 	// Vložení kalendáře pro editaci data
@@ -1180,20 +947,11 @@ function td1_input($name,$inputname='',$optval=1,$moreHTML=''){
 		return "<td>".HTML_Calendar($inputname,$datarow[$rn],$item->mandatory)."$moreHTML</td>";
 	if($item->datatype=='datetime' || $item->datatype=='smalldatetime')
 		return "<td>".HTML_Calendar($inputname,$datarow[$rn],$item->mandatory,true)."$moreHTML</td>";
+	
 	$readonly=$page_readonly?' readonly':'';
 	if(isset($datarow['editable'])){
 		if(!$datarow['editable']) $readonly=' readonly';
 	}
-	
-	// Toto byla chyba
-	
-	/*
-	if($readonly && $itype!='select'){
-		return td1_value($name);
-	}
-	*/
-	
-	//
 	
 	if($item->displayonly)  $readonly=' readonly';
 	$dis=$readonly?" disabled":"";
@@ -1201,13 +959,11 @@ function td1_input($name,$inputname='',$optval=1,$moreHTML=''){
 	$val=@$datarow[$rn];
 	$checked=$wi="";
 
-	// přednastavím zarovnání vpravo u číselných typů	
-
-	if(/*!($ins=$item->input_style) && */($itype=='text')){
+	// Přednastavím styl pro číselné typy, aby se zarovnávaly vpravo a případně se formátovaly
+	if(($itype=='text')){
 		if(in_array($item->datatype,array('int','smallint','bigint','dec','decimal','number','tinyint'))){
 			$item->input_style='text-align:right;max-width:80px;';
 			if($val>=1000 and $val<2140000000 and in_array($item->datatype,array('int','smallint','bigint','number'))) $val=number_format($val,0,'.',' ');
-			//$wi=80;
 		}
 	}
 
@@ -1227,9 +983,6 @@ function td1_input($name,$inputname='',$optval=1,$moreHTML=''){
 		// V případě selectu musí být předáno pole $optval, nebo se načte z helptextu
 		if(!$inputname) $inputname=$name;
 		if(!is_array($optval)) $optval=helptext_to_array($helptext);
-		// Následující odmaskovaný příkaz způsoboval nulovou šířku selectů
-		//if(!$ins) $ins='style=\"width:100%\"';
-		//return "<td $tda>".html_select($inputname,$optval,$val,"$tda title=\"$helptext\" $onchange $dis")."</td>";
 		if($readonly)
 			return "<td $tda>".html_select($inputname,$optval,$val,"title=\"$helptext\" $onchange $dis $ins $item->input_attr")
 				."<input type=hidden name=\"$inputname\" value=\"$val\">$moreHTML";
@@ -1241,10 +994,10 @@ function td1_input($name,$inputname='',$optval=1,$moreHTML=''){
 		// V případě radio musí být předáno pole $optval
 		if(!$inputname) $inputname=$name;
 		$radio="";
-        foreach($optval as $v=>$txt){  
-            $checked=($v==$val)?"checked":"";
-            $radio .= "<span style=\"white-space:nowrap\"><input type=radio id=\"$inputname"."_$v\" name=\"$inputname\" value=\"$v\" $checked title=\"$helptext\" $onchange $dis $ins>$txt</span>";
-        }
+		foreach($optval as $v=>$txt){  
+			$checked=($v==$val)?"checked":"";
+			$radio .= "<span style=\"white-space:nowrap\"><input type=radio id=\"$inputname"."_$v\" name=\"$inputname\" value=\"$v\" $checked title=\"$helptext\" $onchange $dis $ins>$txt</span>";
+		}
 		return "<td $tda>$radio$moreHTML</td>";
 	};
 	if ($itype=="checkbox") {
@@ -1257,32 +1010,26 @@ function td1_input($name,$inputname='',$optval=1,$moreHTML=''){
 		} else
 			return "<td title=\"$helptext\" $tds $tda><input name=$inputname$dis type=\"checkbox\" $checked$maxl value=\"".@htmlspec($val)."\" $onclick $onchange $readonly $item->input_attr>$moreHTML</td>";
 	};
-	if($item->placeholder===' ') debugitem("JO");
+	
 	$placeholder=($item->placeholder OR $item->placeholder===' ')?"placeholder=".htmlliteral($item->placeholder):"";
 	if($itype=="textarea"){
-		//debugitem("PH",$placeholder);
 		$cols=($item->cols)?" cols=$item->cols":'';
-		$tdh=($item->rows)?" height=".(18*$item->rows):'';
-		$tdh=''; // 14.2.2009: Předchozí nastavení výšky způsobovalo, že pole nebylo vidět celé.
+		$tdh='';
 		$tdw=" width=$item->width";
 		if($ins) $ins .= ";width:100%"; else $ins="style=\"width:100%;\"";
-		//$ins .= ";height:20"; // Ve FF způsobovalo, že byl vidět vždy jen jeden řádek
-		//debugitem('textarea',"<textarea name=$inputname$dis rows=$item->rows $maxl $ins $onchange/>");
 		$r="<td title=\"$helptext\" $tds$tdh $tda><textarea $placeholder autoresize=yes id=$inputname $dis name=\"$inputname\" $cols $maxl $ins $onchange $dis>".@htmlspec($val)."</textarea>$moreHTML</td>";
-		//debugitem($item->name,$r);
 		return $r;
 	};
-	if(!$wi)
-		$wi=($item->datatype=='date')?'62':'100%';
+	
+	if(!$wi) $wi=($item->datatype=='date')?'62':'100%';
 	$ins="style=\"width:$wi;$item->input_style;\"";
 	$td_title=$helptext?" title=\"$helptext\"":'';
 	$r="<td$td_title $tds $tda><input id=$inputname $placeholder name=$inputname $readonly type=\"$item->input_type\" $checked$maxl value=\"".@htmlspec($val)."\" $ins $item->input_attr$onchange>$moreHTML</td>";
-	//debugitem($item->name,$r);
+	
 	return $r;
 };
 
 // TD_PERCENT: Zobrazí buňku s procentuálním zobrazením čísel
-
 function td_percent($count,$fill,$confirmed=NULL,$printtext=1){
 	$blue = "#1D5892";
 	$green = "#468729";
@@ -1322,8 +1069,6 @@ function td_percent($count,$fill,$confirmed=NULL,$printtext=1){
 			else if ($max == $pr3) $pr3 += -1;
 		}
 		
-		//if($pr1!=100) debugitem("PR $pr1 $pr2 $pr3 count=$count, fill=$fill");
-		
 		$s="<div class=pbar style=\"color:$red; background-color:white\">Unexpected combination ".($pr1)."%, ".($pr2)."%, ".($pr3)."%</div>";
 		
 		// 1) GGG Všechno je potvrzeno
@@ -1341,14 +1086,17 @@ function td_percent($count,$fill,$confirmed=NULL,$printtext=1){
 			$s= "<div class=pbar title=\"".($pr2)."%\" style=\"background-color:$blue; width:100px;\"></div>";
 		
 		// 4) GBR = všechny stavy
+		
 		elseif ($p1>0 and $p2>0 and $p3>0)
 			$s= "<div title=\"".($pr1)."%\" class=pbar style=\"background-color:$green; width:$pr1"."px\"></div><div title=\"".($pr2)."%\" class=pbar style=\"background-color:$blue; width:$pr2;\"></div><div title=\"".($pr3)."%\" class=pbar style=\"background-color:$red; width:$pr3\"></div>";
 		
 		// 5) G+B
+		
 		elseif ($p3==0 && $pr1)
 			$s= "<div title=\"".($pr1)."%\" class=pbar style=\"background-color:$green; width:$pr1"."px\"></div><div title=\"".($pr2)."%\" class=pbar style=\"background-color:$blue; width:$pr2;\"></div>";
 		
 		// 7) G+R
+		
 		elseif ($p2==0 && $pr1)
 			$s= "<div title=\"".($pr1)."%\" class=pbar style=\"background-color:$green; width:$pr1"."px\"></div><div title=\"".($pr3)."%\" class=pbar style=\"background-color:$red; width:$pr3;\"></div>";
 		
@@ -1356,27 +1104,21 @@ function td_percent($count,$fill,$confirmed=NULL,$printtext=1){
 		
 		elseif ($p1==0 && $pr2) $s= "<div title=\"".($pr2)."%\" class=pbar style=\"background-color:$blue; width:$pr2"."px\"></div><div title=\"".($pr3)."%\" class=pbar style=\"background-color:$red; width:$pr3;\"></div>";
 		
-		//debugitem("s",$s);
-		
 		$pr1=$printtext?"<div style=position:absolute;z-index:2;width:104px;color:white;>$pr1%</div>":"";
 		return "<td style=\"vertical-align: top; text-align: center; border: 0px; padding: 0px;\">$pr1<div style=\"border: 1px solid black; width: ".($konst+2)."px;\">$s</div></td>";
 	};
 };
 
-//<div style=\"width: 100px; text-align: center; position: absolute; left:297px; color: white;\">$pr1&nbsp;$pr2&nbsp;$pr3</div>
-
-
 // SQLARRAY: Funkce přečte result set a připraví z něj jednoduché indexované pole
 // Přídavný parametr true způsobí, že se čte z již otevřeného result setu
 
 function sqlarray($p=null,$continue=0){
-	global $dbms,$dbquery;
+	global $dbquery;
 	if(!isset($p)) $p=$dbquery;
 	$continue=(is_resource($p) || is_object($p));
 	if(!$continue) $res=sqlrun($p); else $res=$p;
 	$r=array();
 	while($d=fetch($res)){
-		//debugitem('Sqlarray fetch',$d);
 		$r[$d[0]]=$d[1];
 	}
 	next_result($res);
@@ -1386,19 +1128,15 @@ function sqlarray($p=null,$continue=0){
 }
 
 // SQLFIRSTROW: Funkce přečte první řádek resultu do jednoduchého pole
-// Pokud není zadán parametr (SQL příkaz), pak čte z běžícího query
-
-function sqlfirstrow($p=null){ // Zpravidla je v parametru zadán příkaz
-	global $dbms,$dbquery;
-	if(!isset($p)) $p=$dbquery; // Není-li zadán, tak se pokračuje ve čtení stávajících result setů
+function sqlfirstrow($p=null){ 
+	global $dbquery;
+	if(!isset($p)) $p=$dbquery; 
 	$continue=(is_resource($p) or is_object($p));
 	if(!$continue) $dbquery=$res=sqlrun($p); else $res=$p;
-	//debugitem('res',$res);
 	if($d=fetch($res)){
 		next_result();
 		if($continue) return $d;
 		cleanup_result();
-		// free_result($res); // Původní příkaz
 		return $d;
 	}
 	next_result();
@@ -1410,10 +1148,9 @@ function sqlfirstrow($p=null){ // Zpravidla je v parametru zadán příkaz
 // Přídavný parametr se nepoužívá
 
 function sqlarray2($p=null,$continue=0){
-	global $dbms,$dbquery;
+	global $dbquery;
 	if(!isset($p)) $p=$dbquery;
 	if(is_resource($p) or is_object($p)) {$res=$p; $continue=1;} else $res=sqlrun($p);
-	//if(!$continue) $res=sqlrun($p); else $res=$p;
 	$r=array();
 	while($d=fetch($res)) $r[$d[0]]=$d;
 	next_result($res);
@@ -1445,7 +1182,6 @@ function sqlarray3($p=null){
 }
 
 // SQLARRAY_SIMPLE: Funkce přečte result set a připraví z řádků prosté pole
-
 function sqlarray_simple($p=null){
 	global $dbquery;
 	if(!$p) $p=$dbquery;
@@ -1463,13 +1199,10 @@ function sqlarray_simple($p=null){
 }
 
 // FETCH_DATAROW: fetchne řádek s daty a zapíše hodnoty do proměnné $pageitems
-// 31.12.2010 - Vytváří celý objekt PageItem pro každou načtenou položku
-// 21.09.2011 - Pro nově vložené položky doplňuje i header, label a helptext
 function fetch_datarow($rs=null){
 	global $datarow, $pageitem_array, $htmldatarow, $dbquery;
 	if(!$rs) $rs=$dbquery;
 	if($datarow=fetch($rs)) {
-		//debugdatarow();
 		$htmldatarow=htmlspec($datarow);
 		foreach($datarow as $name => $value){
 			unset($pi);
@@ -1526,11 +1259,9 @@ function html_select($name,$values,$selectedvalue="~~--~~",$attributes="",$addSe
 	$selectedvalue=(string)$selectedvalue;
 	$style=$selected='';
 	$selectedOv=htmlliteral($selectedvalue);
-	// 18.08.2015: Pokud vybrana hodnota neexistuje, tak ji vlozim, aby se zapisem neztratila
+	
 	if($addSelectedValue && (!is_array($values) || !array_key_exists($selectedvalue,$values))){
-		// Vyjimka, "NULL" hodnota se nevkládá, pokud existuje prázdná
 		if(!($selectedvalue=='NULL' and array_key_exists('',$values))){
-			//debugitem("Vkládám chybějící hodnotu $selectedvalue", $values);
 			$empty_option=(is_string($addSelectedValue) AND !$selectedvalue)?$addSelectedValue:$selectedvalue;
 			$r = "<option value=\"$selectedvalue\" selected style=\"color:red\">$empty_option</option>";
 		}
@@ -1539,30 +1270,24 @@ function html_select($name,$values,$selectedvalue="~~--~~",$attributes="",$addSe
 		$optionvalue=(string)$optionvalue;
 		$selected=$optionTitle='';
 		if(is_array($option)){
-			//debugitem('option',$option);
-			// Nastaveni textu
 			if(array_key_exists('optiontext',$option)) $optiontext=$option['optiontext'];
 			elseif (array_key_exists('name',$option)) $optiontext=$option['name'];
 			else $optiontext="$optionvalue optiontext";
 			// Nastaveni titulku
 			if($optionTitle=array_item($option,'optiontitle')) $optionTitle=" title=".htmlliteral($optionTitle);
-			//$optiontext=array_key_exists('optiontext',$option)?$option['optiontext']:"$optionvalue optiontext";
 			// Nastaveni stylu
 			$style=array_key_exists('backgroundcolor',$option)?"background-color:$option[backgroundcolor];":"";
 			$style .= array_key_exists('color',$option)?"color:$option[color];":"";
 			if(array_key_exists('style',$option)) $style=$option['style'];
 			if(array_key_exists('selected',$option)){
-				//debugitem('exists');
 				$selected=$option['selected']?'selected':'';
-			} // else debugitem("not exists $selectedvalue",$optionvalue);
+			} 
 		} else {
 			$optiontext=$option;
 		}
 		$ov=htmlliteral($optionvalue);
 		$ot=htmlspecialchars($optiontext??'');
-		//debugitem('OT',$ot);
 		if($style) $style="style=\"$style\"";
-		//debugitem('selected',$selected);
 		if($optionvalue==$selectedvalue){
 			$selected='selected';
 			$selectedText=$ot;
@@ -1571,7 +1296,6 @@ function html_select($name,$values,$selectedvalue="~~--~~",$attributes="",$addSe
 		if($selected) $selectedStyle=$style;
 		$r .= "
 		<option value=$ov $selected $style$optionTitle>$ot</option>";
-		//debugitem('options',$r);
 	};
 	$id=(strpos($attributes,"multiple")===false)?"id=\"$name\"":"";
 	if($page_readonly) {
@@ -1595,7 +1319,6 @@ function html_textarea($name,$value,$attr=''){
 };
 
 // Funkce vytvoří syntaxi multiselectu z předaného pole
-
 function dbMultiselect($array,$name,$readonly=false){
 	$r='';
 	$cbxs=$options=$forAddCbxs="";
@@ -1671,7 +1394,7 @@ function array_unset_numeric_keys(&$array){
 
 /*
 	Funkce addArrayKeysInfo
-	Prida pro ucely debugu na zacatek pole informace o jeho klicich, pokud nejsou numericke a je vic nez jeden
+	Přidá informace o klíčích pole pro účely debugu, pokud nejsou numerické a je víc nez jeden
 */
 function addArrayKeysInfo(&$a,$nk,$recursion){
 	foreach($recursion as &$rr) if($a===$rr) return; // Rekurse
@@ -1751,7 +1474,7 @@ function initsession(){
 		, $developer_mode, $right_developer, $rev_currency_code, $org_currency_code, $currency_code_mismatch
 		, $cm_cat_max, $cat1_in_context, $show_request_duration, $statistics_cat2;
 	
-	// Odhlášení uživatele (odstraněno getinput('page'), využíváme globální $page z index.php)
+	// Odhlášení uživatele, využíváme globální $page z index.php)
 	if(!$page) $page = getinput('page');
 	if ($page == "logout") {
 		// Odstranění běžné relace
@@ -1779,8 +1502,8 @@ function initsession(){
 	
 	$rms = charliteral($REMOTE_USER_NAME ?? '');
 	
-	// Spuštění procedury p_init_wwwsession (která automaticky vrací záznam z dbsession)
-	if (!($r = sqlrun("set nocount on execute p_init_wwwsession '$SID',0"))) fatal_error("execute init_wwwsession '$SID'"); 
+	// OPRAVA KRITICKÉ CHYBY: Použití pojmenovaného parametru pro zamezení pádu do @language
+	if (!($r = sqlrun("set nocount on execute p_init_wwwsession @wwwsession='$SID', @no_result=0"))) fatal_error("execute init_wwwsession '$SID'"); 
 	
 	// Načtení výsledku s automatickou HTML sanitizací
 	$dbsession = htmlspec(fetch($r));
@@ -1818,8 +1541,8 @@ function initsession(){
 							// Relace byla založena, aktualizujeme last_used u tokenu
 							sqlrun("UPDATE auth_tokens SET last_used = SYSDATETIME(), ip_address = $safeIp WHERE selector = $safeSelector");
 							
-							// Znovu načteme kontext pro aktuální request (nyní už uspěje)
-							if (!($r = sqlrun("set nocount on execute p_init_wwwsession '$SID',0"))) fatal_error("execute init_wwwsession '$SID' (auto-login)"); 
+							// OPRAVA KRITICKÉ CHYBY TÉŽ ZDE
+							if (!($r = sqlrun("set nocount on execute p_init_wwwsession @wwwsession='$SID', @no_result=0"))) fatal_error("execute init_wwwsession '$SID' (auto-login)"); 
 							$dbsession = htmlspec(fetch($r));
 							free_result($r);
 							
@@ -1886,15 +1609,11 @@ function even_odd2(&$n, $inc=1){
 }
 
 function picturebutton($pict,$onclick,$title='',$text='', $style='', $attr=''){
-	//$title=$title?"title=".htmlliteral($title):'';
-	//$onclick=$onclick?"onclick=".htmlliteral($onclick):'';
-	//$padding=$text?'2px 4px 0px 1px':'2px 0px 1px 1px';
 	$r=new PictureButton($pict,$onclick,$text);
 	if($title) $r->setTitle($title);
 	if($attr) fatal_error('SW potřebuje údržbu','Použit nepodporovaný parametr funkce picturebutton');
 	$r->addStyle($style);
 	return $r;
-	//return "<button $attr $onclick $title style=\"padding:$padding; height: 25px;$style;\"><img src=\"$pict\">".htmlspecialchars($text).'</button>';
 }
 
 function htmlvalue($v){return '"'.HTMLSpecialChars($v ?? '').'"';}
@@ -1908,7 +1627,7 @@ function normalize_percent($a,$base){
 	global $normalize_percent_sum, $normalize_percent_raw;
 	$normalize_percent_sum=$t=0;
 	$normalize_percent_raw=array();
-	$d=0;//($a[1]==145);
+	$d=0;
 	if($d) debugitem('A',$a);
 	foreach($a as $i=>$p) $normalize_percent_sum += $p;
 	if(!$normalize_percent_sum) return $a;
@@ -1943,21 +1662,6 @@ function normalize_percent($a,$base){
 	return $a;
 }
 
-/*
-function tr_fixed_size($a,$style='style=height:0'){
-	if(is_string($a) && count(explode(',',$a)>1)) $a=explode(',',$a);
-	$args=func_get_args();
-	$r='';
-	if(is_array($a))
-		foreach($a as $w) $r .= "<td width=$w></td>";
-	else{
-		foreach($args as $w) $r .= "<td width=$w></td>";
-		return "<tr $style>$r</tr>";
-	}
-	return "<tr $style>$r</tr>";
-}
-*/
-
 function tr_fixed_size($a,$style='style=display:none'){
 	if(is_string($a)){
 		$arr=explode(',',$a);
@@ -1976,10 +1680,8 @@ function tr_fixed_size($a,$style='style=display:none'){
 			$r2 .= "<td></td>";
 		}
 	}
-	//return "<colgroup>$r1</colgroup><tbody><tr class=fixedWidth>$r2</tr></tbody>";
 	return "<colgroup>$r1</colgroup>";
 }
-
 
 function from_utf8($v){global $charset;return iconv("utf-8",$charset,$v);}
 
@@ -2032,11 +1734,9 @@ function sqlparameters($list){
 				}
 			}
 			$val = charliteral(implode(',',$val));
-			//debugitem('sqlparameter '.$p,$val);
 		}
 		$r .= ",\n@$p=$val";
 	}
-	//debugitem('slqparameters1',$list);debugitem('slqparameters2',$r);
 	return substr($r,1);
 }
 
@@ -2066,7 +1766,7 @@ function update_array(&$aa,$s,$del2='=',$del1=';'){
 		if(count($vv=explode($del2,$p,2))<2) continue;
 		$vv[0]=trim($vv[0]);
 		$vv[1]=trim($vv[1]);
-		if(array_key_exists($vv[0],$aa) /* && $vv[1]*/){
+		if(array_key_exists($vv[0],$aa)){
 			$aa[$vv[0]]=$vv[1];
 		}
 	}
@@ -2113,7 +1813,6 @@ function reginput_array($n,$typ=2){
 	parametry mohou být předány v poli (jediný parametr jako $_POST) nebo zvlášť.
 	Pokud je v prvním parametru předáno pole, pak se v druhém parametru předává parent-name.
 */
-
 function hidden_input($name, $value='', &$append=''){
 	if(is_array($name)){
 		$r='';
@@ -2168,55 +1867,32 @@ function implode_sql(&$a){
 	else $a="''";
 }
 
-// Funkce vytvořená Copilotem :-)
-
 function validateDate($input, $time = true) {
-	// Definice formátů pro kontrolu
 	$formats = [
-	'ODBC' => ['Y-m-d H:i', 'Y-m-d'], // ODBC formáty
-	'local' => ['d.m.Y H:i', 'd.m.Y'], // Lokální formáty
+	'ODBC' => ['Y-m-d H:i', 'Y-m-d'],
+	'local' => ['d.m.Y H:i', 'd.m.Y'], 
 	];
 
 	if($input !== null) foreach ($formats as $type => $formatList) {
 		foreach ($formatList as $format) {
 			$dateTime = DateTime::createFromFormat($format, $input);
-			// Kontrola, zda je datum platné a zda neobsahuje chyby
 			if ($dateTime !== null AND $dateTime !== false ) {
-				// Pokud je datum platné, vrátíme ho ve formátu ODBC
 				if ($time) {
-					// Vrátíme datum a čas
 					return $dateTime->format('Y-m-d H:i');
 				} else {
-					// Vrátíme pouze datum
 					return $dateTime->format('Y-m-d');
 				}
 			}
 		}
 	}
-
-	// Pokud žádný formát neodpovídá, ale chceme vrátit čas, přidáme 00:00
-	// if ($time) {
-	// foreach ($formats['local'] as $format) {
-	// $dateTime = DateTime::createFromFormat($format, $input);
-	// if ($dateTime !== false && !array_sum($dateTime::getLastErrors())) {
-	// // Vrátíme datum s časem nastaveným na 00:00
-	// return $dateTime->format('Y-m-d') . ' 00:00';
-	// }
-	// }
-	// }
-
-	// Pokud žádný formát neodpovídá, vrátíme chybu
 	return '';
 }
 
-
 // S přechodem na PHP 8 je funkce zcela předělána, protože prohlížeče už nyní podporují input type date nebo datetime-local
-
 function HTML_Calendar($name,$input_value='',$mandatory=false,$time=false){
 	global $page_readonly;
 	$value=validateDate($input_value,$time);
 	$m=$mandatory?'required':'';
-	//$page_readonly=1;
 	$width=$time?100:75;
 	$spanwidth=($width+40)."px";
 	$width .= "px";	if($page_readonly)
@@ -2229,40 +1905,8 @@ function HTML_Calendar($name,$input_value='',$mandatory=false,$time=false){
 	return "<input type=$type $m name=\"$name\" id=\"$name\" min=\"1900-01-01\" max=\"2120-01-01\" value=\"$value\" $style>";
 }
 
-/*
-function HTML_Calendar($name,$value='',$mandatory=false,$time=false){
-	global $page_readonly;
-	$m=$mandatory?'true':'false';
-	if($value===null) $value='';
-	if(strtolower($value)=='null') $value='';
-	if(substr($value,0,1)=="'" && substr($value,-1)=="'")
-		$value=substr($value,1,-1);
-	//debugitem("Cal1",$value);
-	$value=date_from_string($value);
-	//debugitem("Cal2",$value);
-	if($value && $d=date_create($value)){
-		$value=date_format($d,"d.m.Y");
-		if($time) $value=date_format($d,"d.m.Y H:i");
-	} else $value='';
-	//debugitem('time',$time);
-	$width=$time?100:75;
-	$spanwidth=($width+40)."px";
-	$width .= "px";
-	$buttonStyle=htmlliteral("max-height:24px;height:24px;vertical-align:top;padding:0px 3px 2px 3px;margin:0px;");
-	if($page_readonly)
-		return "<div style=display:table-cell;white-space:nowrap; class=\"yui-skin-sam\">
-			<input type=text name=\"$name\" id=\"$name\" style=\"margin:0px;padding:0px;width:$width;background-color:gainsboro;\" value=\"$value\" readonly>
-		</div>";
-
-	$checkFunction=$time?'check_datetime':'check_date';
-	return "<div style=display:table-cell;white-space:nowrap; class=\"yui-skin-sam\"><input type=text name=\"$name\" id=\"$name\" style=\"width:$width\" value=\"$value\" onchange=\"return $checkFunction(this,$m);\" onfocus=\"$('#$name"."_calendar').css('visibility','hidden');\");>
-	<button type=button style=$buttonStyle id=\"$name"."_button\" onclick=\"return open_calendar(this);\"><img src=\"images/calbtn.gif\" alt=Calendar></button></div>";
-}
-*/
-
 function sqlresult_to_xml($q,$tag){
 	global $datarow;
-	//debugitem('D',$datarow);
 	$r='';
 	while(fetch_datarow($q)){
 		$att='';
@@ -2292,10 +1936,7 @@ function xmloutput($r,$fn='',$package=''){
 }
 
 /*
-	
 	Export právě nastaveného result-setu do CSV, exportují se hodnoty včetně hlavičky a konec
-	19.10.2011 - nový parametr na vnucení jiných záhlaví
-	
 */
 function csv_export($q=null,$delimiter='',$headers=array(),$excludeColumns=''){
 	global $datarow,$charset,$lang,$dbquery,$exportFileName,$result_wwwsession;
@@ -2305,11 +1946,9 @@ function csv_export($q=null,$delimiter='',$headers=array(),$excludeColumns=''){
 	// Je-li prvním parametrem pole, pak byly první dva vynechány
 	elseif(is_array($q)) {$excludeColumns=$delimiter; $headers=$q; $delimiter='';}
 	if(is_string($excludeColumns)) $excludeColumns=explode(',',$excludeColumns);
-	//debugitem('excludeColumns',$excludeColumns); debugprint(); die();
 	if(!$q) $q=$dbquery;
 	if(!$delimiter) {
 		$delimiter=",";
-		//if($lang=='cz') $delimiter=";";
 		if(in_array($result_wwwsession['o_language'],array('cz','sk'))) $delimiter=";";
 	}
 	$r=''; $n=0;
@@ -2354,8 +1993,6 @@ function csv_export($q=null,$delimiter='',$headers=array(),$excludeColumns=''){
 		print fread($fd,20000);
 	}
 	fclose($fd);
-	//print fread($fd,200000000);
-	//print fread($fd,20000000);
 	die();
 }
 
@@ -2384,10 +2021,6 @@ function csv_into_array($fn,$titles,&$out,$dbnames=''){
 	$fd=is_resource($fn)?$fn:null;
 	if($fd || ($fd=fopen($fn,'r'))){
 		$cols=fgetcsv($fd,0,$delimiter,'"',"\xFF");
-		//debugitem('coltitles',$coltitles);
-		//debugitem('dbnames',$colnames);
-		//debugitem('cols',$cols);
-		//return;
 		if(is_array($cols)){
 			foreach($cols as &$c) $c=trim($c);
 			$colindex=array();
@@ -2426,9 +2059,7 @@ function insert_request_message($msgtext,$charvalue){
 	$request_message_list[]=array('msgtext'=>$msgtext,'charvalue'=>$charvalue);
 }
 
-//
 // request_messages: Funkce vrátí tabulku pro tisk zpráv ze serveru
-//
 function request_messages($q=null){
 	global $datarow,$htmldatarow,$T_SERVER_MESSAGES,$T_ITEM,$T_VALUE,$max_request_message_severity,$requestMsgs
 		,$request_message_list,$T_CAPTION,$T_DETAIL,$T_OBJECT,$rqm;
@@ -2503,6 +2134,7 @@ function in_array_fix(&$s,$a){
 	foreach($pole as $item){ $s=$item; return $s;}
 	return $s;
 }
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 // Funkce ověří přítomnost aplikačních rolí zadaných seznamem kódů. Jedna stačí          //
 // Vrací TRUE/FALSE, Implicitní parametr $abort způsobí print zprávy a ukončení requestu //
@@ -2513,8 +2145,7 @@ function check_user_access($codeList,$abort=true){
 	foreach($codes as &$c) $c=charliteral($c);
 	$code=implode(',',$codes);
 	$a=sqlarray_simple("select 0 code,dbo.f_session_access(e.access_element) action, e.obj_type, e.obj_name, e.access_name from va_access_element e where e.access_element in($code) order by 2 desc");
-	//$debugmode=1;debugitem('A',$a);debugprint();
-	if(!$a) return false; //$result_wwwsession['right_orgadmin'];
+	if(!$a) return false;
 	if($r=$a[0]['action']) return $r;
 	if($abort){
 		$roles=implode('<br />',$codes);
@@ -2580,7 +2211,6 @@ function hiddenInputsFromSQL($sql=null){
 		break;
 	}
 	if($sql){
-		//debugitem('hiddenInputsFromSQL','free result');
 		free_result();
 	} else
 		next_result();
@@ -2595,33 +2225,25 @@ function autoredirect($target=''){
 	global $STRIPPED_URI;
 	if(count($_POST) or $target){
 		if(!$target) $target=$STRIPPED_URI;
-		//print "HEADERS_SENT=".headers_sent();
 		if(headers_sent())
 			print "<script>document.location=".jsliteral($target).';</script>';
 		else
-			header("Location: $target"); // Opravený formát HTTP hlavičky
+			header("Location: $target");
 		die();
 	}
 }
 
 // Skupina jednoduchých funkcí pro práci s proměnnou UNIQUEIDENTIFIER
-// Vytvoření GUID bez {závorek}
 function newid(){
 	$s=md5(uniqid('Ramses',true).uniqid(gethostname(),true));
 	return substr($s,0,8).'-'.substr($s,8,4).'-'.substr($s,12,4).'-'.substr($s,16,4).'-'.substr($s,20,12);
 }
-// Ověření, zda předaný parametr je platné GUID
-function is_guid($guid){ /*if(!$guid) return false;*/ return (preg_match("/^(\{)?[a-f\d]{8}(-[a-f\d]{4}){4}[a-f\d]{8}(?(1)\})$/i", $guid));}
 
-
-
+function is_guid($guid){ return (preg_match("/^(\{)?[a-f\d]{8}(-[a-f\d]{4}){4}[a-f\d]{8}(?(1)\})$/i", $guid));}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//                                                                                                              //
 //    Funkce check_update_subpages() zkontroluje, zda bylo předáno pole update_subpages s právě jedním prvkem   //
-//                                                                                                              //
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 function check_update_subpages($guidReady=false){
 	global $update_subpage, $update_subpages, $autosave, $button_save, $update_guid;
 	$update_subpage='';
@@ -2636,13 +2258,10 @@ function check_update_subpages($guidReady=false){
 	}
 	reginput('update_subpages');
 	if(($autosave || $button_save) && is_array($update_subpages) && count($update_subpages)==1 && $update_guid && $update_guid!='NULL') $update_subpage=$update_subpages[0];
-	//debugitem('return check_update_subpage',$update_subpage);
 	return $update_subpage;
 }
 
-
 // Funkce vrátí HTML syntaxi pro zadávání položky "confirmed" formou radiobuttonů
-
 function html_confirmed($value='',$name='confirmed',$attr=''){
 	global $T_STATUS_DRAFT,$T_STATUS_CONFIRMATION,$T_STATUS_REJECTED,$T_STATUS_APPROVED,$datarow;
 	if($value==='') $value=$datarow['confirmed'];
@@ -2697,7 +2316,6 @@ function isValidURL($url)
 }
 
 // Funkce pro konverzi textových položek v poli
-
 function iconv_array($charset1,$charset2,$item){
 	if(is_string($item)){
 		return iconv($charset1,$charset2,$item);
@@ -2732,7 +2350,6 @@ function reload($params=null){
 }
 
 // JSON_ENCODE a JSON_DECODE pro právě nastavený charset
-
 function json_encodeCP($item){
 	global $charset;
 	return json_encode(iconv_array($charset,'utf-8',$item));
@@ -2807,10 +2424,10 @@ function stripApostrophes(&$keyvalue){
 }
 
 function ramsesEncrypt($data, $key, $salt=''){
-    return openssl_encrypt($data,'AES-256-CBC',$key,0,hex2bin(md5("RamsesSalt".$salt)));
+	return openssl_encrypt($data,'AES-256-CBC',$key,0,hex2bin(md5("RamsesSalt".$salt)));
 }
 function ramsesDecrypt($data, $key, $salt=''){
-     return openssl_decrypt($data,'AES-256-CBC',$key,0,hex2bin(md5("RamsesSalt".$salt)));
+	 return openssl_decrypt($data,'AES-256-CBC',$key,0,hex2bin(md5("RamsesSalt".$salt)));
 }
 
 function verticalText($s){
@@ -2848,8 +2465,7 @@ function array_total(&$from,&$to){
 
 function ob_end(){ $s=ob_get_contents(); ob_end_clean(); return $s;}
 
-// Funkce "namelimit" upraví délku předaného stringu na max (default 40) znaků, případně doplní třemi tečkami
-
+// Funkce "namelimit" upraví délku předaného stringu na max
 function namelimit(&$n,$namelist=null,$max=40){
 	if(is_array($n)){
 		$colnames=explode(',',$namelist);
@@ -2863,36 +2479,36 @@ function namelimit(&$n,$namelist=null,$max=40){
 
 function generateUUID($trim=true){
    // Windows
-     if (function_exists('com_create_guid') === true) {
-         if ($trim === true)
-             return trim(com_create_guid(), '{}');
-         else
-             return com_create_guid();
-     }
+	 if (function_exists('com_create_guid') === true) {
+		 if ($trim === true)
+			 return trim(com_create_guid(), '{}');
+		 else
+			 return com_create_guid();
+	 }
 
      // OSX/Linux
-     
-     if (function_exists('openssl_random_pseudo_bytes') === true) {
-         $data = openssl_random_pseudo_bytes(16);
-         $data[6] = chr(ord($data[6]) & 0x0f | 0x40);    // set version to 0100
-         $data[8] = chr(ord($data[8]) & 0x3f | 0x80);    // set bits 6-7 to 10
-         return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
-     }
+	 
+	 if (function_exists('openssl_random_pseudo_bytes') === true) {
+		 $data = openssl_random_pseudo_bytes(16);
+		 $data[6] = chr(ord($data[6]) & 0x0f | 0x40);
+		 $data[8] = chr(ord($data[8]) & 0x3f | 0x80);
+		 return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+	 }
 
      // Fallback (PHP 4.2+)
-     mt_srand((double)microtime() * 10000);
-     $charid = strtolower(md5(uniqid(rand(), true)));
+	 mt_srand((float)microtime() * 10000);
+	 $charid = strtolower(md5(uniqid(rand(), true)));
      $hyphen = chr(45);                  // "-"
      $lbrace = $trim ? "" : chr(123);    // "{"
      $rbrace = $trim ? "" : chr(125);    // "}"
-     $guidv4 = $lbrace.
-               substr($charid,  0,  8).$hyphen.
-               substr($charid,  8,  4).$hyphen.
-               substr($charid, 12,  4).$hyphen.
-               substr($charid, 16,  4).$hyphen.
-               substr($charid, 20, 12).
-               $rbrace;
-     return $guidv4;
+	 $guidv4 = $lbrace.
+			   substr($charid,  0,  8).$hyphen.
+			   substr($charid,  8,  4).$hyphen.
+			   substr($charid, 12,  4).$hyphen.
+			   substr($charid, 16,  4).$hyphen.
+			   substr($charid, 20, 12).
+			   $rbrace;
+	 return $guidv4;
  }
 
 function td2_removed($msg=''){
@@ -2930,7 +2546,7 @@ function getCloseWindowImg($style=''){
 			$onclick=htmlliteral("if(window.opener && !window.opener.closed) {window.close();window.opener.focus();return;}
 			if(URL_CANCEL!='') document.location=URL_CANCEL; else document.location='index.php';");
 			$closeWindowImg="<img src='images/16x16/Cancel.png' class=noprint style='cursor:pointer;margin:0px;position:fixed;top:0px;right:0px;$style' onclick=$onclick>";
-		} //else debugitem('Headers',$ah);
+		}
 	}
 }
 
@@ -2940,7 +2556,7 @@ function getCloseWindowButton($style=''){
 	$closeWindowButton=picturebutton("images/16x16/Cancel.png",$synt,$T_CLOSE,$T_CLOSE);
 }
 
-function getHelpDiv($txt,$id='div_helptext_big'){ // Z předaného textu vytvoří obsah nápovědy
+function getHelpDiv($txt,$id='div_helptext_big'){ 
 	global $T_HELP,$helpButton,$helpDiv,$helpCbx;
 	$r=$helpButton=$helpDiv='';
 	if(!$txt) return;
@@ -2960,9 +2576,6 @@ function getHelpDiv($txt,$id='div_helptext_big'){ // Z předaného textu vytvoř
 		->setText("<table><tr><td style='max-width:20px;'><img src='images/16x16/Help.png'><td style='width:99%;'>$T_HELP
 	$r</table>");
 	$helpCbx=(new htmlCheckbox())->setOnclick("$('#$id').toggle(); window.onresize();");
-// 	$helpDiv="<div id=\"$id\" style='display:none;'>
-// 	<table><tr><td style='max-width:20px;'><img src='images/16x16/Help.png'><td style='width:99%;'>$T_HELP
-// 	$r</table></div>";
 }
 
 // Extended nl2br for excel
@@ -2983,65 +2596,20 @@ function requestDuration(){
 
 
 /*
-function cleanup_odbc_result() {
-    global $dbquery;
-    if (!is_resource($dbquery) && !($dbquery instanceof ODBCResult)) {
-        return;
-    }
-
-    do {
-        $num_fields = @odbc_num_fields($dbquery);
-				debugitem('num_fields',$num_fields);
-        if ($num_fields > 0) {
-            while (@odbc_fetch_row($dbquery)) {}
-        }
-    } while (@odbc_next_result($dbquery));
-
-    @odbc_free_result($dbquery);
-}
-*/
-
-
-/**
+* function cleanup_result() {
  * Uvolní aktuální SQL výsledek podle použitého databázového driveru (ODBC nebo SQLSRV).
  * 
  * Funkce používá globální proměnné $dbquery a $dbms. 
  * Pokud je $dbms jiná než 'odbc' nebo 'sqlsrv', vyvolá výjimku.
  */
 function cleanup_result() {
-    global $dbquery, $dbms;
+	global $dbquery;
 
-    if ($dbms === 'odbc') {
-        // Kontrola, jestli $dbquery je platný ODBC výsledek
-        if (!is_resource($dbquery) && !($dbquery instanceof \ODBC\Result) && !($dbquery instanceof ODBCResult)) {
-            return; // Není co čistit
-        }
-
-        // Pokud není ani jeden sloupec, není potřeba pokračovat
-        if (@odbc_field_name($dbquery, 1) === false) return;
-
-        // Projde všechny další sady výsledků, pokud existují (u procedur apod.)
-        while (@odbc_next_result($dbquery)) {}
-
-        // Pokusí se uvolnit výsledek
-        if (!@odbc_free_result($dbquery)) {
-            // Pokud se uvolnění nezdaří, zrušíme referenci
-            $dbquery = null;
-        }
-
-    } elseif ($dbms === 'sqlsrv') {
-        // Pro SQLSRV kontrolujeme, jestli $dbquery je objekt nebo resource (obojí může platit)
-        if (is_resource($dbquery) || is_object($dbquery)) {
-            @sqlsrv_cancel($dbquery); // Zruší aktuální dotaz
-            $dbquery = null; // Zrušíme referenci
-        }
-
-    } else {
-        // Pokud $dbms obsahuje neočekávanou hodnotu, vyvoláme výjimku
-        throw new Exception("Unsupported database driver in cleanup_result(): " . var_export($dbms, true));
-    }
+	if (is_resource($dbquery) || is_object($dbquery)) {
+		@sqlsrv_cancel($dbquery);
+		$dbquery = null;
+	}
 }
-
 
 /*
 	fopen_bom - otevře soubor a nastaví $file_charset dle BOM, při zápisu ho zapíše dle $charset
@@ -3120,42 +2688,43 @@ function fseek_bom($fd) {
 }
 
 function my_strtolower($s) {
-    global $charset;
-    return $charset === 'utf-8'
-        ? mb_strtolower($s, 'UTF-8')
-        : iconv(
-            'UTF-8', 
-            'CP1250', 
-            mb_strtolower(iconv('CP1250', 'UTF-8', $s), 'UTF-8')
-        );
+	global $charset;
+	return $charset === 'utf-8'
+		? mb_strtolower($s, 'UTF-8')
+		: iconv(
+			'UTF-8', 
+			'CP1250', 
+			mb_strtolower(iconv('CP1250', 'UTF-8', $s), 'UTF-8')
+		);
 }
 
 function sanitize_filename($filename) {
     // 1. Pokud je to Windows-1250, převedeme na UTF-8 pro bezpečnou práci
     // Detekce kódování není 100%, ale pro běžné české texty stačí:
-    if (!preg_match('//u', $filename)) {
-        $filename = iconv('CP1250', 'UTF-8//IGNORE', $filename);
-    }
+	if (!preg_match('//u', $filename)) {
+		$filename = iconv('CP1250', 'UTF-8//IGNORE', $filename);
+	}
 
     // 2. Odstranění bílých znaků (trim)
-    $filename = trim($filename);
+	$filename = trim($filename);
     
     // 3. Odstranění kontrolních znaků (včetně \r, \n, \t)
     // Bez modifikátoru /u, aby to "nesežralo" speciální bajty, pokud by převod selhal
-    $filename = preg_replace('/[\x00-\x1F\x7F]/', '', $filename);
+	$filename = preg_replace('/[\x00-\x1F\x7F]/', '', $filename);
 
     // 4. Odstranění problematických znaků pro souborové systémy
-    $danger_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-    $filename = str_replace($danger_chars, '_', $filename);
+	$danger_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+	$filename = str_replace($danger_chars, '_', $filename);
 
     // 5. Doporučení: Odstranění diakritiky (pro hlavičku Content-Disposition je to jistota)
-    $filename = iconv('UTF-8', 'ASCII//TRANSLIT', $filename);
+	$filename = iconv('UTF-8', 'ASCII//TRANSLIT', $filename);
     
     // 6. Pro jistotu ještě jednou vyčistíme vše, co není písmeno, číslo, tečka nebo pomlčka
-    $filename = preg_replace('/[^A-Za-z0-9\._\-]/', '_', $filename);
+	$filename = preg_replace('/[^A-Za-z0-9\._\-]/', '_', $filename);
 
-    return $filename;
+	return $filename;
 }
+
 /**
  * Získá kompletní řetězec IP adres klienta (všechny proxy skoky + koncový REMOTE_ADDR).
  * Slouží jako unikátní síťový otisk prstu (path) pro bezpečné párování relací.
