@@ -2,7 +2,7 @@
 /**
  * =============================================================================
  * Třída: abstract_page_master_detail
- * Účel: Abstraktní třída rozšiřující základní stránku o dvoupamelový layout.
+ * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
  *       Slouží jako pevný základ pro veškeré administrační obrazovky BCM systému.
  *
  * EXTERNÍ ZÁVISLOSTI PRO AI KONTEXT (Pokud chybí referenční soubory):
@@ -43,6 +43,9 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-08 - Ošetřen stav NEW pro zakládání nových záznamů a zabráněno cyklení redirectu.
+ *            - Odstraněn memory leak doplňěním uvolňování SQL resultů (free_result).
+ *            - Opravena sanitizace kontextových URL parametrů z htmlspecialchars na urlencode.
  * 2026-10-07 - Přidána dynamická propagace kontextových parametrů (parent_class, parent_object)
  *              do URL a skrytých polí formuláře pro správný běh entity_manageru.
  * 2026-09-30 - Obohaceno o architektonické komentáře pro AI kontext.
@@ -81,13 +84,11 @@ abstract class abstract_page_master_detail extends abstract_page {
 		}
 
 		// Záchyt uložení dat (PRG vzor)
-		if (isset($_POST['btn_save'])) {
-			$this->process_save();
+		if (isset($_POST['btn_save'])) {$this->process_save();
 		}
 
 		// Záchyt pro asynchronní obnovu pouze levého panelu
-		if (isset($_GET['ajax_panel']) && $_GET['ajax_panel'] === 'master') {
-			$this->render_master();
+		if (isset($_GET['ajax_panel']) && $_GET['ajax_panel'] === 'master') {$this->render_master();
 			exit;
 		}
 		
@@ -103,16 +104,28 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;
 		}
 
-		$update_guid = (string)getinput('update_guid');
-		$this->em->save_post_data($update_guid);
+		$update_guid = (string)getinput('update_guid');$save_guid = ($update_guid === 'NEW') ? '' :$update_guid;
 		
-		// Autoredirect čistí POST kontext pro bezpečný refresh (F5)
-		autoredirect();
+		$this->em->save_post_data($save_guid);
+		
+		// Zamezení uvíznutí na prázdném formuláři po uložení nového záznamu
+		if ($update_guid === 'NEW') {
+			$page_param = urlencode((string)getinput('page'));$url_suffix = '';
+			foreach (['parent_object', 'parent_class'] as $ctx_param) {
+				$val = (string)getinput($ctx_param);
+				if ($val !== '') {$url_suffix .= "&{$ctx_param}=" . urlencode($val);
+				}
+			}
+			autoredirect("index.php?page={$page_param}{$url_suffix}");
+		} else {
+			// Autoredirect čistí POST kontext pro bezpečný refresh (F5)
+			autoredirect();
+		}
 	}
 
 	/**
 	 * Implementace abstraktní metody rodiče. 
-	 * Obsahuje CSS a základní dvoupamelový HTML skelet.
+	 * Obsahuje CSS a základní dvoupanelový HTML skelet.
 	 */
 	final protected function render_body(): void {
 		echo <<<HTML
@@ -346,20 +359,20 @@ HTML;
 		$sql = $this->em->build_select_query($this->master_where);
 		$q = sqlrun($sql);
 		
-		while ($row = fetch($q)) {
-			$uuid =$row['original'];
-			$rowClass = ($uuid === $update_guid) ? 'md-row-active' : '';$rowIdAttr = ($uuid ===$update_guid) ? 'id="active-row"' : '';
+		while ($row = fetch($q)) {$uuid = $row['original'];$rowClass = ($uuid ===$update_guid) ? 'md-row-active' : '';         // Třída pro aktivní řádek
+			$rowIdAttr = ($uuid ===$update_guid) ? 'id="active-row"' : '';
 			
-			$page_param = htmlspecialchars((string)getinput('page'));$url_suffix = '';
+			$page_param = urlencode((string)getinput('page'));$url_suffix = '';
 			
 			// Dynamická propagace kontextových parametrů (např. parent_class)
 			foreach (['parent_object', 'parent_class'] as $ctx_param) {
 				$val = (string)getinput($ctx_param);
-				if ($val !== '') {$url_suffix .= "&{$ctx_param}=" . htmlspecialchars($val);
+				if ($val !== '') {$url_suffix .= "&{$ctx_param}=" . urlencode($val);
 				}
 			}
 
-			echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}'\">\n";
+			$row_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}");
+			echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">\n";
 			
 			// Vykreslení konkrétních buněk (bez ohledu na to, v jakém pořadí přišly z DB)
 			foreach ($list_columns as$col => $header) {$val = htmlspecialchars((string)($row[$col] ?? ''));
@@ -367,6 +380,8 @@ HTML;
 			}
 			echo "\t\t\t\t\t\t</tr>\n";
 		}
+		
+		free_result($q);                                                         // Uvolnění paměti pro bezpečný chod serveru
 
 		echo <<<HTML
 				</tbody>
@@ -414,36 +429,48 @@ HTML;
 			return;
 		}
 
-		// Načtení dat přes T-SQL (včetně překladových mechanismů pro stringy)
-		$sql = $this->em->build_select_query("m.original = " . guidliteral($update_guid));
-		$q = sqlrun($sql);
-		
 		global $datarow;
-		$datarow = fetch($q);
-		
-		if (!$datarow) {
-			echo "<div class='msg-err'>Záznam nebyl nalezen.</div>";
-			return;
+
+		if ($update_guid === 'NEW') {$datarow = [];
+			foreach ($this->em->get_columns() as $colname =>$meta) {
+				$type =$meta['input_type'] ?? 'text';
+				$datarow[$colname] = ($type === 'checkbox') ? '0' : ''; 			}$datarow['object_is_mine'] = 1;
+			$is_mine = true;
+		} else {
+			// Načtení dat přes T-SQL (včetně překladových mechanismů pro stringy)
+			$sql = $this->em->build_select_query("m.original = " . guidliteral($update_guid));
+			$q = sqlrun($sql);
+			
+			$datarow = fetch($q);
+			free_result($q);                                                     // Nutné pro zamezení memory leaků
+			
+			if (!$datarow) {
+				echo "<div class='msg-err'>Záznam nebyl nalezen.</div>";
+				return;
+			}
+			
+			$is_mine = (bool)$datarow['object_is_mine'];
 		}
-		
-		$is_mine = (bool)$datarow['object_is_mine'];$page_param = htmlspecialchars((string)getinput('page'));
+
+		$page_param = urlencode((string)getinput('page'));
 		
 		// Dynamická propagace kontextových parametrů do URL i do skrytých polí
 		$url_suffix = '';$hidden_inputs = '';
 		foreach (['parent_object', 'parent_class'] as $ctx_param) {
 			$val = (string)getinput($ctx_param);
 			if ($val !== '') {
-				$url_suffix .= "&{$ctx_param}=" . htmlspecialchars($val);$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">";
+				$url_suffix .= "&{$ctx_param}=" . urlencode($val);$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">";
 			}
 		}
 		
-		$discard_url = "index.php?page={$page_param}{$url_suffix}";
+		$discard_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}");
+		$form_action = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$update_guid}");
 		
 		$header_html =$this->get_detail_header();
 
 		echo <<<HTML
 		<!-- Obalový form využívá celou výšku (flex) pro rolovatelný obsah -->
-		<form method="post" action="index.php?page={$page_param}{$url_suffix}&update_guid={$update_guid}" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">{$hidden_inputs}
+		<form method="post" action="{$form_action}" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">{$hidden_inputs}
 			
 			<!-- Fixní hlavička (Zahodit / Uložit) -->
 			<div class="md-detail-header">
