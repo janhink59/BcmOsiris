@@ -1,13 +1,16 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-08
+ * Verze: 2026-10-09
  * Soubor: page_meta_column.php
  * Účel: Detailní editace metadat konkrétního sloupce (tenant override nebo překlad).
  * Změny:
  * - Přidána ochrana přístupu pro administrátory (sysadmin i orgadmin).
  * - Přepojení vazby z fyzické tabulky (parent_object) na logickou třídu (parent_class).
  * - Úprava zpětného odkazu a načítání titulku přes entity_manager (náhrada za vrepo_meta_class).
+ * 2026-10-09 - Odstraněna redundantní vlastnost $access_denied a překrývané metody (řeší rodič).
+ *            - Optimalizace konstruktoru: nevolá DB, pokud je přístup odepřen.
+ *            - Oprava vyhodnocení oprávnění (přechod z right_sysadmin/right_orgadmin na active_role).
  * =============================================================================
  */
 
@@ -17,7 +20,6 @@ class page_meta_column extends abstract_page_master_detail {
 
 	private string $parent_class;
 	private string $parent_name = '';
-	private bool $access_denied = false;
 
 	public function __construct() {
 		global $dbsession;
@@ -25,9 +27,11 @@ class page_meta_column extends abstract_page_master_detail {
 		$this->page_title = 'Správa metadat sloupce';
 		$this->class_name = 'meta_column';
 		
-		// Přístup povolen pro systémové administrátory (0x00) i administrátory organizací (tenant overridy)
-		if (empty($dbsession['right_sysadmin']) && empty($dbsession['right_orgadmin'])) {
+		// Přístup povolen pro systémové administrátory ('S', 'D') i administrátory organizací ('A')
+		$active_role = $dbsession['active_role'] ?? 'U';
+		if (!in_array($active_role, ['S', 'D', 'A'], true)) {
 			$this->access_denied = true;
+			return;
 		}
 
 		$this->form_groups = [
@@ -51,28 +55,6 @@ class page_meta_column extends abstract_page_master_detail {
 			}
 			free_result($q);
 		}
-	}
-
-	protected function process_save(): void {
-		if ($this->access_denied) {
-			return;
-		}
-		parent::process_save();
-	}
-
-	protected function render_master(): void {
-		if ($this->access_denied) {
-			echo "<div class='msg-err'>Přístup odepřen. Modul je dostupný pouze administrátorům.</div>";
-			return;
-		}
-		parent::render_master();
-	}
-
-	protected function render_detail(): void {
-		if ($this->access_denied) {
-			return;
-		}
-		parent::render_detail();
 	}
 
 	protected function get_detail_header(): string {

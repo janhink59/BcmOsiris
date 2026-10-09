@@ -1,10 +1,17 @@
 <?php
 /**
  * =============================================================================
+ * Verze: 2026-10-09
  * Stránka: page_org_users.php
  * Účel: Master-Detail rozhraní pro správu uživatelů aktuálního tenanta.
  *       Kód je vyčištěn od inline stylů a plně využívá sjednocené CSS 
  *       třídy poskytované z abstract_page_master_detail.
+ * Změny:
+ * 2026-10-09 - Odstraněna redundantní kontrola $access_denied (řeší rodič).
+ *            - Odstraněn anti-pattern odchytávání POST dat v konstruktoru.
+ *              Nyní se plně využívá PRG cyklus rodiče přepsáním process_save().
+ *            - Oprava vyhodnocení oprávnění (přechod z right_sysadmin/right_orgadmin na active_role).
+ *            - Oprava klíče relace z user_access_uuid na login_session_uuid.
  * =============================================================================
  */
 
@@ -12,7 +19,6 @@ declare(strict_types=1);
 
 class page_org_users extends abstract_page_master_detail {
 
-	private bool $access_denied = false;
 	private string $current_org;
 	private string $logged_user_uuid;
 	private string $logged_user_access;
@@ -25,16 +31,18 @@ class page_org_users extends abstract_page_master_detail {
 		
 		$this->page_title = 'Správa uživatelů organizace';
 		
-		// Ověření oprávnění pro přístup do modulu
-		if (empty($dbsession['right_orgadmin'])) {
+		$active_role = $dbsession['active_role'] ?? 'U';
+		
+		// Ověření oprávnění pro přístup do modulu ('A' = Orgadmin, 'S' = Sysadmin, 'D' = Developer)
+		if (!in_array($active_role, ['A', 'S', 'D'], true)) {
 			$this->access_denied = true;
 			return;
 		}
 
 		// Načtení kontextu z relace (dbsession)
-		$this->is_sysadmin = !empty($dbsession['right_sysadmin']);
+		$this->is_sysadmin = in_array($active_role, ['S', 'D'], true);
 		$this->logged_user_uuid = (string)$dbsession['user_account'];
-		$this->logged_user_access = (string)$dbsession['user_access_uuid'];
+		$this->logged_user_access = (string)($dbsession['login_session_uuid'] ?? '');
 		$this->current_org = guidliteral($dbsession['organization']);
 		
 		// Parametry UI z requestu
@@ -55,17 +63,13 @@ class page_org_users extends abstract_page_master_detail {
 			global $pageitem_is_orgadmin;
 			$pageitem_is_orgadmin->displayonly = 1;
 		}
-
-		// Zpracování odeslaného formuláře
-		if (getinput('button_save', 'raw')) {
-			$this->handle_save();
-		}
 	}
 
 	/**
 	 * Zpracování uložení záznamu přes systémovou uloženou proceduru.
+	 * Překrývá výchozí chování z abstract_page_master_detail, aby se nevyužil plošný entity_manager.
 	 */
-	private function handle_save(): void {
+	protected function process_save(): void {
 		reginputs('login_name:varchar,first_name:varchar,last_name:varchar,email:varchar');
 		reginputs('is_orgadmin:bit,remove_access:bit,deactivate_global:bit');
 		
@@ -106,11 +110,6 @@ class page_org_users extends abstract_page_master_detail {
 	 * Vykreslení levého panelu (Master) se seznamem uživatelů.
 	 */
 	protected function render_master(): void {
-		if ($this->access_denied) {
-			echo "<div class='msg-err'>Přístup odepřen. Vyžadována role Organization Administrator.</div>";
-			return;
-		}
-
 		$checked = $this->show_removed_users ? 'checked' : '';
 		
 		echo <<<HTML
@@ -182,10 +181,6 @@ HTML;
 	 * Vykreslení pravého panelu (Detail) pro editaci vlastností.
 	 */
 	protected function render_detail(): void {
-		if ($this->access_denied) {
-			return;
-		}
-
 		if (!$this->update_guid) {
 			echo "<div style='color: #666; margin-top: 50px; text-align: center;'>Vyberte uživatele ze seznamu vlevo nebo vytvořte nového.</div>";
 			return;
@@ -249,12 +244,11 @@ HTML;
 
 		echo <<<HTML
 			<div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 15px;">
-				<button type="submit" name="button_save" value="1" class="btn btn-success">Uložit záznam</button>
+				<button type="submit" name="btn_save" value="1" class="btn btn-success">Uložit záznam</button>
 			</div>
 		</form>
 HTML;
 
-		// Vykreslení auditní stopy z dotažených sloupců
 		$this->render_audit_trail();
 	}
 }

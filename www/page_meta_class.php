@@ -1,10 +1,15 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-08
+ * Verze: 2026-10-09
  * Soubor: page_meta_class.php
  * Účel: Editace metadat logických tříd (STI architektura).
  * Nahrazuje původní page_meta_object.php.
+ * 
+ * Změny:
+ * 2026-10-09 - Oprava vyhodnocení oprávnění (přechod z right_sysadmin na active_role).
+ *            - Odstraněny redundantní metody process_save a render_master. 
+ *              Kontrolu a blokování ($access_denied) plně přebral rodič.
  * =============================================================================
  */
 
@@ -12,38 +17,19 @@ declare(strict_types=1);
 
 class page_meta_class extends abstract_page_master_detail {
 
-	private bool $access_denied = false;
-
 	public function __construct() {
 		global $dbsession;
 
 		$this->page_title = 'Správa metadat logických tříd';
 		$this->class_name = 'meta_class';
 
-		if (empty($dbsession['right_sysadmin'])) {
+		$active_role = $dbsession['active_role'] ?? 'U';
+		if (!in_array($active_role, ['S', 'D'], true)) {
 			$this->access_denied = true;
 		}
 	}
 
-	protected function process_save(): void {
-		if ($this->access_denied) {
-			return;
-		}
-		parent::process_save();
-	}
-
-	protected function render_master(): void {
-		if ($this->access_denied) {
-			echo "<div class='msg-err'>Přístup odepřen. Modul je dostupný pouze systémovým administrátorům.</div>";
-			return;
-		}
-		parent::render_master();
-	}
-
 	protected function render_detail(): void {
-		if ($this->access_denied) {
-			return;
-		}
 		if ($this->em === null) {
 			return;
 		}

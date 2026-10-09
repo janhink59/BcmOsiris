@@ -3,7 +3,7 @@
 1. Tvá role a formátování výstupů
 * Jsi expertní asistent pro vývoj multi-tenantního GRC/ISMS/BCM systému (Vibe coding).
 * Pracuješ primárně v prostředí PHP 8.3 a MSSQL 2019. Úroveň kompatibility CL 110 nás už trápit nemusí.
-* Aktivní knihovny (Composer): openspout/openspout, phpmailer/phpmailer, google/apiclient. (Pozn.: phpoffice/phpspreadsheet je využíván v jiném projektu se sdíleným adresářem).
+* Aktivní knihovny (Composer): openspout/openspout (výhradně pro Excel/CSV, nepoužívat phpspreadsheet), phpmailer/phpmailer, google/apiclient.
 * Generovaný kód (SQL i PHP) musí být odsazován výhradně tabulátory pro strukturální odsazení na začátku řádků. Nikdy neodsazuj root-level elementy (jako deklarace tříd nebo úvodní tagy). Pokud přidáváš inline trailing komentáře na konce řádků, zarovnávej je výhradně mezerami (nikoliv tabulátory), aby zůstaly opticky zarovnané bez ohledu na šířku tabulátoru v editoru.
 * CRITICAL META-INSTRUCTION PRO KOMENTÁŘE: NIKDY, ZA ŽÁDNÝCH OKOLNOSTÍ NEODSTRAŇUJ ANI NEZKRACUJ EXISTUJÍCÍ KOMENTÁŘE VE ZDROJOVÉM KÓDU. Považuj každý původní komentář za nedotknutelný. Tvým úkolem je kód rozšiřovat a doplňovat, nikoliv ho pročišťovat nebo komprimovat odstraňováním existující dokumentace.
 * Generovaný kód musí být bohatě okomentován pro orientaci v kontextu a předán v uceleném code bloku připraveném ke zkopírování (u PHP bez uzavírací značky ?>). Vždy nabídni zkopírování zdrojového kódu do schránky. Při úpravě více objektů vracej kód striktně rozdělený do samostatných zdrojových souborů (vždy po jednom souboru na výzvu pro detailní kontrolu).
@@ -39,7 +39,7 @@
 * Typy záznamů (record_type): 'A' = aktuálně schválený, 'L' = platná jazyková verze, 'H' = historický záznam.
 * Povinné auditní sloupce jsou date_created, who_created, date_modified, who_modified, language, removed, valid_from, valid_to. Auditní vazby využívají výhradně uuid.
 * Rozšířená správa metadat a STI architektura (Single Table Inheritance):
-  - Fyzické struktury (tabulky, views, funkce) jsou evidovány v `meta_object`.
+  - Fyzické struktury (tabulky, views, funkce, PHP stránky) jsou evidovány v `meta_object`. Moduly a stránky využívají sloupec `system_role` pro fail-safe zamezení přístupu.
   - Logické entity jsou abstrahovány do `meta_class` (přes vazbu `storage_object` na `meta_object`). Všechny stránky pracují výhradně s logickými třídami.
   - Atributy tříd podléhají ochraně pomocí `is_final` (zákaz override 'A' záznamu pro tenanta) a `is_protected` (zákaz změny hodnoty sloupce tenantem).
   - Dědičnost vlastností sloupců: Sloupec v `meta_column` dědí vlastnosti od svého předka v kontejneru `sys_global_columns` (přes `ancestor`). Sloupce se vážou VÝHRADNĚ na logickou třídu (`parent_class`).
@@ -57,13 +57,13 @@
 
 5. Architektura UI komponent a kódování stránek
 * Abstraktní třídy komponent a základní stavební kameny jsou uloženy s prefixem abstract_. Nové stránky dědí z abstract_page a implementují metodu render_body().
+* ŘÍZENÍ PŘÍSTUPU: Probíhá centrálně definováním `protected bool $access_denied = false;` v `abstract_page`. Potomci v konstruktoru (a nikde jinde) pouze nastaví hodnotu na `true`. Abstraktní předek následně sám zablokuje spuštění akcí a vykreslí standardizovanou chybovou zprávu.
+* ZÁKAZ ZACHYTÁVÁNÍ POST V KONSTRUKTORECH: Zpracování POST dat (PRG vzor) probíhá striktně až při volání `render()` pomocí překrytí metody `process_save()`. Konstruktory slouží pouze pro inicializaci.
 * Tělo stránky má zrušené okraje (margin a padding 0).
 * Prvek abstract_page_master_detail zajišťuje dynamický dvoupanelový layout přes flexbox s nezávislými V-scrollbary. Podporuje asynchronní refresh levého panelu a nativní Fetch API. Automaticky propaguje kontextové parametry URL (parent_class, parent_object) do formulářů pro entity_manager.
 * Využívají se dedikované CSS třídy `.md-sticky-header-master` a `.md-sticky-header-detail` pro fixaci panelů s nástroji během vertikálního scrollu (`position: sticky`).
 * Dynamický Master Panel (Levý panel): Generován plně automaticky z `entity_manageru`. Sloupce se řídí atributem `meta_column.list_order`. Hlavičky se přebírají z `meta_column.header`.
   - Je generován plně automaticky z `entity_manageru` bez nutnosti manuální konfigurace v potomcích.
-  - Sloupce pro seznam se řídí atributem `meta_column.list_order`.
-  - Hlavičky sloupců se přebírají z `meta_column.header` (fallback na `caption`, pak systémový název).
   - Globální nastavení `list_order` v `sys_global_columns` se automaticky dědí.
   - Pokud třída nemá žádný sloupec s `list_order`, uplatní se bezpečnostní fallback.
   - Nadpis panelu se dynamicky plní z `meta_class.caption_plural`.
@@ -81,8 +81,7 @@
 * Infrastruktura: Architektura licencování (server_licence) zatím není plně dořešena.
 
 7. To do
-* Přesunout bezpečnostní logiku ($access_denied) do nejvyšší abstraktní třídy abstract_page.php, aby metoda render() plošně blokovala zpracování POST dat i asynchronních požadavků pro neoprávněné uživatele.
-* Odstranit zbytečně překrývané blokovací metody (render_master, render_detail, process_save) ze všech potomků (page_meta_class.php, page_meta_column.php, page_org_users.php) a ponechat v nich řízení přístupu výhradně v konstruktorech.
-* Zpřístupnit navigaci na editaci metadat v page_main.php pro administrátory organizací.
-* Doplnit soft-check unikátnosti (RAISERROR) do procedury form_org_users.sql před zápisem loginu/emailu jako ochranu proti pádu na unikátním indexu.
-* Zabezpečit page_org_users.php proti eskalaci globálních oprávnění (is_sysadmin, is_developer) při POST požadavcích od běžných administrátorů.
+* Dynamicky generovat menu a moduly v page_main.php. Odstranit hard-coded HTML bloky a nahradit je dotazem do meta_object, který vyfiltruje dostupné stránky podle meta_object.system_role a aktuální active_role uživatele.
+* Navrhnout a založit strukturu pro flexibilní business-role na úrovni organizace a přiřadit k nim uživatele v rámci tenantů.
+* Refaktorovat vývojářský Excel import (page_excel_reader.php do abstract_page, p_xlsx_sys_metadata) pro lokální plnění metadat.
+* Vyvinout standardizovaný aplikační export a import dat pro produkční instance (s využitím SSC schvalování, stavy 'I' -> 'A', import_origin). Dosavadní Excel import přes OpenSpout slouží výhradně jako vývojářský nástroj.

@@ -14,6 +14,7 @@
  * - Instancuje třídu `user_context` pro vykreslení horního informačního panelu.
  * 
  * Změny:
+ * 2026-10-09 - Přidána podpora pro centralizované řízení přístupu ($access_denied).
  * 2026-09-27 - Přidána plošná JS ochrana proti opuštění stránky s neuloženým formulářem.
  * =============================================================================
  */
@@ -26,6 +27,11 @@ abstract class abstract_page {
 	 * Titulek stránky (lze přepsat v konstruktoru potomka).
 	 */
 	protected string $page_title = 'BCM Osiris';
+
+	/**
+	 * Příznak zamezení přístupu. Vyhodnocuje potomek v konstruktoru.
+	 */
+	protected bool $access_denied = false;
 
 	/**
 	 * Hlavní renderovací metoda volaná z index.php.
@@ -109,8 +115,12 @@ abstract class abstract_page {
 	<div class="page-panel">
 HTML;
 		
-		// Vykreslení specifického obsahu konkrétní stránky
-		$this->render_body();
+		if ($this->access_denied) {
+			echo "<div class='msg-err'>Přístup odepřen. K zobrazení této stránky nemáte dostatečná oprávnění.</div>\n";
+		} else {
+			// Vykreslení specifického obsahu konkrétní stránky
+			$this->render_body();
+		}
 
 		echo <<<HTML
 	</div>

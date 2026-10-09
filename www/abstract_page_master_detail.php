@@ -43,6 +43,7 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-09 - Zamezení zpracování POST dat a AJAXu při odepřeném přístupu ($access_denied).
  * 2026-10-08 - Ošetřen stav NEW pro zakládání nových záznamů a zabráněno cyklení redirectu.
  *            - Odstraněn memory leak doplňěním uvolňování SQL resultů (free_result).
  *            - Opravena sanitizace kontextových URL parametrů z htmlspecialchars na urlencode.
@@ -78,6 +79,13 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 * Ošetřuje POST data a AJAX požadavky před vykreslením těla.
 	 */
 	public function render(): void {
+		// Pokud byl přístup odepřen již v konstruktoru potomka, přeskočíme veškeré
+		// zpracování formulářů a asynchronních požadavků a rovnou vykreslíme chybu přes rodiče.
+		if ($this->access_denied) {
+			parent::render();
+			return;
+		}
+
 		// Inicializace správce entit, pokud potomek specifikoval třídu
 		if ($this->class_name !== '') {
 			$this->em = new entity_manager($this->class_name);
@@ -434,7 +442,7 @@ HTML;
 		if ($update_guid === 'NEW') {$datarow = [];
 			foreach ($this->em->get_columns() as $colname =>$meta) {
 				$type =$meta['input_type'] ?? 'text';
-				$datarow[$colname] = ($type === 'checkbox') ? '0' : ''; 			}$datarow['object_is_mine'] = 1;
+				$datarow[$colname] = ($type === 'checkbox') ? '0' : ''; }$datarow['object_is_mine'] = 1;
 			$is_mine = true;
 		} else {
 			// Načtení dat přes T-SQL (včetně překladových mechanismů pro stringy)
@@ -470,7 +478,8 @@ HTML;
 
 		echo <<<HTML
 		<!-- Obalový form využívá celou výšku (flex) pro rolovatelný obsah -->
-		<form method="post" action="{$form_action}" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">{$hidden_inputs}
+		<form method="post" action="{$form_action}" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
+			{$hidden_inputs}
 			
 			<!-- Fixní hlavička (Zahodit / Uložit) -->
 			<div class="md-detail-header">
