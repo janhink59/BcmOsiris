@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-08
+ * Verze: 2026-10-11
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
  * 
@@ -40,6 +40,10 @@
  *    Při prvním zásahu tenanta do systémového záznamu se vytvoří kompletní fyzická kopie
  *    záznamu ('A' i 'L'), ve které se nahradí upravené hodnoty. Databáze tak obsahuje vždy 
  *    kompletní data bez nutnosti plošného využívání NULL.
+ * 
+ * Změny:
+ * 2026-10-11 - load_metadata plně podporuje kaskádový COALESCE z jazykových vrstev ('L')
+ *              a opravuje dědičnost z předka při uložení přesměrovaných prázdných stringů.
  * =============================================================================
  */
 
@@ -72,18 +76,57 @@ class entity_manager {
 
 	/**
 	 * Načte metadata logické třídy, identifikuje fyzickou tabulku 
-	 * a načte definici sloupců včetně uplatnění pravidel dědičnosti.
+	 * a načte definici sloupců včetně uplatnění pravidel dědičnosti a jazykových vrstev.
 	 */
 	private function load_metadata(): void {
 		$safe_class = charliteral($this->class_name);
 		
+		global $dbsession;
+		$org_uuid = guidliteral((string)($dbsession['organization'] ?? '0x00'));
+		$lang_chain = $this->lang_manager->get_fallback_chain();
+
+		// Pomocná funkce pro sestavení COALESCE kaskády pro překládaná pole metadat
+		$build_trans_col = function(string $col, string $alias, bool $is_anc = false) use ($lang_chain) {
+			$coal = [];
+			foreach ($lang_chain as $lang) {
+				$coal[] = "NULLIF(CAST({$alias}_v_{$lang}.[{$col}] AS NVARCHAR(MAX)), '')";
+				$coal[] = "NULLIF(CAST({$alias}_l_{$lang}.[{$col}] AS NVARCHAR(MAX)), '')";
+			}
+			$coal[] = "NULLIF(CAST({$alias}_my.[{$col}] AS NVARCHAR(MAX)), '')";
+			$coal[] = "NULLIF(CAST({$alias}.[{$col}] AS NVARCHAR(MAX)), '')";
+			$as_name = $is_anc ? "anc_{$col}" : $col;
+			return "COALESCE(" . implode(", ", $coal) . ") AS {$as_name}";
+		};
+
+		// Pomocná funkce pro sestavení LEFT JOINů pro načtení překladů a tenant overrides metadat
+		$build_trans_joins = function(string $alias, string $table) use ($lang_chain, $org_uuid) {
+			$j = "LEFT JOIN {$table} {$alias}_my ON {$alias}_my.original = {$alias}.original AND {$alias}_my.record_type = 'A' AND {$alias}_my.object_owner = {$org_uuid} AND {$alias}_my.removed = 0\n";
+			foreach ($lang_chain as $lang) {
+				$j .= "\t\t\tLEFT JOIN {$table} {$alias}_l_{$lang} ON {$alias}_l_{$lang}.original = {$alias}.original AND {$alias}_l_{$lang}.record_type = 'L' AND {$alias}_l_{$lang}.language = '{$lang}' AND {$alias}_l_{$lang}.object_owner = 0x00 AND {$alias}_l_{$lang}.removed = 0\n";
+				$j .= "\t\t\tLEFT JOIN {$table} {$alias}_v_{$lang} ON {$alias}_v_{$lang}.original = {$alias}.original AND {$alias}_v_{$lang}.record_type = 'L' AND {$alias}_v_{$lang}.language = '{$lang}' AND {$alias}_v_{$lang}.object_owner = {$org_uuid} AND {$alias}_v_{$lang}.removed = 0\n";
+			}
+			return $j;
+		};
+
+		$trans_class_fields = ['caption', 'caption_plural', 'description', 'helptext'];
+		$class_selects = [];
+		foreach ($trans_class_fields as $f) {
+			$class_selects[] = $build_trans_col($f, 'mc');
+		}
+		$class_sel_str = implode(",\n\t\t\t\t", $class_selects);
+		$class_joins = $build_trans_joins('mc', 'meta_class');
+
 		// 1. Načtení definice logické třídy a zjištění fyzické tabulky přes storage_object
+		// Nejdříve načítáme mc.* a až za ním mc.caption (přeložené přes COALESCE), čímž
+		// asociativní pole $row převezme právě tu přeloženou hodnotu.
 		$sql_class = "
 			SELECT 
 				mc.*, 
 				mo.builtin_code AS storage_table_name, 
-				mo.original AS storage_original
+				mo.original AS storage_original,
+				{$class_sel_str}
 			FROM meta_class mc
+			{$class_joins}
 			JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
 			WHERE mc.class_name = {$safe_class} AND mc.record_type = 'A' AND mc.object_owner = 0x00 AND mc.removed = 0
 		";
@@ -104,18 +147,22 @@ class entity_manager {
 			}
 			free_result($q_syscols);
 			
+			$trans_col_fields = ['caption', 'caption_plural', 'description', 'label', 'header', 'helptext', 'placeholder'];
+			$col_selects = [];
+			foreach ($trans_col_fields as $f) {
+				$col_selects[] = $build_trans_col($f, 'c');
+				$col_selects[] = $build_trans_col($f, 'a', true);
+			}
+			$col_sel_str = implode(",\n\t\t\t\t\t", $col_selects);
+			
+			$c_joins = $build_trans_joins('c', 'meta_column');
+			$a_joins = $build_trans_joins('a', 'meta_column');
+
 			// 2. Načtení sloupců patřících k fyzické tabulce vč. dědičnosti (LEFT JOIN na ancestor)
 			$sql_cols = "
 				SELECT 
 					c.*, 
 					a.list_order AS anc_list_order,
-					a.caption AS anc_caption, 
-					a.caption_plural AS anc_caption_plural, 
-					a.description AS anc_description, 
-					a.label AS anc_label, 
-					a.header AS anc_header,
-					a.helptext AS anc_helptext,
-					a.placeholder AS anc_placeholder,
 					a.input_type AS anc_input_type, 
 					a.input_width AS anc_input_width, 
 					a.input_rows AS anc_input_rows, 
@@ -132,9 +179,12 @@ class entity_manager {
 					a.customizable AS anc_customizable,
 					a.referenced_codetable AS anc_referenced_codetable,
 					a.referenced_class AS anc_referenced_class,
-					a.is_protected AS anc_is_protected
+					a.is_protected AS anc_is_protected,
+					{$col_sel_str}
 				FROM meta_column c
+				{$c_joins}
 				LEFT JOIN meta_column a ON a.original = c.ancestor AND a.record_type = 'A' AND a.object_owner = 0x00 AND a.removed = 0
+				{$a_joins}
 				WHERE c.parent_class = {$class_uuid} 
 				  AND c.record_type = 'A' 
 				  AND c.object_owner = 0x00 
@@ -154,6 +204,9 @@ class entity_manager {
 					'referenced_codetable', 'referenced_class', 'is_protected'
 				];
 				
+				// Tyto sloupce se často z UI do DB omylem uloží jako prázdný řetězec, který musí vyvolat fallback
+				$str_props = ['caption', 'caption_plural', 'description', 'label', 'header', 'helptext', 'placeholder', 'referenced_codetable', 'input_type'];
+				
 				foreach ($inherited_props as $prop) {
 					// Pokud je lokální hodnota u tenanta NULL, převezmeme hodnotu od předka
 					if ($col[$prop] === null && isset($col["anc_$prop"])) {
@@ -161,7 +214,7 @@ class entity_manager {
 					}
 					
 					// Speciální ošetření pro stringové vlastnosti, které by mohly mít výchozí hodnotu '' místo NULL
-					if (($prop === 'referenced_codetable' || $prop === 'input_type') && $col[$prop] === '' && !empty($col["anc_$prop"])) {
+					if (in_array($prop, $str_props, true) && $col[$prop] === '' && !empty($col["anc_$prop"])) {
 						$col[$prop] = $col["anc_$prop"];
 					}
 				}
@@ -371,7 +424,7 @@ class entity_manager {
 					}
 				}
 				
-				$coal[] = "''"; // Nejzazší nouzový případ, nevracíme NULL.
+				$coal[] = "''";                                                          // Nejzazší nouzový případ, nevracíme NULL.
 				$coalesce_str = implode(", ", $coal);
 				$select_list .= "\n\t\t, COALESCE({$coalesce_str}) AS [{$colname}]";
 				
@@ -511,8 +564,6 @@ class entity_manager {
 		}
 		
 		// Zpracování oprávnění k editaci na frontendu
-		// POZOR: Původní blokování polí s 'translate=1' na základě oprávnění bylo zrušeno.
-		// Překládat do UI smí kdokoliv (pro svůj tenant). Zda se to uloží pro 0x00 se řeší až v zápisu.
 		$is_readonly = false;
 		
 		if (!empty($meta['is_computed'])) {
@@ -676,7 +727,7 @@ class entity_manager {
 		// 2. Zjištění vlastníka a master jazyka původního 'A' záznamu
 		$a_exists = false;
 		$a_uuid_sql = '';
-		$a_lang_raw = $sess_lang_raw; // Výchozí pro zcela nový záznam
+		$a_lang_raw = $sess_lang_raw;                                            // Výchozí pro zcela nový záznam
 		$orig_owner_raw = $org_uuid_raw;
 		$baseline_row = [];
 
@@ -731,9 +782,6 @@ class entity_manager {
 			}
 
 			// Implementace vzoru Override (Klonování s modifikací)
-			// Pro netknuté sloupce (shodné s předlohou) nahradíme NULL pouze v případě, 
-			// že to databázové schéma fyzicky podporuje (podmínka odstraněna, protože
-			// zapisujeme vždy kompletní data).
 			if (!empty($baseline_row) && isset($baseline_row[$col])) {
 				$baseline_val = $baseline_row[$col];
 				$compare_val = trim((string)$val, "'");
@@ -780,7 +828,9 @@ class entity_manager {
 			free_result($q_keys);
 
 			if ($key_info) {
-				$k1_col = $key_info['key1_column'];$k2_col = $key_info['key2_column'];$k1_val = array_key_exists($k1_col,$a_post_data) ? $a_post_data[$k1_col] : "''";
+				$k1_col = $key_info['key1_column'];
+				$k2_col = $key_info['key2_column'];
+				$k1_val = array_key_exists($k1_col, $a_post_data) ? $a_post_data[$k1_col] : "''";
 				$k2_val = ($k2_col && array_key_exists($k2_col,$a_post_data)) ? $a_post_data[$k2_col] : 'NULL';
 
 				$q_orig = sqlrun("SELECT dbo.f_generate_original(" . charliteral($table) . ", {$org_uuid_sql}, CAST({$k1_val} AS VARCHAR(MAX)), CAST({$k2_val} AS VARCHAR(MAX))) AS orig_guid");
