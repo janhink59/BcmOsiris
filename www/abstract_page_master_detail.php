@@ -43,6 +43,8 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-12 - Extrahováno sestavování URL parametrů do metody get_context_url_suffix a get_context_hidden_inputs,
+ *              zjednodušeno formátování dat u audit trailu pomocí date_format4 z OsirisLib.
  * 2026-10-09 - Zamezení zpracování POST dat a AJAXu při odepřeném přístupu ($access_denied).
  * 2026-10-08 - Ošetřen stav NEW pro zakládání nových záznamů a zabráněno cyklení redirectu.
  *            - Odstraněn memory leak doplňěním uvolňování SQL resultů (free_result).
@@ -73,6 +75,35 @@ abstract class abstract_page_master_detail extends abstract_page {
 	
 	/** Instance dynamického správce objektů řídící čtení a zápis */
 	protected ?entity_manager $em = null;
+
+	/**
+	 * Centralizované získání URL parametrů pro udržení kontextu (např. vazba na předka).
+	 * Zabraňuje duplicitě kódu při generování odkazů a přesměrování.
+	 * 
+	 * @return string Řetězec parametrů pro URL (např. '&parent_class=123')
+	 */
+	protected function get_context_url_suffix(): string {
+		$url_suffix = '';
+		foreach (['parent_object', 'parent_class'] as $ctx_param) {
+			$val = (string)getinput($ctx_param);
+			if ($val !== '') {$url_suffix .= "&{$ctx_param}=" . urlencode($val);
+			}
+		}
+		return $url_suffix;
+	}
+
+	/**
+	 * Vrací kontextové parametry ve formě HTML skrytých inputů pro odeslání POSTem.
+	 */
+	protected function get_context_hidden_inputs(): string {
+		$hidden_inputs = '';
+		foreach (['parent_object', 'parent_class'] as $ctx_param) {
+			$val = (string)getinput($ctx_param);
+			if ($val !== '') {$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">";
+			}
+		}
+		return $hidden_inputs;
+	}
 
 	/**
 	 * Hlavní bod vstupu životního cyklu stránky.
@@ -117,13 +148,9 @@ abstract class abstract_page_master_detail extends abstract_page {
 		$this->em->save_post_data($save_guid);
 		
 		// Zamezení uvíznutí na prázdném formuláři po uložení nového záznamu
-		if ($update_guid === 'NEW') {
-			$page_param = urlencode((string)getinput('page'));$url_suffix = '';
-			foreach (['parent_object', 'parent_class'] as $ctx_param) {
-				$val = (string)getinput($ctx_param);
-				if ($val !== '') {$url_suffix .= "&{$ctx_param}=" . urlencode($val);
-				}
-			}
+		if ($update_guid === 'NEW') {$page_param = urlencode((string)getinput('page'));
+			$url_suffix =$this->get_context_url_suffix();
+			
 			autoredirect("index.php?page={$page_param}{$url_suffix}");
 		} else {
 			// Autoredirect čistí POST kontext pro bezpečný refresh (F5)
@@ -174,7 +201,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 				margin-bottom: 10px;
 				padding-bottom: 10px;
 			}
-			/* Dynamicky scrollovatelná oblast s tabulkou (Master) */
+			/* Dynamically scrollovatelná oblast s tabulkou (Master) */
 			.md-master-content {
 				flex: 1 1 auto;
 				overflow-y: auto;
@@ -370,14 +397,8 @@ HTML;
 		while ($row = fetch($q)) {$uuid = $row['original'];$rowClass = ($uuid ===$update_guid) ? 'md-row-active' : '';         // Třída pro aktivní řádek
 			$rowIdAttr = ($uuid ===$update_guid) ? 'id="active-row"' : '';
 			
-			$page_param = urlencode((string)getinput('page'));$url_suffix = '';
-			
-			// Dynamická propagace kontextových parametrů (např. parent_class)
-			foreach (['parent_object', 'parent_class'] as $ctx_param) {
-				$val = (string)getinput($ctx_param);
-				if ($val !== '') {$url_suffix .= "&{$ctx_param}=" . urlencode($val);
-				}
-			}
+			$page_param = urlencode((string)getinput('page'));
+			$url_suffix =$this->get_context_url_suffix();
 
 			$row_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}");
 			echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">\n";
@@ -442,7 +463,7 @@ HTML;
 		if ($update_guid === 'NEW') {$datarow = [];
 			foreach ($this->em->get_columns() as $colname =>$meta) {
 				$type =$meta['input_type'] ?? 'text';
-				$datarow[$colname] = ($type === 'checkbox') ? '0' : ''; }$datarow['object_is_mine'] = 1;
+				$datarow[$colname] = ($type === 'checkbox') ? '0' : '';  			}$datarow['object_is_mine'] = 1;
 			$is_mine = true;
 		} else {
 			// Načtení dat přes T-SQL (včetně překladových mechanismů pro stringy)
@@ -463,15 +484,7 @@ HTML;
 		$page_param = urlencode((string)getinput('page'));
 		
 		// Dynamická propagace kontextových parametrů do URL i do skrytých polí
-		$url_suffix = '';$hidden_inputs = '';
-		foreach (['parent_object', 'parent_class'] as $ctx_param) {
-			$val = (string)getinput($ctx_param);
-			if ($val !== '') {
-				$url_suffix .= "&{$ctx_param}=" . urlencode($val);$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">";
-			}
-		}
-		
-		$discard_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}");
+		$url_suffix = $this->get_context_url_suffix();$hidden_inputs = $this->get_context_hidden_inputs();$discard_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}");
 		$form_action = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$update_guid}");
 		
 		$header_html =$this->get_detail_header();
@@ -571,13 +584,11 @@ HTML;
 
 		$html = '';
 		
-		if (!empty($datarow['date_created'])) {$dt_val = $datarow['date_created'];$date_c = ($dt_val instanceof DateTime) ?$dt_val->format('d.m.Y H:i') : date('d.m.Y H:i', strtotime((string)$dt_val));$who_c_name = !empty($datarow['who_created_info']) ?$datarow['who_created_info'] : 'Neznámý uživatel';
-			
+		if (!empty($datarow['date_created'])) {$date_c = date_format4($datarow['date_created'], 16);$who_c_name = !empty($datarow['who_created_info']) ?$datarow['who_created_info'] : 'Neznámý uživatel';
 			$html .= "<div>Vytvořil {$date_c} " . htmlspecialchars((string)$who_c_name) . "</div>";
 		}
 
-		if (!empty($datarow['date_modified'])) {$dt_val = $datarow['date_modified'];$date_m = ($dt_val instanceof DateTime) ?$dt_val->format('d.m.Y H:i') : date('d.m.Y H:i', strtotime((string)$dt_val));$who_m_name = !empty($datarow['who_modified_info']) ?$datarow['who_modified_info'] : 'Neznámý uživatel';
-			
+		if (!empty($datarow['date_modified'])) {$date_m = date_format4($datarow['date_modified'], 16);$who_m_name = !empty($datarow['who_modified_info']) ?$datarow['who_modified_info'] : 'Neznámý uživatel';
 			$html .= "<div>Změnil &nbsp;&nbsp;{$date_m} " . htmlspecialchars((string)$who_m_name) . "</div>";
 		}
 

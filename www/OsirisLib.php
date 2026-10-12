@@ -1468,6 +1468,37 @@ function private_file($fn){
 	return "$private_folder/$result_wwwsession[user_login]_$fn";
 }
 
+/**
+ * Centrální funkce pro bezpečné odesílání cookies s ohledem na HTTPS a SameSite politiku.
+ *
+ * @param string $name     Název cookie
+ * @param string $value    Hodnota cookie (výchozí prázdná)
+ * @param int    $expires  Čas expirace (timestamp, výchozí 0 = do zavření prohlížeče)
+ * @param string $samesite Politika SameSite ('Lax', 'Strict', 'None')
+ * @param string $path     Cesta platnosti cookie
+ */
+function set_secure_cookie(string $name, string $value = '', int $expires = 0, string $samesite = 'Lax', string $path = '/'): void {
+	$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
+	
+	$options = [
+		'expires'  => $expires,
+		'path'     => $path,
+		'domain'   => '',
+		'secure'   => $isHttps,
+		'httponly' => true,
+		'samesite' => $samesite
+	];
+	
+	setcookie($name, $value, $options);
+}
+
+/**
+ * Zkrácený alias pro bezpečné a spolehlivé smazání cookie v prohlížeči.
+ */
+function delete_secure_cookie(string $name, string $samesite = 'Lax', string $path = '/'): void {
+	set_secure_cookie($name, '', time() - 3600, $samesite, $path);
+}
+
 function initsession(){
 	global $dbsession, $page, $SID, $lang, $current_review, $REMOTE_USER_NAME, $debugmode, $jsyntax
 		, $right_debug, $right_sysadmin, $right_orgadmin, $right_revedit, $right_profadmin, $right_profadmin_enabled
@@ -1490,13 +1521,7 @@ function initsession(){
 			}
 			// Invalidace cookie v prohlížeči (nastavení expiračního data do minulosti)
 			$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
-			setcookie('ramses_remember', '', [
-				'expires' => time() - 3600,
-				'path' => '/',
-				'secure' => $isHttps,
-				'httponly' => true,
-				'samesite' => 'Strict'
-			]);
+			set_secure_cookie('ramses_remember', '', time() - 3600, 'Strict');
 		}
 	}
 	
@@ -1561,13 +1586,7 @@ function initsession(){
 			// Pokud jsme se dostali sem, obnova selhala (token nenalezen, expiroval, neplatný hash).
 			// Vymažeme neplatnou cookie z prohlížeče.
 			$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
-			setcookie('ramses_remember', '', [
-				'expires' => time() - 3600,
-				'path' => '/',
-				'secure' => $isHttps,
-				'httponly' => true,
-				'samesite' => 'Strict'
-			]);
+			set_secure_cookie('ramses_remember', '', time() - 3600, 'Strict');
 		}
 		
 		// Pokus o záchyt selhal nebo cookie vůbec nebyla předána. Přesměrování na login.

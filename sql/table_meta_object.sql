@@ -77,3 +77,22 @@ GO
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'meta_object', 'system_role', 'varchar(1) NOT NULL DEFAULT ''S''';
 GO
+/* =============================================================================
+ * REGISTRACE STRÁNKY EXCEL READER DO METADAT
+ * Účel: Zajišťuje, aby nová stránka pro import byla viditelná v dynamickém menu.
+ * ============================================================================= */
+DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+DECLARE @orig_guid uniqueidentifier = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'excel_reader');
+
+IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @orig_guid AND object_owner = 0x00 AND record_type = 'A')
+BEGIN
+	INSERT INTO meta_object (
+		uuid, object_owner, original, record_type, approval_status,
+		object_type, builtin_code, system_role, caption, description, module
+	) VALUES (
+		@orig_guid, 0x00, @orig_guid, 'A', 'A',
+		'P', 'excel_reader', 'S', 'Import dat z Excelu', 'Nástroj pro hromadný import datových struktur', ''
+	);
+	PRINT 'Stránka excel_reader byla zaregistrována do meta_object.';
+END
+GO

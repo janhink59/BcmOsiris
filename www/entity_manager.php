@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-11
+ * Verze: 2026-10-12
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
  * 
@@ -42,6 +42,8 @@
  *    kompletní data bez nutnosti plošného využívání NULL.
  * 
  * Změny:
+ * 2026-10-12 - Odstraněn zbytečný databázový dotaz na relaci v save_post_data(),
+ *              nyní se využívá globální pole $dbsession načtené přes initsession().
  * 2026-10-11 - load_metadata plně podporuje kaskádový COALESCE z jazykových vrstev ('L')
  *              a opravuje dědičnost z předka při uložení přesměrovaných prázdných stringů.
  * =============================================================================
@@ -700,20 +702,18 @@ class entity_manager {
 			return;
 		}
 
-		// 1. Zjištění kontextu přihlášeného uživatele a organizace (Tenanta)
-		$q_session = sqlrun("SELECT organization, login_session_uuid, language, right_translate FROM dbsession WHERE spid = @@SPID");
-		$session = fetch($q_session);
-		free_result($q_session);
+		// 1. Zjištění kontextu přihlášeného uživatele a organizace (Tenanta) z globální proměnné
+		global $dbsession;
 
-		if (!$session) {
-			fatal_error("Uložení selhalo", "Nepodařilo se načíst kontext uživatele z dbsession.");
+		if (empty($dbsession) || empty($dbsession['login_session_uuid'])) {
+			fatal_error("Uložení selhalo", "Nepodařilo se načíst kontext uživatele z globální relace dbsession.");
 		}
 
 		// Identita uživatele: zachování surových hodnot pro PHP logiku a tvorba bezpečných SQL literálů
-		$org_uuid_raw = (string)$session['organization'];
-		$user_uuid_raw = (string)$session['login_session_uuid'];
-		$sess_lang_raw = (string)$session['language'];
-		$right_translate = !empty($session['right_translate']);
+		$org_uuid_raw = (string)$dbsession['organization'];
+		$user_uuid_raw = (string)$dbsession['login_session_uuid'];
+		$sess_lang_raw = (string)$dbsession['language'];
+		$right_translate = !empty($dbsession['right_translate']);
 
 		$org_uuid_sql = guidliteral($org_uuid_raw);
 		$user_uuid_sql = guidliteral($user_uuid_raw);

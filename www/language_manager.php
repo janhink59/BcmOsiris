@@ -1,10 +1,13 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-07 16:00
+ * Verze: 2026-10-12
  * Třída: language_manager
  * Účel: Izolovaná služba pro správu aktuálního jazyka, generování UI prvku
  *       a sestavení bezpečného fallback řetězce (dědičnosti) pro entity_manager.
+ * 
+ * Změny:
+ * 2026-10-12 - Refaktoring ukládání cookie pomocí centrální funkce set_secure_cookie().
  * =============================================================================
  */
 
@@ -98,19 +101,8 @@ class language_manager {
 	 * Zapíše kód jazyka do prohlížeče.
 	 */
 	private function save_cookie(): void {
-		$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
-		
-		// PHP 7.3+ a 8.3 podpora pro předání hlavičky SameSite pomocí pole
-		$options = [
-			'expires'  => time() + (365 * 24 * 60 * 60),
-			'path'     => '/',
-			'domain'   => '',
-			'secure'   => $isHttps,
-			'httponly' => true,
-			'samesite' => 'Lax'
-		];
-		
-		setcookie('bcm_language', $this->current_lang, $options);
+		$expires = time() + (365 * 24 * 60 * 60);
+		set_secure_cookie('bcm_language', $this->current_lang, $expires, 'Lax');
 	}
 
 	public function get_current_language(): string {
