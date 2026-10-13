@@ -3,13 +3,14 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-08
+ * Verze: 2026-10-13
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
  *       na logické třídy (meta_class). Obsahuje i integrovanou logiku
  *       z původní procedury p_generate_primitive_classes.
  * Změny: - Doplněno automatické generování caption z názvu třídy
  *        - Přidán class_name do #list_order pro zobrazení v Master panelu
+ *        - Zefektivněno mazání duplicit přímým využitím CTE.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -29,21 +30,21 @@ BEGIN
 	
 	-- 2. Odstranění duplicit objektů (ponecháme vždy ten nejstarší platný)
 	WITH cte AS (
-		SELECT uuid, ROW_NUMBER() OVER(PARTITION BY builtin_code, object_type, object_owner, record_type ORDER BY date_created ASC) as rn
+		SELECT ROW_NUMBER() OVER(PARTITION BY builtin_code, object_type, object_owner, record_type ORDER BY date_created ASC) as rn
 		FROM meta_object WHERE object_owner = 0x00 AND record_type = 'A'
-	) DELETE FROM meta_object WHERE uuid IN (SELECT uuid FROM cte WHERE rn > 1);
+	) DELETE FROM cte WHERE rn > 1;
 
 	-- Odstranění duplicit tříd
 	WITH cte AS (
-		SELECT uuid, ROW_NUMBER() OVER(PARTITION BY class_name, object_owner, record_type ORDER BY date_created ASC) as rn
+		SELECT ROW_NUMBER() OVER(PARTITION BY class_name, object_owner, record_type ORDER BY date_created ASC) as rn
 		FROM meta_class WHERE object_owner = 0x00 AND record_type = 'A'
-	) DELETE FROM meta_class WHERE uuid IN (SELECT uuid FROM cte WHERE rn > 1);
+	) DELETE FROM cte WHERE rn > 1;
 
 	-- Odstranění duplicit sloupců
 	WITH cte AS (
-		SELECT uuid, ROW_NUMBER() OVER(PARTITION BY parent_class, column_name, object_owner, record_type ORDER BY date_created ASC) as rn
+		SELECT ROW_NUMBER() OVER(PARTITION BY parent_class, column_name, object_owner, record_type ORDER BY date_created ASC) as rn
 		FROM meta_column WHERE object_owner = 0x00 AND record_type = 'A'
-	) DELETE FROM meta_column WHERE uuid IN (SELECT uuid FROM cte WHERE rn > 1);
+	) DELETE FROM cte WHERE rn > 1;
 
 	-- -------------------------------------------------------------------------
 	-- 0. VÝPOČET NEJČASTĚJŠÍCH VLASTNOSTÍ (MÓDUS) PRO GLOBÁLNÍ SLOVNÍK
@@ -137,7 +138,7 @@ BEGIN
 	WHERE mo.object_owner = 0x00 
 		AND mo.record_type = 'A' 
 		AND mo.removed = 0
-		AND mo.object_type IN ('T', 'V', 'F')                               -- Záměrně uvolněno pro všechny objekty se sloupci (i TVF)
+		AND mo.object_type IN ('T', 'V', 'F')
 		AND NOT EXISTS (
 			SELECT 1 FROM meta_class mc 
 			WHERE mc.original = x.orig_uuid

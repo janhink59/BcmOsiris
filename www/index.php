@@ -10,6 +10,9 @@
  * - Získá a zanese parametr 'page' prostřednictvím bezpečné funkce getinput().
  * - Pokud parametr není zadán, automaticky směruje na 'main' (page_main.php).
  * - Pokud požadovaný soubor neexistuje, volá fatal_error().
+ * 
+ * Změny:
+ * 2026-10-13 - Přidána globální inicializace objektu menu_manager.
  * =============================================================================
  */
 
@@ -37,6 +40,11 @@ if ($page === '') {
 // Výjimka byla rozšířena o 'google_callback', protože při návratu z IdP ještě lokální session neexistuje.
 if ($page !== 'login' && $page !== 'password_reset' && $page !== 'google_callback') {
 	initsession();
+	
+	// Inicializace globálního správce menu bezprostředně po ustavení relace.
+	// Třída je načtena přes spl_autoload_register v config.php.
+	global $menu_manager;
+	$menu_manager = new menu_manager();
 }
 
 // 5. Ochrana proti Path Traversal (LFI)

@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-07 16:15
+ * Verze: 2026-10-13
  * Třída: user_context
  * Účel: Kompaktní vizuální komponenta (logo, uživatel, organizace, role, odhlášení)
  *       zobrazená jako standardní fixovaný horní pruh na stránce.
@@ -130,18 +130,6 @@ class user_context {
 		align-items: center;
 		gap: 10px;
 	}
-	.ctx-home {
-		text-decoration: none;
-		color: #0f172a;
-		font-weight: bold;
-		padding: 2px 6px;
-		border-radius: 3px;
-		transition: background 0.2s;
-	}
-	.ctx-home:hover {
-		background-color: #f1f5f9;
-		color: #2563eb;
-	}
 	.bcm-context-org { 
 		font-weight: bold; 
 		color: #0f172a; 
@@ -199,7 +187,6 @@ class user_context {
 		<div class="ctx-graphic-placeholder">
 			[ Logo / Grafika ]
 		</div>
-		<a href="index.php?page=main" class="ctx-home" title="Hlavní panel">Domů</a>
 	</div>
 	<div class="bcm-top-bar-right">
 		{$langSelectorHtml}

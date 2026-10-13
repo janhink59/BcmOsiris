@@ -3,17 +3,23 @@
  * =============================================================================
  * Třída: abstract_page
  * Účel: Základní abstraktní třída pro objektově orientované stránky.
- *       Zajišťuje jednotný layout, centrální CSS styly a zobrazení kontextu 
- *       uživatele (horní pruh).
+ *       Zajišťuje jednotný layout, centrální CSS styly, zobrazení kontextu 
+ *       uživatele (horní pruh) a dynamickou drobečkovou navigaci.
  * 
- * Vazby na okolí:
+ * ARCHITEKTONICKÉ VAZBY (Pro AI a budoucí kontext):
  * - Je volána z centrálního routeru `index.php`, který instancuje jejího potomka
  *   a spouští metodu `render()`.
- * - Slouží jako předek pro další šablony (např. `abstract_page_master_detail`) 
- *   nebo konkrétní stránky.
- * - Instancuje třídu `user_context` pro vykreslení horního informačního panelu.
+ * - Slouží jako přímý předek pro další šablony (např. `abstract_page_master_detail`) 
+ *   nebo konkrétní jednoúčelové stránky.
+ * - Závislosti:
+ *   1. Instancuje třídu `user_context` pro vykreslení horního informačního panelu 
+ *      (kdo je přihlášen, jakou má roli, přepínač jazyků).
+ *   2. Očekává existenci globálního objektu `$menu_manager` (inicializovaného 
+ *      typicky v index.php po initsession), ze kterého volá `render_breadcrumbs()` 
+ *      pro vykreslení cesty v menu a dropdown roletek.
  * 
  * Změny:
+ * 2026-10-13 - Integrace globálního $menu_manager pro vykreslení drobečkové navigace.
  * 2026-10-09 - Přidána podpora pro centralizované řízení přístupu ($access_denied).
  * 2026-09-27 - Přidána plošná JS ochrana proti opuštění stránky s neuloženým formulářem.
  * =============================================================================
@@ -37,8 +43,15 @@ abstract class abstract_page {
 	 * Hlavní renderovací metoda volaná z index.php.
 	 */
 	public function render(): void {
-		// Instancováním třídy vyvoláme autoloader
+		// Instancováním třídy vyvoláme autoloader pro horní kontextový pruh
 		$user_context = new user_context();
+		
+		// Načtení globálního správce menu pro drobečkovou navigaci
+		global $menu_manager;
+		$breadcrumbs_html = '';
+		if (isset($menu_manager) && is_object($menu_manager)) {
+			$breadcrumbs_html =$menu_manager->render_breadcrumbs();
+		}
 
 		echo <<<HTML
 <!DOCTYPE html>
@@ -110,6 +123,9 @@ abstract class abstract_page {
 <body>
 	<!-- Globální kontextový panel (vykreslí se jako kompaktní blockový horní pruh) -->
 	{$user_context}
+	
+	<!-- Drobečková navigace s dropdown roletkami potomků -->
+	{$breadcrumbs_html}
 	
 	<!-- Hlavní obálka pro obsah specifické stránky -->
 	<div class="page-panel">

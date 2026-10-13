@@ -29,7 +29,7 @@ include_once("html_classes.php");
 		02.12.2016 - Memory leak v "csv_export()"
 		04.01.2017 - Do výpisu při chybě přidán backtrace
 		XX.10.2026 - REFAKTORING BCM Osiris: Odstraněna podpora pro ODBC a PDO. Ponecháno čistě SQLSRV.
-					 Oprava kritického bugu inicializace relace.
+					 Oprava kritického bugu inicializace relace. Odstranění result_wwwsession.
 ################################################################################
 */
 
@@ -78,11 +78,10 @@ function regfile($fn,&$full_name=null){
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 function sqlrun($cmd) { 
-	global $sqlcmdlist, $dbconnection, $debugmode, $dbquery, $sqlrun_debugonly, $result_wwwsession, $logSqlCmdList, $sqlRows, $lastSql; 
+	global $sqlcmdlist, $dbconnection, $debugmode, $dbquery, $sqlrun_debugonly, $dbsession, $logSqlCmdList, $sqlRows, $lastSql; 
 
-	$cmd = str_replace('@o@', intliteral(array_item($result_wwwsession,'organization','0')), $cmd);
-	$cmd = str_replace('@p@', intliteral(array_item($result_wwwsession,'crp_profile','0')), $cmd);
-	$lastSql = $cmd = str_replace('@r@', intliteral(array_item($result_wwwsession,'crr_review','0')), $cmd);
+	$cmd = str_replace('@o@', guidliteral(array_item($dbsession, 'organization', '0x00')), $cmd);
+	$lastSql = $cmd;
 
 	if($sqlrun_debugonly) {
 		debugitem('sqlrun', $cmd); 
@@ -163,7 +162,7 @@ function db_field_type($colname) {
 function sqlsrv_type_to_string($type) {
 	static $map = [
 		// === PŮVODNÍ KLÍČE (Legacy / System ID) ===
-        // Tyto tam necháme, aby se nic nerozbilo, pokud by přišly ze starší části kódu
+		// Tyto tam necháme, aby se nic nerozbilo, pokud by přišly ze starší části kódu
 		56 => 'int',
 		127 => 'bigint',
 		62 => 'float',
@@ -184,22 +183,22 @@ function sqlsrv_type_to_string($type) {
 		130 => 'image',
 
 		// === NOVÉ KLÍČE (Nutné pro PHP 8.x + sqlsrv driver) ===
-        // Hodnoty, které reálně vrací sqlsrv_field_metadata()
-        
-        // 1. Binární data (to je váš aktuální problém s -4)
-        -4  => 'image',      // SQL_LONGVARBINARY -> reprezentuje Image / Varbinary(max)
+		// Hodnoty, které reálně vrací sqlsrv_field_metadata()
+		
+		// 1. Binární data (to je váš aktuální problém s -4)
+		-4  => 'image',      // SQL_LONGVARBINARY -> reprezentuje Image / Varbinary(max)
 		-3  => 'varbinary',  // SQL_VARBINARY
 		-2  => 'binary',     // SQL_BINARY
-        
-        // 2. Textová data
-        -1  => 'text',       // SQL_LONGVARCHAR -> reprezentuje Text / Varchar(max)
+		
+		// 2. Textová data
+		-1  => 'text',       // SQL_LONGVARCHAR -> reprezentuje Text / Varchar(max)
 		1   => 'char',       // SQL_CHAR
 		12  => 'varchar',    // SQL_VARCHAR
 		-8  => 'nchar',      // SQL_WCHAR
 		-9  => 'nvarchar',   // SQL_WVARCHAR
 		-10 => 'ntext',      // SQL_WLONGVARCHAR
-        
-        // 3. Čísla
+		
+		// 3. Čísla
 		4   => 'int',        // SQL_INTEGER
 		5   => 'smallint',   // SQL_SMALLINT
 		-6  => 'tinyint',    // SQL_TINYINT
@@ -209,8 +208,8 @@ function sqlsrv_type_to_string($type) {
 		2   => 'numeric',    // SQL_NUMERIC
 		3   => 'decimal',    // SQL_DECIMAL
 		-7  => 'bit',        // SQL_BIT
-        
-        // 4. Datum a čas
+		
+		// 4. Datum a čas
 		91  => 'date',       // SQL_TYPE_DATE
 		93  => 'datetime',   // SQL_TYPE_TIMESTAMP
 		-154 => 'time',      // SQL_SS_TIME2
@@ -380,7 +379,7 @@ function fetch($q=null){
 
 // FATAL_ERROR: oznámí chybu a skončí.
 function fatal_error($usr='', $x="Unspecified error", $deadlock=0){
-	global $debugmode,$result_wwwsession,$error_mailto,$SID,$ORIGINAL_REMOTE_ADDR,$dbserver,$use_dbname;
+	global $debugmode,$dbsession,$error_mailto,$SID,$ORIGINAL_REMOTE_ADDR,$dbserver,$use_dbname;
 	$get=to_string($_GET);
 	if(array_key_exists('pwd',$_POST)) $_POST['pwd']='*** Password is hidden from security reasons ***';
 	$post=(isset($_POST))?"\r\nPOST=".to_string($_POST):"";
@@ -397,8 +396,8 @@ Time=$time
 Server=$_SERVER[SERVER_NAME] on \"$host\" $cn
 DbServer=$dbserver
 Database=$use_dbname
-Login=".array_item($result_wwwsession,'user_login')."
-Name=".array_item($result_wwwsession,'organization_name').'/'.array_item($result_wwwsession,'user_fullname')."
+Login=".array_item($dbsession,'user_name')."
+Name=".array_item($dbsession,'organization_name').'/'.array_item($dbsession,'display_name')."
 
 BackTrace:
 $bt
@@ -1464,8 +1463,9 @@ function debugerror($context){
 }
 
 function private_file($fn){
-	global $private_folder, $result_wwwsession;
-	return "$private_folder/$result_wwwsession[user_login]_$fn";
+	global $private_folder, $dbsession;
+	$u = $dbsession['user_name'] ?? 'unknown';
+	return "$private_folder/{$u}_$fn";
 }
 
 /**
@@ -1958,7 +1958,7 @@ function xmloutput($r,$fn='',$package=''){
 	Export právě nastaveného result-setu do CSV, exportují se hodnoty včetně hlavičky a konec
 */
 function csv_export($q=null,$delimiter='',$headers=array(),$excludeColumns=''){
-	global $datarow,$charset,$lang,$dbquery,$exportFileName,$result_wwwsession;
+	global $datarow,$charset,$lang,$dbquery,$exportFileName,$dbsession;
 	// Je-li prvním parameterm string, pak byl vynechán a ostatní se posunou
 	if(is_string($q))
 		{$excludeColumns=$headers; $headers=$delimiter; $delimiter=$q; $q=null;}
@@ -1968,7 +1968,7 @@ function csv_export($q=null,$delimiter='',$headers=array(),$excludeColumns=''){
 	if(!$q) $q=$dbquery;
 	if(!$delimiter) {
 		$delimiter=",";
-		if(in_array($result_wwwsession['o_language'],array('cz','sk'))) $delimiter=";";
+		if(in_array(($dbsession['language'] ?? ''),array('cs','sk'))) $delimiter=";";
 	}
 	$r=''; $n=0;
 	$fd=tmpfile();
@@ -2026,9 +2026,9 @@ function csv_export($q=null,$delimiter='',$headers=array(),$excludeColumns=''){
 	- $dbnames = nepovinné pole, které konvertuje názvy v záhlaví na databázové názvy
 */
 function csv_into_array($fn,$titles,&$out,$dbnames=''){
-	global $errmsg,$lang,$csv_delimiter,$result_wwwsession;
+	global $errmsg,$lang,$csv_delimiter,$dbsession;
 	
-	$delimiter=($csv_delimiter)?$csv_delimiter:((in_array($result_wwwsession['o_language'],array('cz','sk')))?";":',');
+	$delimiter=($csv_delimiter)?$csv_delimiter:((in_array(($dbsession['language'] ?? ''),array('cs','sk')))?";":',');
 	$coltitles=is_array($titles)?array_values($titles):explode(',',$titles);
 	$colnames=array();
 	if(is_array($titles)){
@@ -2159,7 +2159,7 @@ function in_array_fix(&$s,$a){
 // Vrací TRUE/FALSE, Implicitní parametr $abort způsobí print zprávy a ukončení requestu //
 ///////////////////////////////////////////////////////////////////////////////////////////
 function check_user_access($codeList,$abort=true){
-	global $result_wwwsession,$debugmode;
+	global $dbsession,$debugmode;
 	$codes=explode(',',$codeList);
 	foreach($codes as &$c) $c=charliteral($c);
 	$code=implode(',',$codes);
@@ -2316,11 +2316,14 @@ function html_cbx_filter($name,$value){
 }
 
 /*
-	Funkce otestuje, zda je k dispozici uživatelský modul zadaného jména
-*/
+ * TODO: Tato funkce se bude muset řešit ve třídě user_context, 
+ * až budeme vědět, jak nakládat s uživatelskými moduly, 
+ * které nebudou k dispozici pro všechny organizace.
+ */
 function custom_module($name){
-	global $result_wwwsession;
-	if(strpos($result_wwwsession['php_modules'],"^$name^")===false) return false;
+	global $dbsession;
+	$modules = (string)($dbsession['php_modules'] ?? '');
+	if(strpos($modules,"^$name^")===false) return false;
 	return true;
 }
 

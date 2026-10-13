@@ -96,3 +96,32 @@ BEGIN
 	PRINT 'Stránka excel_reader byla zaregistrována do meta_object.';
 END
 GO
+-- Registrace chybějících fyzických stránek do metadat (nutné pro bezpečnostní validaci menu)
+DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+
+DECLARE @pages TABLE (builtin_code varchar(80), caption varchar(200), system_role varchar(1));
+INSERT INTO @pages (builtin_code, caption, system_role) VALUES 
+('main', 'Hlavní panel', 'U'),
+('meta_class', 'Logické třídy (Objekty)', 'S'),
+('meta_column', 'Sloupce metadat', 'S'),
+('organization_licence', 'Správa licencí organizací', 'S'),
+('org_users', 'Uživatelé organizace', 'A'),
+('change_user_context', 'Změna kontextu uživatele', 'U'),
+('logout', 'Odhlášení ze systému', 'U');
+
+INSERT INTO meta_object (
+	uuid, object_owner, original, record_type, approval_status,
+	object_type, builtin_code, system_role, caption, module
+)
+SELECT 
+	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
+	@sys_owner,
+	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
+	'A', 'A', 'P', p.builtin_code, p.system_role, p.caption, ''
+FROM @pages p
+WHERE NOT EXISTS (
+	SELECT 1 FROM meta_object mo 
+	WHERE mo.original = dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code)
+	  AND mo.record_type = 'A' AND mo.object_owner = @sys_owner
+);
+GO

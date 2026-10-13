@@ -1,14 +1,14 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-12
+ * Verze: 2026-10-13
  * Stránka: page_main.php
- * Účel: Hlavní rozcestník dynamicky generovaný z databáze metadat.
+ * Účel: Hlavní rozcestník dynamicky generovaný z databáze metadat (Průzkumník).
  * 
  * Změny:
- * 2026-10-12 - Kompletní přechod ze statického HTML na dynamický T-SQL dotaz
- *              do tabulky meta_object s respektováním hierarchie rolí a
- *              jazykových překladů (COALESCE).
+ * 2026-10-13 - Aplikace moderního CSS Grid layoutu (dlaždice/karty) místo 
+ *              starého hover-rámečku. Zpracovává menu_code z URL a zobrazuje 
+ *              potomky dané složky vyžádané přes globální menu_manager.
  * =============================================================================
  */
 
@@ -21,107 +21,67 @@ class page_main extends abstract_page {
 
 		$this->page_title = 'Hlavní panel - BCM Osiris';
 
-		// Zajištění, že nepodepsaný uživatel neuvidí prázdnou stránku
-		// (Ačkoliv by ho měl zachytit už initsession v OsirisLib)
-		if (!is_array($dbsession) || empty($dbsession['user_account'])) {
+		if (empty($dbsession['user_account'])) {
 			$this->access_denied = true;
 		}
 	}
 
 	protected function render_body(): void {
+		global $menu_manager;
+
+		$menu_code = (string)getinput('menu_code');
+		if ($menu_code === '') {
+			$menu_code = 'home';
+		}
+
+		// Získání informací o aktuální složce z manageru
+		$current_node = $menu_manager->get_node_by_code($menu_code);
+		$title = $current_node ? htmlspecialchars((string)($current_node['caption'] ?? '')) : 'Rozcestník';
+		
+		// Oprava: Používáme helptext (ten vrací SQL procedura po COALESCE překladu)
+		$desc = $current_node ? htmlspecialchars((string)($current_node['helptext'] ?? '')) : '';
+		if ($desc === '') {
+			$desc = 'Vyberte požadovanou akci z níže uvedených modulů.';
+		}
+
 		echo <<<HTML
-		<h1 class="page-heading">Vítejte v systému BCM Osiris</h1>
-		<p>Vyberte požadovanou akci z níže uvedených modulů.</p>
+		<h1 class="page-heading">{$title}</h1>
+		<p style="margin-bottom: 25px; color: #475569;">{$desc}</p>
 HTML;
 
-		// Dynamický dotaz pro načtení dostupných stránek podle role s využitím STI jazykového fallbacku
-		$sql = "
-		WITH s AS (
-			SELECT language, active_role FROM dbsession WHERE spid = @@SPID
-		)
-		SELECT 
-			mo.builtin_code,
-			mo.system_role,
-			COALESCE(
-				NULLIF(CAST(l.caption AS NVARCHAR(MAX)), ''),
-				NULLIF(CAST(mo.caption AS NVARCHAR(MAX)), ''),
-				mo.builtin_code
-			) AS caption,
-			COALESCE(
-				NULLIF(CAST(l.description AS NVARCHAR(MAX)), ''),
-				NULLIF(CAST(mo.description AS NVARCHAR(MAX)), ''),
-				''
-			) AS description
-		FROM meta_object mo
-		CROSS JOIN s
-		LEFT JOIN meta_object l ON l.original = mo.original AND l.object_owner = 0x00 AND l.record_type = 'L' AND l.language = s.language AND l.removed = 0
-		WHERE mo.object_type = 'P' 
-		  AND mo.record_type = 'A' 
-		  AND mo.removed = 0
-		  AND mo.object_owner = 0x00
-		  AND mo.inactive = 0
-		  AND mo.builtin_code NOT IN ('main', 'login', 'logout')
-		  AND (
-			  s.active_role IN ('S', 'D') 
-			  OR (s.active_role = 'A' AND mo.system_role IN ('U', 'A'))
-			  OR (s.active_role = 'U' AND mo.system_role = 'U')
-		  )
-		ORDER BY 
-			CASE mo.system_role 
-				WHEN 'S' THEN 1 
-				WHEN 'D' THEN 2 
-				WHEN 'A' THEN 3 
-				WHEN 'U' THEN 4 
-				ELSE 5 
-			END, 
-			caption
-		";
+		// Načtení potomků aktuálního uzlu (obsah složky)
+		$children = $menu_manager->get_children_by_code($menu_code);
 
-		$q = sqlrun($sql);
-		
-		$current_role_group = '';
-		
-		// Vizuální konfigurace pro jednotlivé sekce rolí
-		$role_titles = [
-			'S' => ['title' => 'Systémová administrace', 'color' => '#b91c1c', 'btn_class' => 'btn-secondary'],
-			'D' => ['title' => 'Vývojářské nástroje', 'color' => '#b91c1c', 'btn_class' => 'btn-secondary'],
-			'A' => ['title' => 'Správa organizace', 'color' => '#2E7D32', 'btn_class' => 'btn-success'],
-			'U' => ['title' => 'Uživatelské moduly', 'color' => '#004488', 'btn_class' => '']
-		];
+		if (empty($children)) {
+			echo "<div class='msg-info'>Tato složka momentálně neobsahuje žádné dostupné moduly.</div>";
+			return;
+		}
 
-		while ($row = fetch($q)) {
-			$role = $row['system_role'];
-			
-			if ($role !== $current_role_group) {
-				if ($current_role_group !== '') {
-					echo "</div>"; // Uzavření předchozí skupiny
-				}
-				$group_title = $role_titles[$role]['title'] ?? 'Ostatní moduly';
-				$group_color = $role_titles[$role]['color'] ?? '#333';
-				
-				echo <<<HTML
-				<div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
-					<h3 style="margin-top: 0; font-size: 16px; color: {$group_color};">{$group_title}</h3>
-HTML;
-				$current_role_group = $role;
+		// Responzivní CSS Grid pro dlaždice (karty)
+		echo "<div style=\"display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px;\">\n";
+
+		foreach ($children as $child) {
+			// Skryté položky (bez přístupu) nevykreslujeme
+			if (!empty($child['is_disabled'])) {
+				continue;
 			}
+
+			$caption = htmlspecialchars((string)($child['caption'] ?? ''));
+			$helptext = htmlspecialchars((string)($child['helptext'] ?? ''));
+			$icon = !empty($child['svg_icon']) ? '<div style="width: 32px; height: 32px; color: #004488; margin-bottom: 15px;">' . $child['svg_icon'] . '</div>' : '<div style="width: 32px; height: 32px; background: #e2e8f0; border-radius: 4px; margin-bottom: 15px;"></div>';
 			
-			$code = htmlspecialchars((string)$row['builtin_code']);
-			$caption = htmlspecialchars((string)$row['caption']);
-			$desc = htmlspecialchars((string)$row['description']);
-			
-			$title_attr = $desc !== '' ? " title=\"{$desc}\"" : '';
-			$btnClass = 'btn ' . ($role_titles[$role]['btn_class'] ?? '');
-			
-			echo "<a href=\"index.php?page={$code}\" class=\"{$btnClass}\" style=\"margin-right: 10px; margin-bottom: 10px;\"{$title_attr}>{$caption}</a>\n";
+			$link = $menu_manager->build_link($child);
+			$target = !empty($child['target_window']) ? ' target="' . htmlspecialchars((string)$child['target_window']) . '"' : '';
+
+			echo <<<HTML
+			<a href="{$link}"{$target} style="display: block; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 20px; text-decoration: none; color: #334155; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05);" onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'; this.style.borderColor='#94a3b8';" onmouseout="this.style.boxShadow='0 1px 3px rgba(0,0,0,0.05)'; this.style.borderColor='#cbd5e1';">
+				{$icon}
+				<h3 style="margin: 0 0 8px 0; font-size: 16px; color: #0f172a;">{$caption}</h3>
+				<div style="font-size: 13px; color: #64748b; line-height: 1.4;">{$helptext}</div>
+			</a>
+HTML;
 		}
-		
-		free_result($q);
-		
-		if ($current_role_group !== '') {
-			echo "</div>";
-		} else {
-			echo "<div class='msg-info'>Zatím nemáte přístup k žádným dalším modulům.</div>";
-		}
+
+		echo "</div>\n";
 	}
 }

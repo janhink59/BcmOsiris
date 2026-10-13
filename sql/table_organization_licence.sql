@@ -1,9 +1,13 @@
 ﻿/* =============================================================================
- * Verze: 2026-10-05
+ * Verze: 2026-10-13 10:35
  * Soubor: table_organization_licence.sql
  * Tabulka: organization_licence
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
- * Změny: Přidán příznak is_developer pro inicializaci vývojářského účtu.
+ * Změny:
+ * - Přidán příznak is_developer pro inicializaci vývojářského účtu.
+ * - Přidán sloupec builtin_code jako přirozený klíč pro deterministický výpočet
+ *   originálu (automatické zapojení do generátoru trgo_ triggerů).
+ * - Datová migrace stávajících licencí (vyplnění prázdných builtin_code z caption).
  * ============================================================================= */
 
 -- Kontrola a odstranění tabulky, pokud pochází ze starého systému
@@ -36,6 +40,7 @@ BEGIN
 		-- -------------------------------------------------------------------------
 		-- Společné textové vlastnosti
 		-- -------------------------------------------------------------------------
+		builtin_code varchar(80) NOT NULL DEFAULT '',
 		caption varchar(200) NOT NULL DEFAULT '',
 		shortname varchar(40) NOT NULL DEFAULT '',
 		external_code varchar(200) NOT NULL DEFAULT '',
@@ -85,6 +90,13 @@ GO
 -- Zajištění chybějících sloupců pro existující databáze (změnový příkaz)
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'organization_licence', 'is_developer', 'bit NOT NULL DEFAULT 0';
+EXEC p_create_missing_column 'organization_licence', 'builtin_code', 'varchar(80) NOT NULL DEFAULT ''''';
+GO
+
+-- Doplnění chybějícího builtin_code u existujících licencí (jako záchranný klíč poslouží oříznutý název)
+UPDATE organization_licence 
+SET builtin_code = SUBSTRING(caption, 1, 80) 
+WHERE builtin_code = '';
 GO
 
 -- -----------------------------------------------------------------------------
