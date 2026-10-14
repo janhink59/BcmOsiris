@@ -1,8 +1,24 @@
 /* =============================================================================
+ * Verze: 2026-10-14 22:45
+ * Soubor: generate_trgo.sql
  * DÁVKA: Generátor deterministických triggerů (trgo_%)
  * Účel: Hromadné odstranění a znovuvytvoření triggerů pro vazební tabulky.
  *       Triggery nastavují deterministické identifikátory (sloupce "uuid" a "original")
  *       pro tabulky a jejich primární sloupce uvedené v tabulce "meta_original_keys"
+ *
+ * Vazby na okolí:
+ * - Čte seznam tabulek a klíčových sloupců z tabulky meta_original_keys
+ *   (plněné skriptem fillup_meta_original_keys.sql).
+ * - Využívá deterministickou hashovací funkci dbo.f_generate_original.
+ * - Pro tabulku [link] zakládá dedikovaný trigger trgo_link využívající
+ *   funkci dbo.f_link_original se 3 klíčovými složkami.
+ *
+ * Změny:
+ * - 2026-10-14: Oprava přepisu sloupce uuid v triggerech trgo_% a trgo_link.
+ *   Deterministické přepsání sloupce uuid se nyní provádí výhradně pro
+ *   záznamy s i.record_type = 'A' (když parent.uuid IS NULL), aby jazykové ('L')
+ *   a historické ('H') záznamy nikdy nepřepsaly své unikátní NEWID() a nezpůsobily
+ *   kolizi primárního klíče s hlavním 'A' záznamem.
  * ============================================================================= */
 DECLARE @drop_sql NVARCHAR(MAX) = '';
 
@@ -53,7 +69,7 @@ BEGIN
 			' + @key2_expr + '
 		),
 		uuid = CASE 
-			WHEN parent.uuid IS NULL THEN 
+			WHEN i.record_type = ''A'' AND parent.uuid IS NULL THEN 
 				dbo.f_generate_original(
 					''' + @table_name + ''',
 					i.object_owner,
@@ -102,7 +118,7 @@ BEGIN
 			CAST(i.[to_object] AS varchar(36))
 		),
 		uuid = CASE 
-			WHEN parent.uuid IS NULL THEN 
+			WHEN i.record_type = 'A' AND parent.uuid IS NULL THEN 
 				dbo.f_link_original(
 					i.object_owner,
 					CAST(i.[link_def] AS varchar(36)),
