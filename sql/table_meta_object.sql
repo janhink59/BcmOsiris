@@ -1,15 +1,24 @@
 /* =============================================================================
+ * Verze: 2026-10-14 12:30
+ * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
+ * Vazby:   - Slouží jako fyzický podklad (storage_object) pro logické třídy v meta_class.
+ *          - Záznamy typu 'P' (PHP Page) jsou odkazovány z meta_menu.target_object
+ *            a slouží k řízení přístupu přes sloupec system_role.
+ *          - Záznamy typu 'G' (Global Phrase) uchovávají celosystémové textové fráze.
+ *          - Plněno automaticky procedurou p_fix_meta_column (typy T, V, F, C)
+ *            a hromadným importem z Excelu přes proceduru p_xlsx_meta_object (typy P, G, M).
  * Změny:   - Odstraněny sloupce is_final a is_protected (ochrana je v meta_class).
  *          - Odstraněn sloupec column_ancestor (přesunut do meta_class).
  *          - Prezentační texty změněny na NULLable (primární zdroj je nově meta_class).
  *          - Přidán sloupec import_origin pro evidenci původu záznamu z importu (Měkký audit).
  *          - 2026-10-09: Přidán sloupec system_role pro základní řízení přístupu.
+ *          - 2026-10-14: Přidán sloupec editor_note pro kontext k překladům pomocí AI.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
-IF NOT EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'meta_object' AND colname='import_origin')
+IF NOT EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'meta_object' AND colname = 'editor_note')
 BEGIN
 	EXECUTE dropni 'meta_object';
 END
@@ -54,6 +63,7 @@ BEGIN
 		caption_plural varchar(200) NULL,                  -- Množné číslo názvu.
 		description varchar(max) NULL,                     -- Podrobnější interní popis objektu a jeho účelu.
 		helptext varchar(max) NULL,                        -- Text nápovědy určený pro UI.
+		editor_note varchar(max) NULL,                     -- Kontextová poznámka pro překladatele a AI (nepřekládá se).
 		
 		module varchar(80) NOT NULL DEFAULT '',            -- Modul, ke kterému objekt patří (odkaz na builtin_code u object_type = 'M').
 
@@ -76,6 +86,7 @@ GO
 -- Zajištění chybějících sloupců pro upgrady existujících databází
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'meta_object', 'system_role', 'varchar(1) NOT NULL DEFAULT ''S''';
+EXEC p_create_missing_column 'meta_object', 'editor_note', 'varchar(max) NULL';
 GO
 /* =============================================================================
  * REGISTRACE STRÁNKY EXCEL READER DO METADAT
