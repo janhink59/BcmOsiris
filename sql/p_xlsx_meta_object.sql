@@ -1,10 +1,10 @@
 /* =============================================================================
- * Verze: 2026-10-14 22:36
+ * Verze: 2026-10-15 15:10
  * Soubor: p_xlsx_meta_object.sql
  * Procedura: p_xlsx_meta_object
- * Účel: Hromadný import systémových stránek (page), globálních frází (phrase)
+ * Účel: Hromadný import systémových stránek a tříd (page), textových frází (phrase)
  *       a struktury navigace (menu) ze staging tabulek XLSX_*$ do tabulek
- *       meta_object a meta_menu.
+ *       meta_object, meta_phrase a meta_menu.
  *
  * Vazby na okolí:
  * - Volána z PHP třídy excel_reader (metoda run_package) při testovacím ('1')
@@ -14,7 +14,7 @@
  * - Čte kontext relace (login_session_uuid) z tabulky dbsession pro @@SPID.
  * - Validuje kódy jazyků proti tabulce [language].
  * - Využívá deterministickou funkci dbo.f_generate_original pro výpočet klíčů
- *   original a převod textových odkazů (parent_code, target_page) na UUID.
+ *   original a převod textových odkazů (source_code, parent_code, target_page) na UUID.
  * - Zapisuje průběžné a chybové zprávy přes proceduru insert_request_message.
  *
  * Architektura zápisu:
@@ -23,6 +23,12 @@
  *   symetrického 'L' záznamu. Nepřekládaný kontext editor_note ukládá do 'A'.
  * - Pokud je v CONTENT_INFO vyplněn second_language, zapisuje překlady ze
  *   sloupců *_l do 'L' záznamu druhého jazyka s fallbackem na základní jazyk.
+ *
+ * Změny:
+ * - 2026-10-15: Přesměrování importu záložky phrase (XLSX_phrase$) z tabulky
+ *   meta_object (typ 'G') do dedikované tabulky meta_phrase se složeným klíčem
+ *   (source_code, builtin_code), podporou svg_icon, css_class a kontrolou
+ *   referenční integrity source_code proti meta_object (typ 'P').
  * ============================================================================= */
 
 EXECUTE dropni 'p_xlsx_meta_object', 'P'
@@ -110,9 +116,9 @@ BEGIN
 	IF OBJECT_ID('XLSX_page$') IS NOT NULL
 	BEGIN
 		-- Kontrola duplicitních builtin_code v rámci záložky page
-		SELECT TOP 1 @bad_code = builtin_code
+		SELECT TOP 1 @bad_code = ISNULL(LTRIM(RTRIM(builtin_code)), '')
 		FROM XLSX_page$
-		GROUP BY builtin_code
+		GROUP BY ISNULL(LTRIM(RTRIM(builtin_code)), '')
 		HAVING COUNT(*) > 1;
 
 		IF @bad_code IS NOT NULL
@@ -121,7 +127,7 @@ BEGIN
 			RETURN;
 		END
 
-		-- 1.A) Zpracování hlavních záznamů ('A') pro stránky
+		-- 1.A) Zpracování hlavních záznamů ('A') pro stránky a UI třídy
 		UPDATE t
 		SET
 			t.[language] = @lang,
@@ -137,7 +143,7 @@ BEGIN
 			t.who_modified = @user_session
 		FROM meta_object t
 		JOIN XLSX_page$ s
-			ON dbo.f_generate_original('meta_object', @sys_owner, 'P', s.builtin_code) = t.original
+			ON dbo.f_generate_original('meta_object', @sys_owner, 'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) = t.original
 		WHERE t.object_owner = @sys_owner
 		  AND t.record_type = 'A'
 		  AND t.removed = 0;
@@ -154,12 +160,12 @@ BEGIN
 		SELECT
 			x.orig_uuid, @sys_owner, x.orig_uuid, 'A', 'A', @lang,
 			ISNULL(TRY_CAST(s.inactive AS bit), 0), @import_origin,
-			'P', s.builtin_code, ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'), ISNULL(s.module, ''),
+			'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), ''), ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'), ISNULL(s.module, ''),
 			ISNULL(s.editor_note, ''), ISNULL(s.caption, ''), ISNULL(s.description, ''), ISNULL(s.helptext, ''),
 			GETDATE(), @user_session, GETDATE(), @user_session
 		FROM XLSX_page$ s
 		CROSS APPLY (
-			SELECT dbo.f_generate_original('meta_object', @sys_owner, 'P', s.builtin_code) AS orig_uuid
+			SELECT dbo.f_generate_original('meta_object', @sys_owner, 'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) AS orig_uuid
 		) x
 		WHERE NOT EXISTS (
 			SELECT 1 FROM meta_object t
@@ -185,7 +191,7 @@ BEGIN
 			t.who_modified = @user_session
 		FROM meta_object t
 		JOIN XLSX_page$ s
-			ON dbo.f_generate_original('meta_object', @sys_owner, 'P', s.builtin_code) = t.original
+			ON dbo.f_generate_original('meta_object', @sys_owner, 'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) = t.original
 		WHERE t.object_owner = @sys_owner
 		  AND t.record_type = 'L'
 		  AND t.[language] = @lang
@@ -201,12 +207,12 @@ BEGIN
 		SELECT
 			NEWID(), @sys_owner, x.orig_uuid, 'L', 'A', @lang,
 			ISNULL(TRY_CAST(s.inactive AS bit), 0), @import_origin,
-			'P', s.builtin_code, ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'), ISNULL(s.module, ''),
+			'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), ''), ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'), ISNULL(s.module, ''),
 			ISNULL(s.caption, ''), ISNULL(s.description, ''), ISNULL(s.helptext, ''),
 			GETDATE(), @user_session, GETDATE(), @user_session
 		FROM XLSX_page$ s
 		CROSS APPLY (
-			SELECT dbo.f_generate_original('meta_object', @sys_owner, 'P', s.builtin_code) AS orig_uuid
+			SELECT dbo.f_generate_original('meta_object', @sys_owner, 'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) AS orig_uuid
 		) x
 		WHERE NOT EXISTS (
 			SELECT 1 FROM meta_object t
@@ -233,7 +239,7 @@ BEGIN
 				t.who_modified = @user_session
 			FROM meta_object t
 			JOIN XLSX_page$ s
-				ON dbo.f_generate_original('meta_object', @sys_owner, 'P', s.builtin_code) = t.original
+				ON dbo.f_generate_original('meta_object', @sys_owner, 'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) = t.original
 			WHERE t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @sec_lang
@@ -249,14 +255,14 @@ BEGIN
 			SELECT
 				NEWID(), @sys_owner, x.orig_uuid, 'L', 'A', @sec_lang,
 				ISNULL(TRY_CAST(s.inactive AS bit), 0), @import_origin,
-				'P', s.builtin_code, ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'), ISNULL(s.module, ''),
+				'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), ''), ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'), ISNULL(s.module, ''),
 				ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
 				ISNULL(NULLIF(s.description_l, ''), ISNULL(s.description, '')),
 				ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
 				GETDATE(), @user_session, GETDATE(), @user_session
 			FROM XLSX_page$ s
 			CROSS APPLY (
-				SELECT dbo.f_generate_original('meta_object', @sys_owner, 'P', s.builtin_code) AS orig_uuid
+				SELECT dbo.f_generate_original('meta_object', @sys_owner, 'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) AS orig_uuid
 			) x
 			WHERE NOT EXISTS (
 				SELECT 1 FROM meta_object t
@@ -277,63 +283,91 @@ BEGIN
 	END
 
 	-- =========================================================================
-	-- 2. Zpracování záložky: phrase (tabulka meta_object, object_type = 'G')
+	-- 2. Zpracování záložky: phrase (tabulka meta_phrase)
 	-- =========================================================================
 	IF OBJECT_ID('XLSX_phrase$') IS NOT NULL
 	BEGIN
 		SET @bad_code = NULL;
 
-		-- Kontrola duplicitních builtin_code v rámci záložky phrase
-		SELECT TOP 1 @bad_code = builtin_code
+		-- Kontrola duplicitních kombinací (source_code, builtin_code) v rámci záložky phrase
+		SELECT TOP 1 @bad_code = ISNULL(LTRIM(RTRIM(source_code)), '') + '.' + ISNULL(LTRIM(RTRIM(builtin_code)), '')
 		FROM XLSX_phrase$
-		GROUP BY builtin_code
+		GROUP BY ISNULL(LTRIM(RTRIM(source_code)), ''), LTRIM(RTRIM(builtin_code))
 		HAVING COUNT(*) > 1;
 
 		IF @bad_code IS NOT NULL
 		BEGIN
-			EXEC insert_request_message 'Duplicitní builtin_code na záložce phrase', 3, @obj_type = 'phrase', @obj_name = @bad_code;
+			EXEC insert_request_message 'Duplicitní kombinace (source_code, builtin_code) na záložce phrase', 3, @obj_type = 'phrase', @obj_name = @bad_code;
 			RETURN;
 		END
 
-		-- 2.A) Zpracování hlavních záznamů ('A') pro globální fráze
+		-- Kontrola referenční integrity source_code proti registrovaným objektům typu 'P' v meta_object
+		SET @bad_code = NULL;
+		SELECT TOP 1 @bad_code = LTRIM(RTRIM(s.source_code)) + ' (' + ISNULL(LTRIM(RTRIM(s.builtin_code)), '') + ')'
+		FROM XLSX_phrase$ s
+		WHERE NULLIF(LTRIM(RTRIM(s.source_code)), '') IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM meta_object mo
+			WHERE mo.original = dbo.f_generate_original('meta_object', @sys_owner, 'P', LTRIM(RTRIM(s.source_code)))
+			  AND mo.object_type = 'P'
+			  AND mo.object_owner = @sys_owner
+			  AND mo.record_type = 'A'
+			  AND mo.removed = 0
+		  );
+
+		IF @bad_code IS NOT NULL
+		BEGIN
+			EXEC insert_request_message 'Neexistující zdrojový objekt (source_code) na záložce phrase', 3, @obj_type = 'meta_phrase', @obj_name = @bad_code;
+			RETURN;
+		END
+
+		-- 2.A) Zpracování hlavních záznamů ('A') v tabulce meta_phrase
 		UPDATE t
 		SET
 			t.[language] = @lang,
+			t.source_code = ISNULL(LTRIM(RTRIM(s.source_code)), ''),
+			t.builtin_code = ISNULL(LTRIM(RTRIM(s.builtin_code)), ''),
 			t.module = ISNULL(s.module, ''),
+			t.svg_icon = ISNULL(s.svg_icon, ''),
+			t.css_class = ISNULL(s.css_class, ''),
 			t.editor_note = ISNULL(s.editor_note, ''),
 			t.caption = ISNULL(s.caption, ''),
 			t.helptext = ISNULL(s.helptext, ''),
 			t.import_origin = ISNULL(@import_origin, t.import_origin),
 			t.date_modified = GETDATE(),
 			t.who_modified = @user_session
-		FROM meta_object t
+		FROM meta_phrase t
 		JOIN XLSX_phrase$ s
-			ON dbo.f_generate_original('meta_object', @sys_owner, 'G', s.builtin_code) = t.original
+			ON dbo.f_generate_original('meta_phrase', @sys_owner, ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) = t.original
 		WHERE t.object_owner = @sys_owner
 		  AND t.record_type = 'A'
 		  AND t.removed = 0;
 
 		SET @cnt_a = @@ROWCOUNT;
 
-		INSERT INTO meta_object (
+		INSERT INTO meta_phrase (
 			uuid, object_owner, original, record_type, approval_status, [language],
 			import_origin,
-			object_type, builtin_code, system_role, module,
-			editor_note, caption, description, helptext,
+			source_code, builtin_code, module,
+			svg_icon, css_class,
+			editor_note, caption, helptext,
+			is_final, is_protected,
 			date_created, who_created, date_modified, who_modified
 		)
 		SELECT
 			x.orig_uuid, @sys_owner, x.orig_uuid, 'A', 'A', @lang,
 			@import_origin,
-			'G', s.builtin_code, 'U', ISNULL(s.module, ''),
-			ISNULL(s.editor_note, ''), ISNULL(s.caption, ''), '', ISNULL(s.helptext, ''),
+			ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), ''), ISNULL(s.module, ''),
+			ISNULL(s.svg_icon, ''), ISNULL(s.css_class, ''),
+			ISNULL(s.editor_note, ''), ISNULL(s.caption, ''), ISNULL(s.helptext, ''),
+			1, 1,
 			GETDATE(), @user_session, GETDATE(), @user_session
 		FROM XLSX_phrase$ s
 		CROSS APPLY (
-			SELECT dbo.f_generate_original('meta_object', @sys_owner, 'G', s.builtin_code) AS orig_uuid
+			SELECT dbo.f_generate_original('meta_phrase', @sys_owner, ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) AS orig_uuid
 		) x
 		WHERE NOT EXISTS (
-			SELECT 1 FROM meta_object t
+			SELECT 1 FROM meta_phrase t
 			WHERE t.original = x.orig_uuid
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'A'
@@ -342,42 +376,50 @@ BEGIN
 
 		SET @cnt_a = @cnt_a + @@ROWCOUNT;
 
-		-- 2.B) Symetrické 'L' záznamy pro primární jazyk (@lang)
+		-- 2.B) Symetrické 'L' záznamy v meta_phrase pro primární jazyk (@lang)
 		UPDATE t
 		SET
+			t.source_code = ISNULL(LTRIM(RTRIM(s.source_code)), ''),
+			t.builtin_code = ISNULL(LTRIM(RTRIM(s.builtin_code)), ''),
 			t.module = ISNULL(s.module, ''),
+			t.svg_icon = ISNULL(s.svg_icon, ''),
+			t.css_class = ISNULL(s.css_class, ''),
 			t.caption = ISNULL(s.caption, ''),
 			t.helptext = ISNULL(s.helptext, ''),
 			t.import_origin = ISNULL(@import_origin, t.import_origin),
 			t.date_modified = GETDATE(),
 			t.who_modified = @user_session
-		FROM meta_object t
+		FROM meta_phrase t
 		JOIN XLSX_phrase$ s
-			ON dbo.f_generate_original('meta_object', @sys_owner, 'G', s.builtin_code) = t.original
+			ON dbo.f_generate_original('meta_phrase', @sys_owner, ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) = t.original
 		WHERE t.object_owner = @sys_owner
 		  AND t.record_type = 'L'
 		  AND t.[language] = @lang
 		  AND t.removed = 0;
 
-		INSERT INTO meta_object (
+		INSERT INTO meta_phrase (
 			uuid, object_owner, original, record_type, approval_status, [language],
 			import_origin,
-			object_type, builtin_code, system_role, module,
-			caption, description, helptext,
+			source_code, builtin_code, module,
+			svg_icon, css_class,
+			caption, helptext,
+			is_final, is_protected,
 			date_created, who_created, date_modified, who_modified
 		)
 		SELECT
 			NEWID(), @sys_owner, x.orig_uuid, 'L', 'A', @lang,
 			@import_origin,
-			'G', s.builtin_code, 'U', ISNULL(s.module, ''),
-			ISNULL(s.caption, ''), '', ISNULL(s.helptext, ''),
+			ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), ''), ISNULL(s.module, ''),
+			ISNULL(s.svg_icon, ''), ISNULL(s.css_class, ''),
+			ISNULL(s.caption, ''), ISNULL(s.helptext, ''),
+			1, 1,
 			GETDATE(), @user_session, GETDATE(), @user_session
 		FROM XLSX_phrase$ s
 		CROSS APPLY (
-			SELECT dbo.f_generate_original('meta_object', @sys_owner, 'G', s.builtin_code) AS orig_uuid
+			SELECT dbo.f_generate_original('meta_phrase', @sys_owner, ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) AS orig_uuid
 		) x
 		WHERE NOT EXISTS (
-			SELECT 1 FROM meta_object t
+			SELECT 1 FROM meta_phrase t
 			WHERE t.original = x.orig_uuid
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
@@ -385,46 +427,53 @@ BEGIN
 			  AND t.removed = 0
 		);
 
-		-- 2.C) Jazykové 'L' záznamy pro druhý jazyk (@sec_lang)
+		-- 2.C) Jazykové 'L' záznamy v meta_phrase pro druhý jazyk (@sec_lang)
 		IF @sec_lang <> ''
 		BEGIN
 			UPDATE t
 			SET
+				t.source_code = ISNULL(LTRIM(RTRIM(s.source_code)), ''),
+				t.builtin_code = ISNULL(LTRIM(RTRIM(s.builtin_code)), ''),
 				t.module = ISNULL(s.module, ''),
+				t.svg_icon = ISNULL(s.svg_icon, ''),
+				t.css_class = ISNULL(s.css_class, ''),
 				t.caption = ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
 				t.helptext = ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
-			FROM meta_object t
+			FROM meta_phrase t
 			JOIN XLSX_phrase$ s
-				ON dbo.f_generate_original('meta_object', @sys_owner, 'G', s.builtin_code) = t.original
+				ON dbo.f_generate_original('meta_phrase', @sys_owner, ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) = t.original
 			WHERE t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @sec_lang
 			  AND t.removed = 0;
 
-			INSERT INTO meta_object (
+			INSERT INTO meta_phrase (
 				uuid, object_owner, original, record_type, approval_status, [language],
 				import_origin,
-				object_type, builtin_code, system_role, module,
-				caption, description, helptext,
+				source_code, builtin_code, module,
+				svg_icon, css_class,
+				caption, helptext,
+				is_final, is_protected,
 				date_created, who_created, date_modified, who_modified
 			)
 			SELECT
 				NEWID(), @sys_owner, x.orig_uuid, 'L', 'A', @sec_lang,
 				@import_origin,
-				'G', s.builtin_code, 'U', ISNULL(s.module, ''),
+				ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), ''), ISNULL(s.module, ''),
+				ISNULL(s.svg_icon, ''), ISNULL(s.css_class, ''),
 				ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
-				'',
 				ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
+				1, 1,
 				GETDATE(), @user_session, GETDATE(), @user_session
 			FROM XLSX_phrase$ s
 			CROSS APPLY (
-				SELECT dbo.f_generate_original('meta_object', @sys_owner, 'G', s.builtin_code) AS orig_uuid
+				SELECT dbo.f_generate_original('meta_phrase', @sys_owner, ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), '')) AS orig_uuid
 			) x
 			WHERE NOT EXISTS (
-				SELECT 1 FROM meta_object t
+				SELECT 1 FROM meta_phrase t
 				WHERE t.original = x.orig_uuid
 				  AND t.object_owner = @sys_owner
 				  AND t.record_type = 'L'
@@ -433,7 +482,7 @@ BEGIN
 			);
 		END
 
-		EXEC insert_request_message 'Záložka phrase byla úspěšně zpracována', 1, @intvalue = @cnt_a, @obj_type = 'meta_object (G)', @obj_name = 'phrase';
+		EXEC insert_request_message 'Záložka phrase byla úspěšně zpracována', 1, @intvalue = @cnt_a, @obj_type = 'meta_phrase', @obj_name = 'phrase';
 	END
 	ELSE
 	BEGIN

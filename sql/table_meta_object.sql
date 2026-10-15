@@ -1,20 +1,25 @@
 /* =============================================================================
- * Verze: 2026-10-14 12:30
+ * Verze: 2026-10-15 15:00
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
  * Vazby:   - Slouží jako fyzický podklad (storage_object) pro logické třídy v meta_class.
- *          - Záznamy typu 'P' (PHP Page) jsou odkazovány z meta_menu.target_object
- *            a slouží k řízení přístupu přes sloupec system_role.
- *          - Záznamy typu 'G' (Global Phrase) uchovávají celosystémové textové fráze.
+ *          - Záznamy typu 'P' (PHP Page / třída) jsou odkazovány z meta_menu.target_object,
+ *            slouží k řízení přístupu přes sloupec system_role a představují platné
+ *            zdrojové objekty (source_code) pro textové fráze v tabulce meta_phrase.
+ *          - Záznamy typu 'G' (Global Phrase) uchovávají celosystémové textové fráze
+ *            (nahrazeno samostatnou tabulkou meta_phrase).
  *          - Plněno automaticky procedurou p_fix_meta_column (typy T, V, F, C)
- *            a hromadným importem z Excelu přes proceduru p_xlsx_meta_object (typy P, G, M).
+ *            a hromadným importem z Excelu přes proceduru p_xlsx_meta_object (typy P, M).
  * Změny:   - Odstraněny sloupce is_final a is_protected (ochrana je v meta_class).
  *          - Odstraněn sloupec column_ancestor (přesunut do meta_class).
  *          - Prezentační texty změněny na NULLable (primární zdroj je nově meta_class).
  *          - Přidán sloupec import_origin pro evidenci původu záznamu z importu (Měkký audit).
  *          - 2026-10-09: Přidán sloupec system_role pro základní řízení přístupu.
  *          - 2026-10-14: Přidán sloupec editor_note pro kontext k překladům pomocí AI.
+ *          - 2026-10-15: Sjednocena jmenná konvence pro object_type = 'P' na celé názvy
+ *            PHP souborů/tříd včetně prefixu page_ a zaregistrovány bázové UI třídy.
+ *            Doplněn výmaz opuštěných záznamů bez prefixu page_ a starých frází typu 'G'.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -88,12 +93,30 @@ GO
 EXEC p_create_missing_column 'meta_object', 'system_role', 'varchar(1) NOT NULL DEFAULT ''S''';
 EXEC p_create_missing_column 'meta_object', 'editor_note', 'varchar(max) NULL';
 GO
+
+-- -----------------------------------------------------------------------------
+-- Vyčištění zastaralých systémových záznamů (fráze 'G' a stránky bez prefixu 'page_')
+-- -----------------------------------------------------------------------------
+DELETE FROM meta_object
+WHERE object_owner = 0x00
+  AND (
+	object_type = 'G'
+	OR (
+		object_type = 'P'
+		AND builtin_code IN (
+			'excel_reader', 'main', 'meta_class', 'meta_column',
+			'organization_licence', 'org_users', 'change_user_context', 'logout'
+		)
+	)
+  );
+GO
+
 /* =============================================================================
  * REGISTRACE STRÁNKY EXCEL READER DO METADAT
  * Účel: Zajišťuje, aby nová stránka pro import byla viditelná v dynamickém menu.
  * ============================================================================= */
 DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
-DECLARE @orig_guid uniqueidentifier = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'excel_reader');
+DECLARE @orig_guid uniqueidentifier = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_excel_reader');
 
 IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @orig_guid AND object_owner = 0x00 AND record_type = 'A')
 BEGIN
@@ -102,33 +125,44 @@ BEGIN
 		object_type, builtin_code, system_role, caption, description, module
 	) VALUES (
 		@orig_guid, 0x00, @orig_guid, 'A', 'A',
-		'P', 'excel_reader', 'S', 'Import dat z Excelu', 'Nástroj pro hromadný import datových struktur', ''
+		'P', 'page_excel_reader', 'S', 'Import dat z Excelu', 'Nástroj pro hromadný import datových struktur', ''
 	);
-	PRINT 'Stránka excel_reader byla zaregistrována do meta_object.';
+	PRINT 'Stránka page_excel_reader byla zaregistrována do meta_object.';
 END
 GO
--- Registrace chybějících fyzických stránek do metadat (nutné pro bezpečnostní validaci menu)
+
+-- Registrace fyzických stránek a bázových UI tříd do metadat (nutné pro bezpečnostní validaci menu a frází)
 DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 
-DECLARE @pages TABLE (builtin_code varchar(80), caption varchar(200), system_role varchar(1));
-INSERT INTO @pages (builtin_code, caption, system_role) VALUES 
-('main', 'Hlavní panel', 'U'),
-('meta_class', 'Logické třídy (Objekty)', 'S'),
-('meta_column', 'Sloupce metadat', 'S'),
-('organization_licence', 'Správa licencí organizací', 'S'),
-('org_users', 'Uživatelé organizace', 'A'),
-('change_user_context', 'Změna kontextu uživatele', 'U'),
-('logout', 'Odhlášení ze systému', 'U');
+DECLARE @pages TABLE (builtin_code varchar(80), caption varchar(200), description varchar(max), system_role varchar(1));
+INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES 
+('', 'Globální fráze systému', 'Bezejmenný kontejner pro celosystémové textové fráze a sdílené popisky', 'U'),
+('abstract_page', 'Základní šablona stránky', 'Abstraktní předek všech stránek zajišťující hlavičku, kontext a ochranu formulářů', 'U'),
+('abstract_page_master_detail', 'Šablona Master-Detail', 'Abstraktní dvoupanelová šablona pro správu entit', 'U'),
+('abstract_button', 'Komponenta tlačítka', 'Základní třída pro vykreslování tlačítek s ikonou a tooltipem', 'U'),
+('user_context', 'Kontextový panel uživatele', 'Horní lišta s informacemi o přihlášeném uživateli, roli a volbou jazyka', 'U'),
+('menu_manager', 'Správce navigace', 'Třída pro sestavení a vykreslení drobečkové navigace a menu', 'U'),
+('entity_manager', 'Správce logických entit', 'Dynamický generátor SQL dotazů, seznamů a formulářů podle metadat', 'U'),
+('page_main', 'Hlavní panel', 'Úvodní rozcestník aplikace po přihlášení', 'U'),
+('page_meta_class', 'Logické třídy (Objekty)', 'Správa logických entit a jejich vlastností', 'S'),
+('page_meta_column', 'Sloupce metadat', 'Správa definic sloupců a formulářových prvků', 'S'),
+('page_organization_licence', 'Správa licencí organizací', 'Evidence a aktivace licencí pro jednotlivé tenanty', 'S'),
+('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
+('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace a aplikační role', 'U'),
+('page_login', 'Přihlášení do systému', 'Přihlašovací obrazovka s podporou lokální autentizace a SSO', 'U'),
+('page_password_reset', 'Obnova hesla', 'Stránka pro vyžádání a nastavení nového hesla pomocí tokenu', 'U'),
+('page_google_callback', 'Google SSO Callback', 'Koncový bod pro ověření identity přes Google OAuth', 'U'),
+('page_logout', 'Odhlášení ze systému', 'Ukončení relace a zneplatnění přihlašovacích tokenů', 'U');
 
 INSERT INTO meta_object (
 	uuid, object_owner, original, record_type, approval_status,
-	object_type, builtin_code, system_role, caption, module
+	object_type, builtin_code, system_role, caption, description, module
 )
 SELECT 
 	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
 	@sys_owner,
 	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
-	'A', 'A', 'P', p.builtin_code, p.system_role, p.caption, ''
+	'A', 'A', 'P', p.builtin_code, p.system_role, p.caption, p.description, ''
 FROM @pages p
 WHERE NOT EXISTS (
 	SELECT 1 FROM meta_object mo 

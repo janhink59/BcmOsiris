@@ -3,14 +3,29 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-13
+ * Verze: 2026-10-15 14:55
+ * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
  *       na logické třídy (meta_class). Obsahuje i integrovanou logiku
  *       z původní procedury p_generate_primitive_classes.
- * Změny: - Doplněno automatické generování caption z názvu třídy
- *        - Přidán class_name do #list_order pro zobrazení v Master panelu
- *        - Zefektivněno mazání duplicit přímým využitím CTE.
+ *
+ * Vazby na okolí:
+ * - Volána na konci sestavovací dávky databáze (final_scripts.sql).
+ * - Čte systémový pohled v_syscolumns (z HinkMSSQLLibrary.sql) a synchronizuje
+ *   systémové záznamy (object_owner = 0x00) v tabulkách meta_object,
+ *   meta_class a meta_column.
+ * - Využívá deterministickou hashovací funkci dbo.f_generate_original.
+ * - Zakládá a udržuje kořenový kontejner dědičnosti vlastností sloupců
+ *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
+ *
+ * Změny:
+ * - Doplněno automatické generování caption z názvu třídy.
+ * - Přidán class_name a source_code do #list_order pro zobrazení v Master panelu.
+ * - Zefektivněno mazání duplicit přímým využitím CTE.
+ * - 2026-10-15: Doplněn filtr tabname NOT LIKE '%$' při čtení z v_syscolumns
+ *   a cleanup případných uvízlých staging tabulek XLSX_*$. Rozšířen seznam
+ *   překládaných sloupců (translate = 1) v globálním slovníku.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -27,6 +42,15 @@ BEGIN
 	
 	-- 1. Odstranění parametrů funkcí (začínajících zavináčem)
 	DELETE FROM meta_column WHERE column_name LIKE '@%';
+
+	-- 1b. Odstranění dočasných staging tabulek z Excelu (končících znakem $), pokud v metadatech uvízly
+	DELETE mc
+	FROM meta_column mc
+	JOIN meta_class mcl ON mcl.original = mc.parent_class AND mcl.object_owner = 0x00
+	WHERE mc.object_owner = 0x00 AND mcl.class_name LIKE '%$';
+
+	DELETE FROM meta_class WHERE object_owner = 0x00 AND class_name LIKE '%$';
+	DELETE FROM meta_object WHERE object_owner = 0x00 AND builtin_code LIKE '%$';
 	
 	-- 2. Odstranění duplicit objektů (ponecháme vždy ten nejstarší platný)
 	WITH cte AS (
@@ -76,6 +100,7 @@ BEGIN
 			END AS calc_input_width
 		FROM v_syscolumns
 		WHERE colname NOT LIKE '@%'
+		  AND tabname NOT LIKE '%$'                     -- Vyloučení dočasných staging tabulek z Excelu
 	),
 	ranked_attributes AS (
 		SELECT 
@@ -105,6 +130,7 @@ BEGIN
 			CASE WHEN object_type = 'U' THEN 'T' WHEN object_type = 'V' THEN 'V' ELSE 'F' END AS obj_type
 		FROM v_syscolumns
 		WHERE colname NOT LIKE '@%'
+		  AND tabname NOT LIKE '%$'                     -- Vyloučení dočasných staging tabulek z Excelu
 	) obj
 	CROSS APPLY (SELECT dbo.f_generate_original('meta_object', @sys_owner, obj.obj_type, obj.tabname) AS orig_uuid) x
 	WHERE NOT EXISTS (
@@ -272,6 +298,7 @@ BEGIN
 		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
 	CROSS APPLY (SELECT dbo.f_generate_original('meta_column', @sys_owner, CAST(mcl.original AS varchar(36)), c.colname) AS orig_uuid) x
 	WHERE c.colname NOT LIKE '@%'
+	  AND c.tabname NOT LIKE '%$'                   -- Vyloučení dočasných staging tabulek z Excelu
 	  AND NOT EXISTS (
 		SELECT 1 FROM meta_column mc 
 		WHERE mc.original = x.orig_uuid 
@@ -340,12 +367,13 @@ BEGIN
 	WHERE mc.record_type = 'A' 
 	  AND mc.object_owner = 0x00 
 	  AND mc.ancestor IS NULL
-	  AND mc.column_name NOT LIKE '@%';
+	  AND mc.column_name NOT LIKE '@%'
+	  AND c.tabname NOT LIKE '%$';                  -- Vyloučení dočasných staging tabulek z Excelu
 
 	-- Výchozí nastavení hodnoty translate pro některé názvy sloupců
 	create table #list_order(column_name varchar(80) collate database_default, list_order int identity primary key)
 	insert into #list_order(column_name)
-	values('builtin_code'), ('column_name'), ('class_name'), ('caption'), ('title')
+	values('source_code'), ('builtin_code'), ('column_name'), ('class_name'), ('caption'), ('title')
 
 	-- Nastavení položky "list_order" dle výše uvedeného seznamu
 	update meta_column
@@ -360,7 +388,8 @@ BEGIN
 	where parent_class=@c_class
 		and column_name in(
 			'title', 'caption', 'caption_plural', 'label', 'header', 
-			'shortname', 'description', 'helptext', 'note'
+			'shortname', 'description', 'description_text', 'helptext', 'help_text',
+			'caption_forward', 'caption_backward', 'note'
 		)
 
 	-- -------------------------------------------------------------------------

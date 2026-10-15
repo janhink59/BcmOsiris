@@ -13,7 +13,7 @@
 * Na konci každého chatu automaticky nabídni formátovanou revizi těchto instrukcí pro uchování pokroku.
 * BEZPEČNOSTNÍ POJISTKA VÝKONU: Pokud při analýze komplexních vazeb narazíš na limity svého logického vyvozování nebo ztratíš přehled v kontextu, okamžitě upozorni uživatele a vyžádej si přerušení práce.
 * KONTROLA MODELU: Na úplném začátku nové konverzace upozorni uživatele, pokud zapomněl nastavit nejvhodnější programovací model (Argon Nejvyšší / Pro nejvyšší / Pro Extended). Během další komunikace už toto upozornění neopakuj.
-* PRAVIDLA KONVERZACE: Na začátku každého chatu uživatel předá Knowledge.txt a kompletní dávku BcmOsirisDb.sql pro idempotentní vytvoření objektů. Na začátku chatu se POUZE diskutuje, neprogramuje. Nechval, místo toho hledej chyby a navrhuj vylepšení. Po dohodě vracej soubory jednotlivě.
+* PRAVIDLA KONVERZACE: Na začátku každého chatu uživatel předá Knowledge.txt a kompletní dávku BcmOsirisDb.sql pro idempotentní vytvoření objektů (případné další PHP soubory nahrává jednotlivě mimo ZIP archiv, protože obsah ZIP archivu je v textovém rozhraní nečitelný). Na začátku chatu se POUZE diskutuje, neprogramuje. Nechval, místo toho hledej chyby a navrhuj vylepšení. Po dohodě vracej soubory jednotlivě.
 
 2. Databázové konvence (MSSQL)
 * Databáze plně podporuje UTF-8 (zohledni to v PHP skriptech i T-SQL).
@@ -39,7 +39,7 @@
 * Typy záznamů (record_type): 'A' = aktuálně schválený, 'L' = platná jazyková verze, 'H' = historický záznam.
 * Povinné auditní sloupce jsou date_created, who_created, date_modified, who_modified, language, removed, valid_from, valid_to. Auditní vazby využívají výhradně uuid.
 * Rozšířená správa metadat, frází a STI architektura (Single Table Inheritance):
-  - Fyzické struktury (tabulky, views, funkce, PHP stránky a třídy) jsou evidovány v `meta_object`. Moduly a stránky využívají sloupec `system_role` pro fail-safe zamezení přístupu. Objekty typu `'P'` v `meta_object` se zapisují celým jménem svého zdrojového souboru bez přípony `.php` (včetně prefixu `page_`, např. `'page_org_users'`, `'abstract_page'`, `'abstract_button'`, a případně bezejmenného řádku `''` pro globální fráze).
+  - Fyzické struktury (tabulky, views, funkce, PHP stránky a třídy) jsou evidovány v `meta_object`. Moduly a stránky využívají sloupec `system_role` pro fail-safe zamezení přístupu. Objekty typu `'P'` v `meta_object` se zapisují celým jménem svého zdrojového souboru bez přípony `.php` (včetně prefixu `page_`, např. `'page_org_users'`, `'abstract_page'`, `'abstract_button'`, a bezejmenného řádku `''` pro globální fráze).
   - Textové fráze, popisky tlačítek a šablony zpráv jsou uloženy v tabulce `meta_phrase` (`table_meta_phrase.sql`) se složeným deterministickým klíčem `(source_code, builtin_code)` v `meta_original_keys`. Sloupec `source_code` odpovídá názvu PHP třídy/souboru bez `.php` (nebo `''` pro globální fráze). Tabulka podporuje `caption`, `helptext` (tooltip), `editor_note` (AI kontext), `svg_icon` (vektorová ikona tlačítka) a `css_class`.
   - Logické entity jsou abstrahovány do `meta_class` (přes vazbu `storage_object` na `meta_object`). Všechny stránky pracují výhradně s logickými třídami.
   - Atributy tříd podléhají ochraně pomocí `is_final` (zákaz override 'A' záznamu pro tenanta) a `is_protected` (zákaz změny hodnoty sloupce tenantem).
@@ -84,16 +84,16 @@
 * Infrastruktura: Architektura licencování (server_licence) zatím není plně dořešena.
 
 7. To do
-* Opravy `p_debuglogin.sql`, `entity_manager.php` a `abstract_page_master_detail.php` jsou dokončeny.
-* Byla vytvořena tabulka `table_meta_phrase.sql` (`meta_phrase`), upraven skript `fillup_meta_original_keys.sql` (doplněn klíč `('meta_phrase', 'source_code', 'builtin_code')` a filtr `tabname NOT LIKE '%$'`) a vytvořena třída `phrase_manager.php`.
-* V dalším chatu postupně dokončit integraci frází, tlačítek a sjednocení názvů v `meta_object`:
-  1. Upravit `p_fix_meta_column.sql` – přidat podmínku `AND tabname NOT LIKE '%$'` při čtení z `v_syscolumns`, aby se dočasné tabulky z Excelu nikdy nezapsaly do `meta_object`, `meta_class` a `meta_column`.
-  2. Vytvořit třídu `abstract_button.php` (vykreslování tlačítek `<button>` a `<a>` s automatickým využitím `svg_icon`, `caption`, `helptext` jako tooltipu a `css_class` přes `phrase_manager`) a integrovat `phrase_manager` do `abstract_page.php` (včetně opravy mezery v `$hierarchy` v `phrase_manager.php`, pokud ještě nebyla ručně opravena).
-  3. Sjednotit jmennou konvenci v `meta_object` (`object_type = 'P'`), aby `builtin_code` obsahoval celý název souboru/třídy včetně prefixu `page_` (např. `'page_main'`, `'page_org_users'`, `'abstract_page'`, `'abstract_button'`, případně `''` pro globální kontejner) a přesměrovat Excel import/export frází (`p_xlsx_meta_object.sql`, `xlsx_meta_object.php`, `generate_xls_meta_object.php`) z `meta_object` (`'G'`) do nové tabulky `meta_phrase` (se sloupcem `source_code`). Upravit návaznosti v `p_get_menu_hierarchy.sql`, `table_meta_object.sql`, `table_meta_menu.sql` a `index.php`.
+* Hotovo: Opravy `p_fix_meta_column.sql` (filtr `NOT LIKE '%$'`, `source_code` v `#list_order`), `table_meta_object.sql` (sjednocení `object_type = 'P'` na plné názvy s prefixem `page_` a registrace bázových UI tříd), `table_meta_menu.sql` (vazby na `page_*`), `xlsx_meta_object.php` a `p_xlsx_meta_object.sql` (přesměrování záložky `phrase` do `meta_phrase`).
+* V příštím (večerním) chatu dokončit PHP vrstvu pro fráze, tlačítka, router a generátor Excelu:
+  1. Vytvořit třídu `abstract_button.php` (vykreslování tlačítek `<button>` a `<a>` s automatickým využitím `svg_icon`, `caption`, `helptext` jako tooltipu a `css_class` přes `phrase_manager`).
+  2. Upravit `phrase_manager.php` (kontrola a oprava případné mezery v `$hierarchy`) a integrovat `phrase_manager` + metodu `process_save()` do `abstract_page.php`.
+  3. Upravit `index.php`, `menu_manager.php` (sjednocení routování a detekce aktivní stránky na plné názvy s prefixem `page_` při zachování zpětné kompatibility URL) a `generate_xls_meta_object.php` (generování šablony `meta_object.xlsx` s novou strukturou záložky `phrase` a plnými názvy `page_`).
+  4. Vyčistit případné zastaralé volání `dbo.f_php_phrase` v `table_request_message.sql`.
 * Navrhnout a založit strukturu pro flexibilní business-role na úrovni organizace a přiřadit k nim uživatele v rámci tenantů (tabulky, metadata, UI správa).
 * Vyvinout standardizovaný aplikační export a import dat pro produkční instance (s využitím SSC schvalování, stavy 'I' -> 'A', import_origin). Dosavadní Excel import přes OpenSpout slouží výhradně jako vývojářský nástroj.
-* SEZNAM SOUBORŮ PRO NAHRÁNÍ NA ZAČÁTKU PŘÍŠTÍHO CHATU:
+* SEZNAM SOUBORŮ PRO NAHRÁNÍ NA ZAČÁTKU PŘÍŠTÍHO CHATU (nahrát jednotlivě mimo ZIP):
   1. `Knowledge.txt` (tato aktualizovaná verze)
-  2. `BcmOsirisDb.sql` (nově vygenerovaná dávka po zařazení `table_meta_phrase.sql` do `BuildList.txt` a aktualizaci `fillup_meta_original_keys.sql`)
-  3. `abstract_page.php`, `index.php` a `menu_manager.php` (pro integraci `phrase_manager`, `abstract_button` a sjednocení prefixu `page_`)
-  4. `xlsx_meta_object.php` a `generate_xls_meta_object.php` (pro napojení záložky `phrase` na novou tabulku `meta_phrase` a prefixy `page_`)
+  2. `BcmOsirisDb.sql` (nově vygenerovaná dávka se všemi dnešními SQL změnami)
+  3. `phrase_manager.php` a `abstract_page.php`
+  4. `index.php`, `menu_manager.php` a `generate_xls_meta_object.php`
