@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-15 22:30
+ * Verze: 2026-10-16 00:08
  * Soubor: table_meta_menu.sql
  * Tabulka: meta_menu
  * Popis:   Uchovává strukturu uživatelského menu s vazbou na fyzické stránky.
@@ -11,6 +11,9 @@
  *            stránek s prefixem page_ (page_main, page_meta_class, atd.)
  *            včetně idempotentního UPDATE pro stávající databáze a doplnění
  *            položky excel_reader do výchozího systémového menu.
+ *          - 2026-10-16: Přidána položka meta_phrase (Textové fráze a překlady)
+ *            a upravena system_role pro složku administrace a metadatové stránky
+ *            na 'U', aby všichni uživatelé měli přístup k pořizování překladů.
  * ============================================================================= */
 
 IF OBJECT_ID('meta_menu') IS NULL
@@ -97,6 +100,7 @@ DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 DECLARE @tgt_main uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_main');
 DECLARE @tgt_meta_class uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_class');
 DECLARE @tgt_meta_column uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_column');
+DECLARE @tgt_meta_phrase uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_phrase');
 DECLARE @tgt_org_licence uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_organization_licence');
 DECLARE @tgt_org_users uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_org_users');
 DECLARE @tgt_excel_reader uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_excel_reader');
@@ -106,6 +110,7 @@ DECLARE @mnu_home uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'home'
 DECLARE @mnu_admin uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'admin_folder', '');
 DECLARE @mnu_meta_class uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_class', '');
 DECLARE @mnu_meta_column uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_column', '');
+DECLARE @mnu_meta_phrase uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_phrase', '');
 DECLARE @mnu_org_licence uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'organization_licence', '');
 DECLARE @mnu_org_users uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'org_users', '');
 DECLARE @mnu_excel_reader uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'excel_reader', '');
@@ -118,12 +123,13 @@ DECLARE @init_menu TABLE (
 
 INSERT INTO @init_menu VALUES
 (@mnu_home, NULL, '00', 'home', 'Domů', @tgt_main, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>'),
-(@mnu_admin, @mnu_home, '90', 'admin_folder', 'Systémová administrace', NULL, 'S', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.06-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.73,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.06,0.94l-2.03,1.58 c-0.18,0.14,0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62-0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.49-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>'),
-(@mnu_meta_class, @mnu_admin, '01', 'meta_class', 'Logické třídy (Objekty)', @tgt_meta_class, 'S', ''),
-(@mnu_meta_column, @mnu_admin, '02', 'meta_column', 'Sloupce metadat', @tgt_meta_column, 'S', ''),
-(@mnu_org_licence, @mnu_admin, '03', 'organization_licence', 'Správa licencí organizací', @tgt_org_licence, 'S', ''),
-(@mnu_org_users, @mnu_admin, '04', 'org_users', 'Uživatelé organizace', @tgt_org_users, 'A', ''),
-(@mnu_excel_reader, @mnu_admin, '05', 'excel_reader', 'Import dat z Excelu', @tgt_excel_reader, 'S', '');
+(@mnu_admin, @mnu_home, '90', 'admin_folder', 'Systémová administrace', NULL, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.06-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.73,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.06,0.94l-2.03,1.58 c-0.18,0.14,0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62-0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.49-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>'),
+(@mnu_meta_class, @mnu_admin, '01', 'meta_class', 'Logické třídy (Objekty)', @tgt_meta_class, 'U', ''),
+(@mnu_meta_column, @mnu_admin, '02', 'meta_column', 'Sloupce metadat', @tgt_meta_column, 'U', ''),
+(@mnu_meta_phrase, @mnu_admin, '03', 'meta_phrase', 'Textové fráze a překlady', @tgt_meta_phrase, 'U', ''),
+(@mnu_org_licence, @mnu_admin, '04', 'organization_licence', 'Správa licencí organizací', @tgt_org_licence, 'S', ''),
+(@mnu_org_users, @mnu_admin, '05', 'org_users', 'Uživatelé organizace', @tgt_org_users, 'A', ''),
+(@mnu_excel_reader, @mnu_admin, '06', 'excel_reader', 'Import dat z Excelu', @tgt_excel_reader, 'S', '');
 
 -- 4. Idempotentní INSERT pomocí NOT EXISTS
 INSERT INTO meta_menu (
@@ -138,12 +144,18 @@ WHERE NOT EXISTS (
 	SELECT 1 FROM meta_menu m WHERE m.original = i.original AND m.record_type = 'A' AND m.object_owner = @sys_owner
 );
 
--- 5. Aktualizace target_object u již existujících systémových záznamů (migrace na prefix page_)
+-- 5. Aktualizace target_object, sort_code a system_role u již existujících systémových záznamů
 UPDATE m
-SET m.target_object = i.target_object
+SET m.target_object = i.target_object,
+	m.sort_code = i.sort_code,
+	m.system_role = i.system_role
 FROM meta_menu m
 JOIN @init_menu i ON i.original = m.original
 WHERE m.object_owner = @sys_owner
   AND m.record_type IN ('A', 'L')
-  AND ISNULL(m.target_object, 0x00) <> ISNULL(i.target_object, 0x00);
+  AND (
+	ISNULL(m.target_object, 0x00) <> ISNULL(i.target_object, 0x00)
+	OR m.sort_code <> i.sort_code
+	OR m.system_role <> i.system_role
+  );
 GO

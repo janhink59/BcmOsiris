@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-15 15:00
+ * Verze: 2026-10-15 23:55
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
@@ -20,6 +20,9 @@
  *          - 2026-10-15: Sjednocena jmenná konvence pro object_type = 'P' na celé názvy
  *            PHP souborů/tříd včetně prefixu page_ a zaregistrovány bázové UI třídy.
  *            Doplněn výmaz opuštěných záznamů bez prefixu page_ a starých frází typu 'G'.
+ *          - 2026-10-15 23:55: Zaregistrována stránka page_meta_phrase a u stránek metadat
+ *            (page_meta_class, page_meta_column, page_meta_phrase) nastavena system_role = 'U'
+ *            pro umožnění překladů všem rolím (funkční atributy chrání entity_manager pro 'D').
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -144,8 +147,9 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('menu_manager', 'Správce navigace', 'Třída pro sestavení a vykreslení drobečkové navigace a menu', 'U'),
 ('entity_manager', 'Správce logických entit', 'Dynamický generátor SQL dotazů, seznamů a formulářů podle metadat', 'U'),
 ('page_main', 'Hlavní panel', 'Úvodní rozcestník aplikace po přihlášení', 'U'),
-('page_meta_class', 'Logické třídy (Objekty)', 'Správa logických entit a jejich vlastností', 'S'),
-('page_meta_column', 'Sloupce metadat', 'Správa definic sloupců a formulářových prvků', 'S'),
+('page_meta_class', 'Logické třídy (Objekty)', 'Správa logických entit, jejich vlastností a překladů', 'U'),
+('page_meta_column', 'Sloupce metadat', 'Správa definic sloupců, formulářových prvků a překladů', 'U'),
+('page_meta_phrase', 'Textové fráze a překlady', 'Správa textových frází, tlačítek a jazykových mutací', 'U'),
 ('page_organization_licence', 'Správa licencí organizací', 'Evidence a aktivace licencí pro jednotlivé tenanty', 'S'),
 ('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
 ('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace a aplikační role', 'U'),
@@ -169,4 +173,14 @@ WHERE NOT EXISTS (
 	WHERE mo.original = dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code)
 	  AND mo.record_type = 'A' AND mo.object_owner = @sys_owner
 );
+
+-- Idempotentní sjednocení system_role u stávajících systémových záznamů
+UPDATE mo
+SET mo.system_role = p.system_role
+FROM meta_object mo
+JOIN @pages p ON p.builtin_code = mo.builtin_code
+WHERE mo.object_owner = @sys_owner
+  AND mo.object_type = 'P'
+  AND mo.record_type IN ('A', 'L')
+  AND mo.system_role <> p.system_role;
 GO
