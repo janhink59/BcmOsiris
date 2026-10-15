@@ -1,9 +1,20 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-12
+ * Verze: 2026-10-15 09:40
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
+ * 
+ * VAZBY NA OKOLÍ:
+ * - Instancován z potomků `abstract_page_master_detail` (v metodě `render()`).
+ * - Využívá globální pole `$dbsession` (inicializované v `OsirisLib.php` přes `initsession()`).
+ * - Využívá třídu `language_manager` (`language_manager.php`) pro získání fallback řetězce jazyků.
+ * - Využívá databázové funkce z `OsirisLib.php` (`sqlrun`, `fetch`, `free_result`,
+ *   `charliteral`, `guidliteral`, `fatal_error`).
+ * - Čte metadata z tabulek `meta_class`, `meta_object`, `meta_column`, `meta_codetable`,
+ *   `meta_original_keys` a systémového pohledu `v_syscolumns`.
+ * - V SQL dotazech volá databázové funkce `dbo.f_get_user_info`, `dbo.f_generate_original`
+ *   a `dbo.f_link_original`.
  * 
  * KLÍČOVÉ KONCEPTY A ARCHITEKTURA (PRO BUDOUCÍ VÝVOJ):
  * 
@@ -42,6 +53,10 @@
  *    kompletní data bez nutnosti plošného využívání NULL.
  * 
  * Změny:
+ * 2026-10-15 - Oprava spojených řádků v save_post_data() a build_select_query() (Anti-LaTeX ochrana).
+ *            - Doplněna aktualizace date_modified a who_modified na hlavním 'A' záznamu
+ *              i při samostatné úpravě 'L' záznamu.
+ *            - Doplněn filtr inactive = 0 při načítání položek z meta_codetable.
  * 2026-10-12 - Odstraněn zbytečný databázový dotaz na relaci v save_post_data(),
  *              nyní se využívá globální pole $dbsession načtené přes initsession().
  * 2026-10-11 - load_metadata plně podporuje kaskádový COALESCE z jazykových vrstev ('L')
@@ -53,17 +68,17 @@ declare(strict_types=1);
 
 class entity_manager {
 
-	private string $class_name;
-	private array $class_meta = [];
-	private string $storage_table = '';
-	private array $columns_meta = [];
-	private array $list_columns = [];
-	private bool $is_initialized = false;
-	private language_manager $lang_manager;
+	private string $class_name;                                              // Název logické třídy
+	private array $class_meta = [];                                          // Metadata logické třídy
+	private string $storage_table = '';                                      // Fyzická tabulka v databázi
+	private array $columns_meta = [];                                        // Metadata jednotlivých sloupců
+	private array $list_columns = [];                                        // Sloupce pro zobrazení v Master panelu
+	private bool $is_initialized = false;                                    // Příznak úspěšného načtení metadat
+	private language_manager $lang_manager;                                  // Instance správce jazyků
 	
-	private array $physical_cols = [];
-	private array $col_types = [];
-	private array $col_nulls = [];
+	private array $physical_cols = [];                                       // Seznam fyzických sloupců tabulky
+	private array $col_types = [];                                           // Datové typy fyzických sloupců
+	private array $col_nulls = [];                                           // Příznaky nullability fyzických sloupců
 
 	/**
 	 * Konstruktor třídy.
@@ -71,9 +86,9 @@ class entity_manager {
 	 * @param string $class_name Identifikátor logické třídy z DB (např. 'asset_class')
 	 */
 	public function __construct(string $class_name) {
-		$this->class_name = $class_name;
-		$this->lang_manager = new language_manager();
-		$this->load_metadata();
+		$this->class_name = $class_name;                                     // Uložení identifikátoru třídy
+		$this->lang_manager = new language_manager();                        // Inicializace jazykového manažeru
+		$this->load_metadata();                                              // Načtení metadat třídy a sloupců
 	}
 
 	/**
@@ -81,22 +96,22 @@ class entity_manager {
 	 * a načte definici sloupců včetně uplatnění pravidel dědičnosti a jazykových vrstev.
 	 */
 	private function load_metadata(): void {
-		$safe_class = charliteral($this->class_name);
+		$safe_class = charliteral($this->class_name);                        // Bezpečný SQL literál názvu třídy
 		
-		global $dbsession;
+		global $dbsession;                                                   // Globální kontext relace
 		$org_uuid = guidliteral((string)($dbsession['organization'] ?? '0x00'));
-		$lang_chain = $this->lang_manager->get_fallback_chain();
+		$lang_chain = $this->lang_manager->get_fallback_chain();             // Řetězec jazyků pro překlady
 
 		// Pomocná funkce pro sestavení COALESCE kaskády pro překládaná pole metadat
 		$build_trans_col = function(string $col, string $alias, bool $is_anc = false) use ($lang_chain) {
-			$coal = [];
+			$coal = [];                                                      // Pole výrazů pro COALESCE
 			foreach ($lang_chain as $lang) {
 				$coal[] = "NULLIF(CAST({$alias}_v_{$lang}.[{$col}] AS NVARCHAR(MAX)), '')";
 				$coal[] = "NULLIF(CAST({$alias}_l_{$lang}.[{$col}] AS NVARCHAR(MAX)), '')";
 			}
 			$coal[] = "NULLIF(CAST({$alias}_my.[{$col}] AS NVARCHAR(MAX)), '')";
 			$coal[] = "NULLIF(CAST({$alias}.[{$col}] AS NVARCHAR(MAX)), '')";
-			$as_name = $is_anc ? "anc_{$col}" : $col;
+			$as_name = $is_anc ? "anc_{$col}" : $col;                        // Alias výsledného sloupce
 			return "COALESCE(" . implode(", ", $coal) . ") AS {$as_name}";
 		};
 
@@ -107,16 +122,16 @@ class entity_manager {
 				$j .= "\t\t\tLEFT JOIN {$table} {$alias}_l_{$lang} ON {$alias}_l_{$lang}.original = {$alias}.original AND {$alias}_l_{$lang}.record_type = 'L' AND {$alias}_l_{$lang}.language = '{$lang}' AND {$alias}_l_{$lang}.object_owner = 0x00 AND {$alias}_l_{$lang}.removed = 0\n";
 				$j .= "\t\t\tLEFT JOIN {$table} {$alias}_v_{$lang} ON {$alias}_v_{$lang}.original = {$alias}.original AND {$alias}_v_{$lang}.record_type = 'L' AND {$alias}_v_{$lang}.language = '{$lang}' AND {$alias}_v_{$lang}.object_owner = {$org_uuid} AND {$alias}_v_{$lang}.removed = 0\n";
 			}
-			return $j;
+			return $j;                                                       // Vrácení bloku JOIN klauzulí
 		};
 
 		$trans_class_fields = ['caption', 'caption_plural', 'description', 'helptext'];
-		$class_selects = [];
+		$class_selects = [];                                                 // Překládané sloupce třídy
 		foreach ($trans_class_fields as $f) {
 			$class_selects[] = $build_trans_col($f, 'mc');
 		}
-		$class_sel_str = implode(",\n\t\t\t\t", $class_selects);
-		$class_joins = $build_trans_joins('mc', 'meta_class');
+		$class_sel_str = implode(",\n\t\t\t\t", $class_selects);             // Spojení sloupců do SELECTu
+		$class_joins = $build_trans_joins('mc', 'meta_class');               // JOINy pro překlady třídy
 
 		// 1. Načtení definice logické třídy a zjištění fyzické tabulky přes storage_object
 		// Nejdříve načítáme mc.* a až za ním mc.caption (přeložené přes COALESCE), čímž
@@ -133,32 +148,32 @@ class entity_manager {
 			WHERE mc.class_name = {$safe_class} AND mc.record_type = 'A' AND mc.object_owner = 0x00 AND mc.removed = 0
 		";
 		
-		$q_class = sqlrun($sql_class);
+		$q_class = sqlrun($sql_class);                                       // Spuštění dotazu na třídu
 		if ($row = fetch($q_class)) {
-			$this->class_meta = $row;
-			$this->storage_table = $row['storage_table_name'];
-			$class_uuid = guidliteral($row['original']);
-			free_result($q_class);
+			$this->class_meta = $row;                                        // Uložení metadat třídy
+			$this->storage_table = $row['storage_table_name'];               // Název fyzické tabulky
+			$class_uuid = guidliteral($row['original']);                     // UUID originálu třídy
+			free_result($q_class);                                           // Uvolnění výsledku dotazu
 			
 			// Načtení fyzického databázového schématu pro přesné parsování a validaci
 			$q_syscols = sqlrun("SELECT colname, typename, nulls FROM v_syscolumns WHERE tabname = " . charliteral($this->storage_table) . " AND iscomputed = 0 AND is_identity = 0");
 			while ($c = fetch($q_syscols)) {
-				$this->physical_cols[] = $c['colname'];
-				$this->col_types[$c['colname']] = $c['typename'];
+				$this->physical_cols[] = $c['colname'];                      // Název fyzického sloupce
+				$this->col_types[$c['colname']] = $c['typename'];            // Datový typ sloupce
 				$this->col_nulls[$c['colname']] = strtolower(trim((string)$c['nulls']));
 			}
-			free_result($q_syscols);
+			free_result($q_syscols);                                         // Uvolnění systémových sloupců
 			
 			$trans_col_fields = ['caption', 'caption_plural', 'description', 'label', 'header', 'helptext', 'placeholder'];
-			$col_selects = [];
+			$col_selects = [];                                               // Překládané sloupce v meta_column
 			foreach ($trans_col_fields as $f) {
-				$col_selects[] = $build_trans_col($f, 'c');
-				$col_selects[] = $build_trans_col($f, 'a', true);
+				$col_selects[] = $build_trans_col($f, 'c');                  // Překlad vlastního sloupce
+				$col_selects[] = $build_trans_col($f, 'a', true);            // Překlad zděděného sloupce předka
 			}
-			$col_sel_str = implode(",\n\t\t\t\t\t", $col_selects);
+			$col_sel_str = implode(",\n\t\t\t\t\t", $col_selects);           // Řetězec sloupců pro SELECT
 			
-			$c_joins = $build_trans_joins('c', 'meta_column');
-			$a_joins = $build_trans_joins('a', 'meta_column');
+			$c_joins = $build_trans_joins('c', 'meta_column');               // JOINy pro překlady sloupců
+			$a_joins = $build_trans_joins('a', 'meta_column');               // JOINy pro překlady předků
 
 			// 2. Načtení sloupců patřících k fyzické tabulce vč. dědičnosti (LEFT JOIN na ancestor)
 			$sql_cols = "
@@ -194,8 +209,8 @@ class entity_manager {
 				ORDER BY c.parent_order, c.sort_code
 			";
 			
-			$q_cols = sqlrun($sql_cols);
-			$list_cols_temp = [];
+			$q_cols = sqlrun($sql_cols);                                     // Dotaz na sloupce třídy
+			$list_cols_temp = [];                                            // Dočasné pole pro sloupce seznamu
 
 			while ($col = fetch($q_cols)) {
 				// Seznam vlastností, které se automaticky dědí z nadřízeného sloupce v globálním slovníku
@@ -212,48 +227,48 @@ class entity_manager {
 				foreach ($inherited_props as $prop) {
 					// Pokud je lokální hodnota u tenanta NULL, převezmeme hodnotu od předka
 					if ($col[$prop] === null && isset($col["anc_$prop"])) {
-						$col[$prop] = $col["anc_$prop"];
+						$col[$prop] = $col["anc_$prop"];                     // Dědění při hodnotě NULL
 					}
 					
 					// Speciální ošetření pro stringové vlastnosti, které by mohly mít výchozí hodnotu '' místo NULL
 					if (in_array($prop, $str_props, true) && $col[$prop] === '' && !empty($col["anc_$prop"])) {
-						$col[$prop] = $col["anc_$prop"];
+						$col[$prop] = $col["anc_$prop"];                     // Dědění při prázdném řetězci
 					}
 				}
 				
-				$this->columns_meta[$col['column_name']] = $col;
+				$this->columns_meta[$col['column_name']] = $col;             // Uložení metadat sloupce
 
 				// Příprava dat pro Master (levý) panel podle zjištěného pořadí (list_order)
 				if ($col['list_order'] !== null) {
-					$header_val = $col['header'] ?: $col['caption'];
+					$header_val = $col['header'] ?: $col['caption'];         // Záhlaví sloupce v seznamu
 					$list_cols_temp[(int)$col['list_order']] = [
 						'name' => $col['column_name'],
 						'header' => $header_val ?: $col['column_name']
 					];
 				}
 			}
-			free_result($q_cols);
+			free_result($q_cols);                                            // Uvolnění výsledku sloupců
 			
 			// Seřazení sloupců levého panelu dle 'list_order'
 			if (!empty($list_cols_temp)) {
-				ksort($list_cols_temp);
+				ksort($list_cols_temp);                                      // Seřazení podle pořadového čísla
 				foreach ($list_cols_temp as $lc) {
-					$this->list_columns[$lc['name']] = $lc['header'];
+					$this->list_columns[$lc['name']] = $lc['header'];        // Naplnění finálního seznamu
 				}
 			} else {
 				// Bezpečnostní fallback: Pokud nejsou definovány list_order sloupce, vezmeme první smysluplný textový sloupec
 				$fallback_candidates = ['caption', 'name', 'code', 'builtin_code'];
 				foreach ($fallback_candidates as $fc) {
 					if (isset($this->columns_meta[$fc])) {
-						$col = $this->columns_meta[$fc];
-						$header_val = $col['header'] ?: $col['caption'];
+						$col = $this->columns_meta[$fc];                     // Vybraný náhradní sloupec
+						$header_val = $col['header'] ?: $col['caption'];     // Záhlaví náhradního sloupce
 						$this->list_columns[$fc] = $header_val ?: $col['column_name'];
 						break;
 					}
 				}
 			}
 			
-			$this->is_initialized = true;
+			$this->is_initialized = true;                                    // Metadata jsou plně připravena
 		}
 	}
 
@@ -261,28 +276,28 @@ class entity_manager {
 	 * Vrátí kompletní metadatový záznam celé logické třídy.
 	 */
 	public function get_class_meta(): array {
-		return $this->class_meta;
+		return $this->class_meta;                                            // Vrácení metadat třídy
 	}
 
 	/**
 	 * Vrátí metadata jednoho konkrétního sloupce.
 	 */
 	public function get_column_meta(string $column_name): array {
-		return $this->columns_meta[$column_name] ?? [];
+		return $this->columns_meta[$column_name] ?? [];                      // Vrácení metadat sloupce
 	}
 
 	/**
 	 * Získá seznam všech definovaných sloupců entity pro iterace při generování formuláře.
 	 */
 	public function get_columns(): array {
-		return $this->columns_meta;
+		return $this->columns_meta;                                          // Vrácení všech sloupců
 	}
 
 	/**
 	 * Získá asociační pole sloupců určených pro Master panel seřazených dle list_order.
 	 */
 	public function get_list_columns(): array {
-		return $this->list_columns;
+		return $this->list_columns;                                          // Vrácení sloupců pro seznam
 	}
 	
 	/**
@@ -290,7 +305,7 @@ class entity_manager {
 	 * čímž se obejde defaultní definice z metadat.
 	 */
 	public function set_list_columns(array $columns): void {
-		$this->list_columns = $columns;
+		$this->list_columns = $columns;                                      // Ruční nastavení sloupců seznamu
 	}
 
 	/**
@@ -312,8 +327,8 @@ class entity_manager {
 			fatal_error("Entity manager", "Metadata pro logickou třídu '{$this->class_name}' nebyla nalezena.");
 		}
 
-		$table = $this->storage_table;
-		$select_list = "";
+		$table = $this->storage_table;                                       // Název cílové tabulky
+		$select_list = "";                                                   // Sestavovaný seznam sloupců
 		
 		// Seznam technických RAC sloupců, na které se neaplikuje COALESCE fallback ani dědičnost
 		$meta_columns_list = [
@@ -323,42 +338,42 @@ class entity_manager {
 			'date_modified', 'who_modified', 'import_origin'
 		];
 		
-		$has_ancestor = isset($this->columns_meta['ancestor']);
-		$lang_chain = $this->lang_manager->get_fallback_chain();
-		$has_trans = false;
+		$has_ancestor = isset($this->columns_meta['ancestor']);              // Zda tabulka podporuje předka
+		$lang_chain = $this->lang_manager->get_fallback_chain();             // Fallback řetězec jazyků
+		$has_trans = false;                                                  // Příznak přítomnosti překladů
 		
 		foreach ($this->columns_meta as $meta) {
 			if (!empty($meta['translate'])) {
-				$has_trans = true;
+				$has_trans = true;                                           // Alespoň jeden sloupec se překládá
 				break;
 			}
 		}
 
-		// Sestavení seznamu tabulkových aliasů, abychom našli to nevyšší (nejnovější) datum 
+		// Sestavení seznamu tabulkových aliasů, abychom našli to nejvyšší (nejnovější) datum 
 		// úpravy napříč všemi vrstvami a jazyky.
-		$mod_aliases = ['m', 'o'];
+		$mod_aliases = ['m', 'o'];                                           // Základní aliasy (mix a originál)
 		if ($has_trans) {
 			foreach ($lang_chain as $lang) {
-				$mod_aliases[] = "l_{$lang}";
-				$mod_aliases[] = "v_{$lang}";
+				$mod_aliases[] = "l_{$lang}";                                // Systémová jazyková mutace
+				$mod_aliases[] = "v_{$lang}";                                // Tenantova jazyková mutace
 			}
 		}
 		if ($has_ancestor) {
-			$mod_aliases[] = 'anc';
+			$mod_aliases[] = 'anc';                                          // Záznam předka
 			if ($has_trans) {
 				foreach ($lang_chain as $lang) {
-					$mod_aliases[] = "anc_l_{$lang}";
-					$mod_aliases[] = "anc_v_{$lang}";
+					$mod_aliases[] = "anc_l_{$lang}";                        // Systémový překlad předka
+					$mod_aliases[] = "anc_v_{$lang}";                        // Tenantův překlad předka
 				}
 			}
 		}
 
 		// Poskládání T-SQL klauzule pro získání globálního data úpravy řádku
-		$values_arr = [];
+		$values_arr = [];                                                    // Pole dvojic (datum, autor)
 		foreach ($mod_aliases as $al) {
 			$values_arr[] = "({$al}.date_modified, {$al}.who_modified)";
 		}
-		$values_str = implode(', ', $values_arr);
+		$values_str = implode(', ', $values_arr);                            // Spojení do VALUES klauzule
 		
 		$cross_apply = "
 		OUTER APPLY (
@@ -386,24 +401,24 @@ class entity_manager {
 				continue;
 			}
 			
-			$translate = (bool)$meta['translate'];
-			$is_protected = !empty($meta['is_protected']);
+			$translate = (bool)$meta['translate'];                           // Zda je sloupec překládaný
+			$is_protected = !empty($meta['is_protected']);                   // Zda je sloupec chráněný
 			// U stringových a textových polí musíme dělat při skládání COALESCE přetypování na NVARCHAR(MAX),
 			// jinak by databáze hlásila chybu na neshodu délek (prec) varcharů.
 			$is_string = $translate || in_array($meta['input_type'], ['text', 'textarea', null, ''], true);
 			
 			// Sestavení základního fallbacku pro 'A' záznam (Tenant vs Systém vs Předek)
-			$base_coal = [];
+			$base_coal = [];                                                 // Základní pole pro COALESCE
 			if (!$is_protected) {
-				$base_coal[] = "m.[{$colname}]";                                          // Tenant může ovlivnit hodnotu (pokud není chráněná)
+				$base_coal[] = "m.[{$colname}]";                             // Tenant může ovlivnit hodnotu (pokud není chráněná)
 			}
-			$base_coal[] = "o.[{$colname}]";                                              // Systémový originál (0x00)
+			$base_coal[] = "o.[{$colname}]";                                 // Systémový originál (0x00)
 			if ($has_ancestor) {
-				$base_coal[] = "anc.[{$colname}]";                                        // Zděděná hodnota z předka
+				$base_coal[] = "anc.[{$colname}]";                           // Zděděná hodnota z předka
 			}
 
 			if ($is_string) {
-				$coal = [];
+				$coal = [];                                                  // Kaskáda pro textový sloupec
 				if ($translate) {
 					// 1. Lokalizace: Cizí jazyky mají absolutní přednost před základními daty,
 					// postupně propadáváme přes fallback řetězec definovaný v language_manageru.
@@ -426,26 +441,26 @@ class entity_manager {
 					}
 				}
 				
-				$coal[] = "''";                                                          // Nejzazší nouzový případ, nevracíme NULL.
-				$coalesce_str = implode(", ", $coal);
+				$coal[] = "''";                                              // Nejzazší nouzový případ, nevracíme NULL.
+				$coalesce_str = implode(", ", $coal);                        // Složení textového COALESCE
 				$select_list .= "\n\t\t, COALESCE({$coalesce_str}) AS [{$colname}]";
 				
 				// Pro diagnostiku a editor na frontendu vždy vracíme i čisté rozpadlé hodnoty (primární jazyk)
 				if ($translate) {
-					$prim_lang = $lang_chain[0] ?? 'cs';
+					$prim_lang = $lang_chain[0] ?? 'cs';                     // Primární jazyk relace
 					$select_list .= "\n\t\t, CAST(l_{$prim_lang}.[{$colname}] AS NVARCHAR(MAX)) AS [{$colname}_translated]";
 					$select_list .= "\n\t\t, CAST(m.[{$colname}] AS NVARCHAR(MAX)) AS [{$colname}_original]";
 					$select_list .= "\n\t\t, o.[{$colname}] AS [{$colname}_system]";
 				}
 			} else {
 				// Netextové sloupce (čísla, bity, uuid) se nestringují, COALESCE je tak bezpečný.
-				$coalesce_str = implode(", ", $base_coal);
+				$coalesce_str = implode(", ", $base_coal);                   // Složení netextového COALESCE
 				$select_list .= "\n\t\t, COALESCE({$coalesce_str}) AS [{$colname}]";
 			}
 		}
 		
 		// Odstranění první oddělovací čárky z řetězce
-		$select_list = substr($select_list, 4);
+		$select_list = substr($select_list, 4);                              // Oříznutí úvodního oddělovače
 		// Příznak, zda výsledek (byť vznikl COALESCÍM z vícero zdrojů) obsahuje zásah tenanta v 'A' vrstvě
 		$select_list .= "\n\t\t, m.object_is_mine";
 		
@@ -481,7 +496,7 @@ class entity_manager {
 			}
 		}
 
-		$joins .= $cross_apply;
+		$joins .= $cross_apply;                                              // Připojení výpočtu poslední změny
 
 		// Sestavení CTE bloku (Common Table Expressions) s dynamickými dotazy
 		$sql = "
@@ -520,14 +535,14 @@ class entity_manager {
 		if ($order_by !== '') {
 			$sql .= "\n\t\tORDER BY {$order_by}";
 		} elseif (!empty($this->list_columns)) {
-			$order_cols = [];
+			$order_cols = [];                                                // Sloupce pro výchozí řazení
 			foreach (array_keys($this->list_columns) as $col) {
 				$order_cols[] = "[{$col}]";
 			}
 			$sql .= "\n\t\tORDER BY " . implode(', ', $order_cols);
 		}
 
-		return $sql;
+		return $sql;                                                         // Vrácení sestaveného SQL dotazu
 	}
 
 	/**
@@ -540,18 +555,18 @@ class entity_manager {
 	 * @return string Vygenerovaný HTML string (např. tag <input> nebo <select>)
 	 */
 	public function render_dynamic_input(string $column_name, string $value, bool $is_mine = true): string {
-		$meta = $this->get_column_meta($column_name);
+		$meta = $this->get_column_meta($column_name);                        // Načtení metadat sloupce
 		
 		if (empty($meta)) {
 			return "<!-- Neznámý sloupec: {$column_name} -->";
 		}
 
-		$type = $meta['input_type'] ?: 'text';
-		$safe_name = htmlspecialchars($column_name);
-		$safe_val = htmlspecialchars($value);
+		$type = $meta['input_type'] ?: 'text';                               // Výchozí typ prvku je text
+		$safe_name = htmlspecialchars($column_name);                         // Ošetřený název prvku
+		$safe_val = htmlspecialchars($value);                                // Ošetřená hodnota prvku
 		
 		// Sestavení vizuálních a HTML5 validačních atributů
-		$attrs = [];
+		$attrs = [];                                                         // Pole HTML atributů
 		if (!empty($meta['css_class'])) {
 			$attrs[] = "class=\"" . htmlspecialchars((string)$meta['css_class']) . "\"";
 		}
@@ -566,15 +581,15 @@ class entity_manager {
 		}
 		
 		// Zpracování oprávnění k editaci na frontendu
-		$is_readonly = false;
+		$is_readonly = false;                                                // Příznak uzamčení prvku
 		
 		if (!empty($meta['is_computed'])) {
-			$is_readonly = true;
+			$is_readonly = true;                                             // Vypočítávaný sloupec nelze měnit
 		} elseif (!$is_mine && !empty($meta['is_protected'])) {
-			$is_readonly = true;
+			$is_readonly = true;                                             // Chráněný systémový sloupec
 		} 
 		
-		$input_width = $meta['input_width'] ?: '100%';
+		$input_width = $meta['input_width'] ?: '100%';                       // Šířka vstupního pole
 		
 		// Aplikace stylů pro zamčená i odemčená pole
 		if ($is_readonly) {
@@ -587,20 +602,20 @@ class entity_manager {
 			$attrs[] = "style=\"width: {$input_width};\"";
 		}
 
-		$attr_string = implode(' ', $attrs);
+		$attr_string = implode(' ', $attrs);                                 // Spojení atributů do řetězce
 
 		// Generování <select> seznamů pro číselníky napojené v metadatech (STI)
 		if (!empty($meta['referenced_codetable'])) {
 			$options_html = '<option value="">--- Vyberte ---</option>';
-			$safe_ct = charliteral($meta['referenced_codetable']);
-			$q_opt = sqlrun("SELECT value_code, caption FROM meta_codetable WHERE codetable_name = {$safe_ct} AND record_type = 'A' AND removed = 0 ORDER BY sort_code, caption");
+			$safe_ct = charliteral($meta['referenced_codetable']);           // Bezpečný literál číselníku
+			$q_opt = sqlrun("SELECT value_code, caption FROM meta_codetable WHERE codetable_name = {$safe_ct} AND record_type = 'A' AND removed = 0 AND inactive = 0 ORDER BY sort_code, caption");
 			
 			while ($opt = fetch($q_opt)) {
-				$sel = ($opt['value_code'] === $value) ? 'selected' : '';
+				$sel = ($opt['value_code'] === $value) ? 'selected' : '';    // Označení vybrané položky
 				$options_html .= "<option value=\"" . htmlspecialchars((string)$opt['value_code']) . "\" {$sel}>" . htmlspecialchars((string)$opt['caption']) . "</option>";
 			}
 			
-			free_result($q_opt);
+			free_result($q_opt);                                             // Uvolnění dotazu číselníku
 			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>";
 		}
 
@@ -615,7 +630,7 @@ class entity_manager {
 				if ($is_readonly) {
 					// Zamčené checkboxy se neodesílají při POSTu. Podvrhujeme proto systémový stav 
 					// přes hidden pole, aby nedošlo k falešnému zahození záznamu.
-					$real_val = ($checked !== '') ? '1' : '0';
+					$real_val = ($checked !== '') ? '1' : '0';               // Skutečná hodnota zamčeného pole
 					return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$real_val}\">\n\t\t\t\t\t\t<input type=\"checkbox\" name=\"{$safe_name}\" value=\"1\" {$checked} {$attr_string}>";
 				}
 				
@@ -629,7 +644,7 @@ class entity_manager {
 				
 			case 'text':
 			default:
-				$inputType = !empty($meta['is_url']) ? 'url' : 'text';
+				$inputType = !empty($meta['is_url']) ? 'url' : 'text';       // Rozlišení URL a běžného textu
 				return "<input type=\"{$inputType}\" name=\"{$safe_name}\" value=\"{$safe_val}\" {$attr_string}>";
 		}
 	}
@@ -639,7 +654,7 @@ class entity_manager {
 	 * Přebírá hodnoty z $_POST, ověřuje s metadaty a balí je do bezpečných SQL literálů.
 	 */
 	public function extract_post_data(): array {
-		$data = [];
+		$data = [];                                                          // Výstupní pole sanitizovaných dat
 		// Ignorujeme technické parametry (o ty se stará save_post_data autonomně)
 		$meta_columns_list = [
 			'uuid', 'object_owner', 'original', 'record_type', 'approval_status', 
@@ -655,7 +670,7 @@ class entity_manager {
 			
 			// Nativní chování HTML formulářů u checkboxů (neodesílá se, pokud není zaškrtnuto)
 			if (!isset($_POST[$colname]) && $meta['input_type'] === 'checkbox') {
-				$data[$colname] = 0;
+				$data[$colname] = 0;                                         // Nezaškrtnutý checkbox má hodnotu 0
 				continue;
 			}
 			
@@ -663,22 +678,22 @@ class entity_manager {
 				continue;
 			}
 
-			$raw_val = (string)$_POST[$colname];
-			$phys_type = $this->col_types[$colname] ?? '';
+			$raw_val = (string)$_POST[$colname];                             // Surová hodnota z formuláře
+			$phys_type = $this->col_types[$colname] ?? '';                   // Fyzický typ sloupce v DB
 
 			// Typově přesné parsování podle fyzického schématu databáze a metadat
 			if (in_array($phys_type, ['uuid', 'uniqueidentifier'], true)) {
-				$data[$colname] = guidliteral($raw_val);
+				$data[$colname] = guidliteral($raw_val);                     // Převod na bezpečný UUID literál
 			} elseif ($meta['input_type'] === 'checkbox') {
 				$data[$colname] = ($raw_val === '1' || strtolower($raw_val) === 'true') ? 1 : 0;
 			} elseif ($meta['input_type'] === 'number') {
 				$data[$colname] = ($raw_val === '') ? 'NULL' : (string)(float)$raw_val;
 			} else {
-				$data[$colname] = charliteral($raw_val);
+				$data[$colname] = charliteral($raw_val);                     // Převod na bezpečný textový literál
 			}
 		}
 		
-		return $data;
+		return $data;                                                        // Vrácení připravených dat
 	}
 
 	/**
@@ -697,82 +712,82 @@ class entity_manager {
 			return;
 		}
 
-		$post_data = $this->extract_post_data();
+		$post_data = $this->extract_post_data();                             // Extrakce hodnot z POSTu
 		if (empty($post_data)) {
 			return;
 		}
 
 		// 1. Zjištění kontextu přihlášeného uživatele a organizace (Tenanta) z globální proměnné
-		global $dbsession;
+		global $dbsession;                                                   // Načtení globální relace
 
 		if (empty($dbsession) || empty($dbsession['login_session_uuid'])) {
 			fatal_error("Uložení selhalo", "Nepodařilo se načíst kontext uživatele z globální relace dbsession.");
 		}
 
 		// Identita uživatele: zachování surových hodnot pro PHP logiku a tvorba bezpečných SQL literálů
-		$org_uuid_raw = (string)$dbsession['organization'];
-		$user_uuid_raw = (string)$dbsession['login_session_uuid'];
-		$sess_lang_raw = (string)$dbsession['language'];
-		$right_translate = !empty($dbsession['right_translate']);
+		$org_uuid_raw = (string)$dbsession['organization'];                  // Surové UUID organizace
+		$user_uuid_raw = (string)$dbsession['login_session_uuid'];           // Surové UUID relace pro audit
+		$sess_lang_raw = (string)$dbsession['language'];                     // Surový kód jazyka relace
+		$right_translate = !empty($dbsession['right_translate']);            // Oprávnění ke globálnímu překladu
 
-		$org_uuid_sql = guidliteral($org_uuid_raw);
-		$user_uuid_sql = guidliteral($user_uuid_raw);
-		$lang_literal_sql = charliteral($sess_lang_raw);
+		$org_uuid_sql = guidliteral($org_uuid_raw);                          // SQL literál organizace
+		$user_uuid_sql = guidliteral($user_uuid_raw);                        // SQL literál uživatelské relace
+		$lang_literal_sql = charliteral($sess_lang_raw);                     // SQL literál jazyka
 		
-		$table = $this->storage_table;
+		$table = $this->storage_table;                                       // Cílová fyzická tabulka
 
-		$orig_guid_raw = $update_guid;
+		$orig_guid_raw = $update_guid;                                       // Surové UUID upravovaného záznamu
 		$orig_guid_sql = ($update_guid === '') ? '' : guidliteral($update_guid);
 
 		// 2. Zjištění vlastníka a master jazyka původního 'A' záznamu
-		$a_exists = false;
-		$a_uuid_sql = '';
-		$a_lang_raw = $sess_lang_raw;                                            // Výchozí pro zcela nový záznam
-		$orig_owner_raw = $org_uuid_raw;
-		$baseline_row = [];
+		$a_exists = false;                                                   // Zda již existuje vlastní 'A' záznam
+		$a_uuid_sql = '';                                                    // SQL literál primárního klíče 'A' záznamu
+		$a_lang_raw = $sess_lang_raw;                                        // Výchozí pro zcela nový záznam
+		$orig_owner_raw = $org_uuid_raw;                                     // Vlastník nalezeného záznamu
+		$baseline_row = [];                                                  // Předloha pro porovnání změn
 
 		$is_sysadmin_org = ($org_uuid_raw === '0x00' || $org_uuid_raw === '00000000-0000-0000-0000-000000000000');
 
 		if ($orig_guid_sql !== '') {
 			// Dohledání existujícího záznamu (buď tenantův override, nebo systémový originál)
 			$q_check = sqlrun("SELECT * FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND removed = 0 AND (object_owner = {$org_uuid_sql} OR object_owner = 0x00) ORDER BY object_owner DESC");
-			$current_row = null;
+			$current_row = null;                                             // Nalezený aktuální řádek
 			if ($current_row = fetch($q_check)) {
 				$a_exists = ((string)$current_row['object_owner'] === $org_uuid_raw || $is_sysadmin_org);
-				$orig_owner_raw = (string)$current_row['object_owner'];
-				$a_uuid_sql = guidliteral((string)$current_row['uuid']);
-				$a_lang_raw = (string)$current_row['language'];
+				$orig_owner_raw = (string)$current_row['object_owner'];      // Uložení vlastníka záznamu
+				$a_uuid_sql = guidliteral((string)$current_row['uuid']);     // Uložení UUID 'A' záznamu
+				$a_lang_raw = (string)$current_row['language'];              // Mateřský jazyk 'A' záznamu
 			}
-			free_result($q_check);
+			free_result($q_check);                                           // Uvolnění kontroly existence
 			
 			// Příprava dat pro Delta zápis (Override).
 			if (!$is_sysadmin_org) {
 				// Tenant vždy kopíruje čistý systémový záznam
 				$q_base = sqlrun("SELECT * FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00");
 				if ($base = fetch($q_base)) {
-					$baseline_row = $base;
+					$baseline_row = $base;                                   // Systémová předloha pro tenanta
 				}
-				free_result($q_base);
+				free_result($q_base);                                        // Uvolnění dotazu předlohy
 			} else {
 				// Systémový administrátor dědí záznam výhradně z předka (pokud nějakého má)
 				$anc_val = $post_data['ancestor'] ?? ($current_row['ancestor'] ?? null);
 				if (!empty($anc_val) && $anc_val !== "''" && $anc_val !== 'NULL') {
-					$anc_raw = trim((string)$anc_val, "'");
-					$anc_guid = guidliteral($anc_raw);
+					$anc_raw = trim((string)$anc_val, "'");                  // Očištění UUID předka
+					$anc_guid = guidliteral($anc_raw);                       // SQL literál UUID předka
 					$q_anc = sqlrun("SELECT * FROM {$table} WHERE original = {$anc_guid} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00");
 					if ($anc_row = fetch($q_anc)) {
-						$baseline_row = $anc_row;
+						$baseline_row = $anc_row;                            // Předloha z globálního předka
 					}
-					free_result($q_anc);
+					free_result($q_anc);                                     // Uvolnění dotazu předka
 				}
 			}
 		}
 
 		// 3. Filtrace struktury: Rozdělení dat na 'A' (Základ) a 'L' (Lokalizace) podle Override vzoru
-		$a_post_data = [];
-		$l_post_data = [];
-		$has_translated_cols = false;
-		$is_native_lang = ($a_lang_raw === $sess_lang_raw);
+		$a_post_data = [];                                                   // Data určená pro hlavní 'A' záznam
+		$l_post_data = [];                                                   // Data určená pro překladový 'L' záznam
+		$has_translated_cols = false;                                        // Zda formulář obsahuje překládaná pole
+		$is_native_lang = ($a_lang_raw === $sess_lang_raw);                  // Zda se edituje v mateřském jazyce
 
 		foreach ($post_data as $col => $val) {
 			// BACKENDOVÁ POJISTKA (is_protected): Pokud se nejedná o sysadmina (0x00),
@@ -783,36 +798,36 @@ class entity_manager {
 
 			// Implementace vzoru Override (Klonování s modifikací)
 			if (!empty($baseline_row) && isset($baseline_row[$col])) {
-				$baseline_val = $baseline_row[$col];
-				$compare_val = trim((string)$val, "'");
+				$baseline_val = $baseline_row[$col];                         // Hodnota v předloze
+				$compare_val = trim((string)$val, "'");                      // Hodnota k porovnání bez apostrofů
 				
 				if (isset($this->col_nulls[$col]) && $this->col_nulls[$col] !== 'not null') {
 					if ((string)$compare_val === (string)$baseline_val) {
-						$val = 'NULL';
+						$val = 'NULL';                                       // Shodná hodnota se uloží jako NULL pro dědění
 					}
 				}
 			}
 
-			$is_translated = !empty($this->columns_meta[$col]['translate']);
+			$is_translated = !empty($this->columns_meta[$col]['translate']); // Zda sloupec podléhá překladu
 
 			if ($is_translated) {
-				$has_translated_cols = true;
-				$l_post_data[$col] = $val;
+				$has_translated_cols = true;                                 // Evidujeme přítomnost překladu
+				$l_post_data[$col] = $val;                                   // Zápis hodnoty do jazykové vrstvy
 				// OCHRANA ORIGINÁLU: Text, který je označen k překladu, zapíšeme do master 'A' 
 				// záznamu POUZE pokud jazyk session sedí na výchozí "mateřský" jazyk entity.
 				if ($is_native_lang) {
-					$a_post_data[$col] = $val;
+					$a_post_data[$col] = $val;                               // Zápis do 'A' v mateřském jazyce
 				}
 			} else {
 				// Číselná/Vazební data jdou do Master záznamu bez ohledu na jazyk vždy
-				$a_post_data[$col] = $val; 
+				$a_post_data[$col] = $val;                                   // Zápis nepřekládaného sloupce do 'A'
 			}
 		}
 
 		// BACKENDOVÁ POJISTKA 2 (is_final): Pokud je celá třída nedotknutelná (číselníky),
 		// tenantovi zamezíme jakémukoli vytváření vlastního 'A' overridu vymazáním polí.
 		if (!$is_sysadmin_org && !empty($this->class_meta['is_final'])) {
-			$a_post_data = []; 
+			$a_post_data = [];                                               // Zákaz modifikace 'A' záznamu pro tenanta
 		}
 
 		// Obalení operací transakcí, aby se zamezilo nekonzistentním zápisům L bez A.
@@ -824,154 +839,180 @@ class entity_manager {
 			
 			// VÝPOČET DETERMINISTICKÉHO ORIGINÁLU PŘED INSERTEM
 			$q_keys = sqlrun("SELECT key1_column, key2_column FROM meta_original_keys WHERE table_name = " . charliteral($table));
-			$key_info = fetch($q_keys);
-			free_result($q_keys);
+			$key_info = fetch($q_keys);                                      // Definice klíčů tabulky
+			free_result($q_keys);                                            // Uvolnění dotazu na klíče
 
 			if ($key_info) {
-				$k1_col = $key_info['key1_column'];
-				$k2_col = $key_info['key2_column'];
+				$k1_col = $key_info['key1_column'];                          // První klíčový sloupec
+				$k2_col = $key_info['key2_column'];                          // Druhý klíčový sloupec
 				$k1_val = array_key_exists($k1_col, $a_post_data) ? $a_post_data[$k1_col] : "''";
-				$k2_val = ($k2_col && array_key_exists($k2_col,$a_post_data)) ? $a_post_data[$k2_col] : 'NULL';
+				$k2_val = ($k2_col && array_key_exists($k2_col, $a_post_data)) ? $a_post_data[$k2_col] : 'NULL';
 
 				$q_orig = sqlrun("SELECT dbo.f_generate_original(" . charliteral($table) . ", {$org_uuid_sql}, CAST({$k1_val} AS VARCHAR(MAX)), CAST({$k2_val} AS VARCHAR(MAX))) AS orig_guid");
 				if ($row = fetch($q_orig)) {
-					$orig_guid_sql = guidliteral((string)$row['orig_guid']);
+					$orig_guid_sql = guidliteral((string)$row['orig_guid']); // Deterministické UUID originálu
 				}
-				free_result($q_orig);
-			} elseif ($table === 'link') {$link_def = array_key_exists('link_def', $a_post_data) ?$a_post_data['link_def'] : "''";
-				$from_obj = array_key_exists('from_object', $a_post_data) ?$a_post_data['from_object'] : "''";
-				$to_obj = array_key_exists('to_object', $a_post_data) ?$a_post_data['to_object'] : "''";
+				free_result($q_orig);                                        // Uvolnění výpočtu originálu
+			} elseif ($table === 'link') {
+				$link_def = array_key_exists('link_def', $a_post_data) ? $a_post_data['link_def'] : "''";
+				$from_obj = array_key_exists('from_object', $a_post_data) ? $a_post_data['from_object'] : "''";
+				$to_obj = array_key_exists('to_object', $a_post_data) ? $a_post_data['to_object'] : "''";
 
 				$q_orig = sqlrun("SELECT dbo.f_link_original(CAST({$org_uuid_sql} AS varchar(36)), CAST({$link_def} AS varchar(36)), CAST({$from_obj} AS varchar(36)), CAST({$to_obj} AS varchar(36))) AS orig_guid");
 				if ($row = fetch($q_orig)) {
-					$orig_guid_sql = guidliteral((string)$row['orig_guid']);
+					$orig_guid_sql = guidliteral((string)$row['orig_guid']); // Deterministické UUID vazby
 				}
-				free_result($q_orig);
+				free_result($q_orig);                                        // Uvolnění výpočtu vazby
 			} else {
-				$q_orig = sqlrun("SELECT NEWID() AS orig_guid");
+				$q_orig = sqlrun("SELECT NEWID() AS orig_guid");             // Náhodné UUID pro globální tabulky
 				if ($row = fetch($q_orig)) {
-					$orig_guid_sql = guidliteral((string)$row['orig_guid']);
+					$orig_guid_sql = guidliteral((string)$row['orig_guid']); // Nově vygenerované UUID
 				}
-				free_result($q_orig);
+				free_result($q_orig);                                        // Uvolnění dotazu NEWID
 			}
 
-			$insert_cols = [];$insert_vals = [];
+			$insert_cols = [];                                               // Sloupce pro INSERT nového 'A' záznamu
+			$insert_vals = [];                                               // Hodnoty pro INSERT nového 'A' záznamu
 			
-			foreach ($this->physical_cols as$col) {
+			foreach ($this->physical_cols as $col) {
 				if (in_array($col, ['uuid', 'original'], true)) {
-					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$orig_guid_sql;
+					$insert_cols[] = "[$col]";                               // Identifikátory záznamu
+					$insert_vals[] = $orig_guid_sql;                         // Hodnota spočteného originálu
 				} elseif ($col === 'object_owner') {
-					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$org_uuid_sql;
+					$insert_cols[] = "[$col]";                               // Sloupec vlastníka
+					$insert_vals[] = $org_uuid_sql;                          // UUID organizace uživatele
 				} elseif ($col === 'record_type') {
-					$insert_cols[] = "[$col]"; 
-					$insert_vals[] = "'A'";
+					$insert_cols[] = "[$col]";                               // Typ záznamu
+					$insert_vals[] = "'A'";                                  // Hlavní schválený záznam
 				} elseif ($col === 'language') {
-					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$lang_literal_sql;
+					$insert_cols[] = "[$col]";                               // Výchozí jazyk záznamu
+					$insert_vals[] = $lang_literal_sql;                      // Aktuální jazyk relace
 				} elseif (in_array($col, ['date_created', 'date_modified'], true)) {
-					$insert_cols[] = "[$col]"; 
-					$insert_vals[] = "GETDATE()";
+					$insert_cols[] = "[$col]";                               // Časové razítko
+					$insert_vals[] = "GETDATE()";                            // Aktuální databázový čas
 				} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
-					$insert_cols[] = "[$col]"; 
-					$insert_vals[] =$user_uuid_sql;
-				} elseif (array_key_exists($col,$a_post_data)) {
-					$insert_cols[] = "[$col]"; 
-					$insert_vals[] = $a_post_data[$col];
+					$insert_cols[] = "[$col]";                               // Auditní identifikátor autora
+					$insert_vals[] = $user_uuid_sql;                         // UUID přihlášené relace
+				} elseif (array_key_exists($col, $a_post_data)) {
+					$insert_cols[] = "[$col]";                               // Datový sloupec z formuláře
+					$insert_vals[] = $a_post_data[$col];                     // Hodnota datového sloupce
 				}
 			}
 
 			$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") VALUES (" . implode(', ', $insert_vals) . ")";
-			sqlrun($sql);
+			sqlrun($sql);                                                    // Provedení INSERTu nového 'A' záznamu
 			
 		} elseif (!empty($a_post_data)) {
 			// B) UPDATE NEBO OVERRIDE 'A' ZÁZNAMU
-			if ($a_exists) {$set_clauses = [];
-				foreach ($a_post_data as$col => $val) {$set_clauses[] = "[$col] =$val";
+			if ($a_exists) {
+				$set_clauses = [];                                           // Pole přiřazení pro UPDATE
+				foreach ($a_post_data as $col => $val) {
+					$set_clauses[] = "[$col] = $val";                        // Nastavení nové hodnoty sloupce
 				}
-				$set_clauses[] = "date_modified = GETDATE()";
-				$set_clauses[] = "who_modified = {$user_uuid_sql}";
+				$set_clauses[] = "date_modified = GETDATE()";                // Aktualizace času změny
+				$set_clauses[] = "who_modified = {$user_uuid_sql}";          // Aktualizace autora změny
 
 				$sql = "UPDATE {$table} SET " . implode(', ', $set_clauses) . " WHERE uuid = {$a_uuid_sql}";
-				sqlrun($sql);
+				sqlrun($sql);                                                // Provedení UPDATE existujícího 'A' záznamu
 			} else {
 				// OVERRIDE: Tenant zasahuje do systémového záznamu poprvé.
-				$insert_cols = [];$select_vals = [];
+				$insert_cols = [];                                           // Cílové sloupce klonovaného záznamu
+				$select_vals = [];                                           // Zdrojové výrazy v SELECT klauzuli
 				
-				foreach ($this->physical_cols as$col) {
-					$insert_cols[] = "[$col]";
+				foreach ($this->physical_cols as $col) {
+					$insert_cols[] = "[$col]";                               // Zařazení fyzického sloupce
 					
-					if ($col === 'uuid') {$select_vals[] = "NEWID()";
+					if ($col === 'uuid') {
+						$select_vals[] = "NEWID()";                          // Dočasné UUID (přepíše trigger trgo_)
 					} elseif ($col === 'object_owner') {
-						$select_vals[] =$org_uuid_sql;
-					} elseif ($col === 'record_type') {$select_vals[] = "'A'";
-					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {$select_vals[] = "GETDATE()";
+						$select_vals[] = $org_uuid_sql;                      // Vlastníkem klonu je tenant
+					} elseif ($col === 'record_type') {
+						$select_vals[] = "'A'";                              // Klon je rovněž typu 'A'
+					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {
+						$select_vals[] = "GETDATE()";                        // Čas vytvoření klonu
 					} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
-						$select_vals[] =$user_uuid_sql;
-					} elseif ($col === 'original') {$select_vals[] = "original"; 
-					} elseif ($col === 'language') {$select_vals[] = "language";
-					} elseif (array_key_exists($col, $a_post_data)) {$select_vals[] = $a_post_data[$col]; 
+						$select_vals[] = $user_uuid_sql;                     // Autor vytvoření klonu
+					} elseif ($col === 'original') {
+						$select_vals[] = "original";                         // Zachování vazby na společný originál
+					} elseif ($col === 'language') {
+						$select_vals[] = "language";                         // Zachování původního jazyka záznamu
+					} elseif (array_key_exists($col, $a_post_data)) {
+						$select_vals[] = $a_post_data[$col];                 // Aplikace změněné hodnoty tenanta
 					} else {
-						$select_vals[] = "[$col]"; 
+						$select_vals[] = "[$col]";                           // Převzetí nezměněné hodnoty ze systému
 					}
 				}
 
 				$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") \nSELECT " . implode(', ', $select_vals) . " \nFROM {$table} \nWHERE original = {$orig_guid_sql} AND object_owner = 0x00 AND record_type = 'A'";
-				sqlrun($sql);
+				sqlrun($sql);                                                // Vytvoření tenantova 'A' overridu
 			}
 		}
 
 		// 5. Zápis 'L' záznamu
-		if ($has_translated_cols &&$orig_guid_sql !== '') {
+		if ($has_translated_cols && $orig_guid_sql !== '') {
 			
-			$l_owner_sql =$org_uuid_sql;
-			if ($orig_owner_raw === '0x00' ||$orig_owner_raw === '00000000-0000-0000-0000-000000000000') {
-				if ($right_translate) {$l_owner_sql = '0x00';
+			$l_owner_sql = $org_uuid_sql;                                    // Výchozím vlastníkem překladu je tenant
+			if ($orig_owner_raw === '0x00' || $orig_owner_raw === '00000000-0000-0000-0000-000000000000') {
+				if ($right_translate) {
+					$l_owner_sql = '0x00';                                   // Oprávněný překladatel zapisuje globálně
 				}
 			}
 
 			$q_l_check = sqlrun("SELECT uuid FROM {$table} WHERE original = {$orig_guid_sql} AND object_owner = {$l_owner_sql} AND record_type = 'L' AND language = {$lang_literal_sql} AND removed = 0");
-			$l_exists = fetch($q_l_check);
-			free_result($q_l_check);
+			$l_exists = fetch($q_l_check);                                   // Kontrola existence 'L' záznamu
+			free_result($q_l_check);                                         // Uvolnění dotazu kontroly 'L'
 
 			if ($l_exists) {
-				if (!empty($l_post_data)) {$set_l = [];
-					foreach ($l_post_data as$col => $val) {$set_l[] = "[$col] =$val";
+				if (!empty($l_post_data)) {
+					$set_l = [];                                             // Pole změn pro UPDATE 'L' záznamu
+					foreach ($l_post_data as $col => $val) {
+						$set_l[] = "[$col] = $val";                          // Přiřazení přeložené hodnoty
 					}
-					$set_l[] = "date_modified = GETDATE()";
-					$set_l[] = "who_modified = {$user_uuid_sql}";
+					$set_l[] = "date_modified = GETDATE()";                  // Čas úpravy překladu
+					$set_l[] = "who_modified = {$user_uuid_sql}";            // Autor úpravy překladu
 					
 					$sql_l = "UPDATE {$table} SET " . implode(', ', $set_l) . " WHERE uuid = " . guidliteral((string)$l_exists['uuid']);
-					sqlrun($sql_l);
+					sqlrun($sql_l);                                          // Provedení UPDATE 'L' záznamu
 				}
 			} else {
-				$insert_cols_l = [];$select_vals_l = [];
+				$insert_cols_l = [];                                         // Sloupce pro nový 'L' záznam
+				$select_vals_l = [];                                         // Hodnoty pro nový 'L' záznam
 				
-				foreach ($this->physical_cols as$col) {
-					$insert_cols_l[] = "[$col]";
+				foreach ($this->physical_cols as $col) {
+					$insert_cols_l[] = "[$col]";                             // Zařazení fyzického sloupce
 					
-					if ($col === 'uuid') {$select_vals_l[] = "NEWID()";
+					if ($col === 'uuid') {
+						$select_vals_l[] = "NEWID()";                        // Unikátní PK pro 'L' záznam
 					} elseif ($col === 'object_owner') {
-						$select_vals_l[] =$l_owner_sql;
-					} elseif ($col === 'record_type') {$select_vals_l[] = "'L'";
+						$select_vals_l[] = $l_owner_sql;                     // Vlastník jazykové mutace
+					} elseif ($col === 'record_type') {
+						$select_vals_l[] = "'L'";                            // Označení jazykového záznamu
 					} elseif ($col === 'language') {
-						$select_vals_l[] =$lang_literal_sql;
-					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {$select_vals_l[] = "GETDATE()";
+						$select_vals_l[] = $lang_literal_sql;                // Kód jazyka překladu
+					} elseif (in_array($col, ['date_created', 'date_modified'], true)) {
+						$select_vals_l[] = "GETDATE()";                      // Čas pořízení překladu
 					} elseif (in_array($col, ['who_created', 'who_modified'], true)) {
-						$select_vals_l[] =$user_uuid_sql;
-					} elseif (array_key_exists($col, $l_post_data)) {$select_vals_l[] = $l_post_data[$col]; 
+						$select_vals_l[] = $user_uuid_sql;                   // Autor pořízení překladu
+					} elseif (array_key_exists($col, $l_post_data)) {
+						$select_vals_l[] = $l_post_data[$col];               // Přeložená hodnota sloupce
 					} else {
-						$select_vals_l[] = "[$col]"; 
+						$select_vals_l[] = "[$col]";                         // Převzetí ostatních polí z 'A' záznamu
 					}
 				}
 
 				$source_owner_sql = (!$is_sysadmin_org) ? "object_owner IN ({$org_uuid_sql}, 0x00)" : "object_owner = 0x00";
 				$sql_l = "INSERT INTO {$table} (" . implode(', ', $insert_cols_l) . ") \nSELECT TOP 1 " . implode(', ', $select_vals_l) . " \nFROM {$table} \nWHERE original = {$orig_guid_sql} AND {$source_owner_sql} AND record_type = 'A' AND removed = 0 ORDER BY object_owner DESC";
-				sqlrun($sql_l);
+				sqlrun($sql_l);                                              // Založení nového 'L' záznamu
+			}
+
+			// Jednotná auditní stopa: Pokud nebyl hlavní 'A' záznam aktualizován v kroku 4
+			// (např. při úpravě samotného překladu v sekundárním jazyce nebo u třídy s is_final = 1),
+			// povinně zaktualizujeme date_modified a who_modified na hlavním 'A' záznamu.
+			if (empty($a_post_data) && $a_uuid_sql !== '' && ($a_exists || $l_owner_sql === '0x00')) {
+				sqlrun("UPDATE {$table} SET date_modified = GETDATE(), who_modified = {$user_uuid_sql} WHERE uuid = {$a_uuid_sql}");
 			}
 		}
 
-		sqlrun("COMMIT");
+		sqlrun("COMMIT");                                                    // Potvrzení transakce zápisu
 	}
 }

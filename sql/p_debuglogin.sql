@@ -16,7 +16,7 @@ GO
  * ============================================================================= */
 CREATE PROCEDURE p_debuglogin
 	@login varchar(100) = '',
-	@language varchar(2) = 'cz'
+	@language varchar(2) = 'cs'
 AS
 BEGIN
 	SET NOCOUNT ON;
@@ -62,5 +62,5 @@ BEGIN
 	--PRINT 'Debug session byla úspěšně inicializována pro @@SPID = ' + CAST(@@SPID AS varchar(10));
 END
 GO
-execute p_debuglogin 'sysadmin'
+--execute p_debuglogin 'sysadmin'
 GO

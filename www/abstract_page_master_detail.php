@@ -1,6 +1,7 @@
 <?php
 /**
  * =============================================================================
+ * Verze: 2026-10-15 09:55
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
  *       Slouží jako pevný základ pro veškeré administrační obrazovky BCM systému.
@@ -43,11 +44,12 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-15 - Oprava řádků spojených post-procesorem a doplnění Anti-LaTeX komentářů.
  * 2026-10-12 - Extrahováno sestavování URL parametrů do metody get_context_url_suffix a get_context_hidden_inputs,
  *              zjednodušeno formátování dat u audit trailu pomocí date_format4 z OsirisLib.
  * 2026-10-09 - Zamezení zpracování POST dat a AJAXu při odepřeném přístupu ($access_denied).
  * 2026-10-08 - Ošetřen stav NEW pro zakládání nových záznamů a zabráněno cyklení redirectu.
- *            - Odstraněn memory leak doplňěním uvolňování SQL resultů (free_result).
+ *            - Odstraněn memory leak doplněním uvolňování SQL resultů (free_result).
  *            - Opravena sanitizace kontextových URL parametrů z htmlspecialchars na urlencode.
  * 2026-10-07 - Přidána dynamická propagace kontextových parametrů (parent_class, parent_object)
  *              do URL a skrytých polí formuláře pro správný běh entity_manageru.
@@ -65,16 +67,16 @@ abstract class abstract_page_master_detail extends abstract_page {
 	// --- Konfigurace pro data-driven vrstvu (nastavují potomci v konstruktoru) ---
 	
 	/** Identifikátor logické třídy z DB (např. 'meta_object', 'asset_class') */
-	protected string $class_name = '';
+	protected string $class_name = '';                                       // Název logické třídy
 	
 	/** Volitelné omezení SQL dotazu pro načítání master panelu (např. "m.parent_object = ...") */
-	protected string $master_where = '';
+	protected string $master_where = '';                                     // Podmínka WHERE pro levý panel
 	
 	/** Mapování logických skupin vstupních polí. Očekává: ['Název sekce' => ['sloupec1', 'sloupec2']] */
-	protected array $form_groups = [];
+	protected array $form_groups = [];                                       // Skupiny polí ve formuláři
 	
 	/** Instance dynamického správce objektů řídící čtení a zápis */
-	protected ?entity_manager $em = null;
+	protected ?entity_manager $em = null;                                    // Instance správce entit
 
 	/**
 	 * Centralizované získání URL parametrů pro udržení kontextu (např. vazba na předka).
@@ -83,26 +85,28 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 * @return string Řetězec parametrů pro URL (např. '&parent_class=123')
 	 */
 	protected function get_context_url_suffix(): string {
-		$url_suffix = '';
+		$url_suffix = '';                                                    // Výchozí prázdný přívažek URL
 		foreach (['parent_object', 'parent_class'] as $ctx_param) {
-			$val = (string)getinput($ctx_param);
-			if ($val !== '') {$url_suffix .= "&{$ctx_param}=" . urlencode($val);
+			$val = (string)getinput($ctx_param);                             // Hodnota kontextového parametru
+			if ($val !== '') {
+				$url_suffix .= "&{$ctx_param}=" . urlencode($val);           // Připojení kódovaného parametru
 			}
 		}
-		return $url_suffix;
+		return $url_suffix;                                                  // Vrácení sestaveného přívažku
 	}
 
 	/**
 	 * Vrací kontextové parametry ve formě HTML skrytých inputů pro odeslání POSTem.
 	 */
 	protected function get_context_hidden_inputs(): string {
-		$hidden_inputs = '';
+		$hidden_inputs = '';                                                 // Výchozí prázdný řetězec inputů
 		foreach (['parent_object', 'parent_class'] as $ctx_param) {
-			$val = (string)getinput($ctx_param);
-			if ($val !== '') {$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">";
+			$val = (string)getinput($ctx_param);                             // Hodnota kontextového parametru
+			if ($val !== '') {
+				$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">";
 			}
 		}
-		return $hidden_inputs;
+		return $hidden_inputs;                                               // Vrácení skrytých polí formuláře
 	}
 
 	/**
@@ -119,15 +123,17 @@ abstract class abstract_page_master_detail extends abstract_page {
 
 		// Inicializace správce entit, pokud potomek specifikoval třídu
 		if ($this->class_name !== '') {
-			$this->em = new entity_manager($this->class_name);
+			$this->em = new entity_manager($this->class_name);               // Vytvoření instance entity_manageru
 		}
 
 		// Záchyt uložení dat (PRG vzor)
-		if (isset($_POST['btn_save'])) {$this->process_save();
+		if (isset($_POST['btn_save'])) {
+			$this->process_save();                                           // Zpracování uložených dat
 		}
 
 		// Záchyt pro asynchronní obnovu pouze levého panelu
-		if (isset($_GET['ajax_panel']) && $_GET['ajax_panel'] === 'master') {$this->render_master();
+		if (isset($_GET['ajax_panel']) && $_GET['ajax_panel'] === 'master') {
+			$this->render_master();                                          // Vykreslení pouze levého panelu
 			exit;
 		}
 		
@@ -143,13 +149,14 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;
 		}
 
-		$update_guid = (string)getinput('update_guid');$save_guid = ($update_guid === 'NEW') ? '' :$update_guid;
+		$update_guid = (string)getinput('update_guid');                      // Identifikátor upravovaného záznamu
+		$save_guid = ($update_guid === 'NEW') ? '' :$update_guid;           // Pro nový záznam předáme prázdný řetězec
 		
-		$this->em->save_post_data($save_guid);
+		$this->em->save_post_data($save_guid);                               // Autonomní uložení dat přes entity_manager
 		
 		// Zamezení uvíznutí na prázdném formuláři po uložení nového záznamu
-		if ($update_guid === 'NEW') {$page_param = urlencode((string)getinput('page'));
-			$url_suffix =$this->get_context_url_suffix();
+		if ($update_guid === 'NEW') {$page_param = urlencode((string)getinput('page'));               // Název aktuální stránky pro redirect
+			$url_suffix =$this->get_context_url_suffix();                   // Kontextové parametry URL
 			
 			autoredirect("index.php?page={$page_param}{$url_suffix}");
 		} else {
@@ -268,13 +275,13 @@ abstract class abstract_page_master_detail extends abstract_page {
 
 		<div class="md-master" id="md-master-container">
 HTML;
-		$this->render_master();
+		$this->render_master();                                              // Vykreslení levého panelu
 
 		echo <<<HTML
 		</div>
 		<div class="md-detail">
 HTML;
-		$this->render_detail();
+		$this->render_detail();                                              // Vykreslení pravého panelu
 
 		echo <<<HTML
 		</div>
@@ -342,22 +349,22 @@ HTML;
 			return;
 		}
 		
-		$list_columns =$this->em->get_list_columns();
+		$list_columns =$this->em->get_list_columns();                       // Sloupce pro zobrazení v seznamu
 		
 		if (empty($list_columns)) {
 			echo "<div class='msg-info'>Master panel nemá v metadatech (list_order) definované žádné sloupce.</div>";
 			return;
 		}
 
-		$update_guid = (string)getinput('update_guid');
+		$update_guid = (string)getinput('update_guid');                      // Aktuálně vybraný záznam
 		
-		$class_meta =$this->em->get_class_meta();
+		$class_meta =$this->em->get_class_meta();                           // Metadata aktuální třídy
 		$caption_plural = (string)($class_meta['caption_plural'] ?? '');
 		
-		if ($caption_plural === '') {$caption_plural = 'Seznam záznamů';
+		if ($caption_plural === '') {$caption_plural = 'Seznam záznamů';                              // Výchozí nadpis seznamu
 		}
 
-		$safe_caption_plural = htmlspecialchars($caption_plural);
+		$safe_caption_plural = htmlspecialchars($caption_plural);            // Ošetřený nadpis seznamu
 
 		// Obálka fixní hlavičky levého panelu
 		echo <<<HTML
@@ -365,7 +372,7 @@ HTML;
 HTML;
 		
 		// Výzva pro specifický kód potomka (tlačítka apod.)
-		$this->render_master_top();
+		$this->render_master_top();                                          // Vykreslení horních prvků potomka
 
 		echo <<<HTML
 			<h2 style="font-size: 16px; margin: 0 0 10px 0; border: none; padding: 0;">{$safe_caption_plural}</h2>
@@ -391,26 +398,28 @@ HTML;
 HTML;
 
 		// Spuštění T-SQL dotazu (s automatickým tříděním z entity_manageru)
-		$sql = $this->em->build_select_query($this->master_where);
-		$q = sqlrun($sql);
+		$sql = $this->em->build_select_query($this->master_where);           // Sestavení SELECT dotazu
+		$q = sqlrun($sql);                                                   // Spuštění dotazu pro seznam
 		
-		while ($row = fetch($q)) {$uuid = $row['original'];$rowClass = ($uuid ===$update_guid) ? 'md-row-active' : '';         // Třída pro aktivní řádek
+		while ($row = fetch($q)) {
+			$uuid =$row['original'];                                        // Originální UUID řádku
+			$rowClass = ($uuid ===$update_guid) ? 'md-row-active' : '';     // Třída pro aktivní řádek
 			$rowIdAttr = ($uuid ===$update_guid) ? 'id="active-row"' : '';
 			
-			$page_param = urlencode((string)getinput('page'));
-			$url_suffix =$this->get_context_url_suffix();
+			$page_param = urlencode((string)getinput('page'));               // Název stránky do URL
+			$url_suffix =$this->get_context_url_suffix();                   // Kontextové parametry URL
 
 			$row_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}");
 			echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">\n";
 			
 			// Vykreslení konkrétních buněk (bez ohledu na to, v jakém pořadí přišly z DB)
-			foreach ($list_columns as$col => $header) {$val = htmlspecialchars((string)($row[$col] ?? ''));
+			foreach ($list_columns as$col => $header) {$val = htmlspecialchars((string)($row[$col] ?? ''));         // Hodnota buňky v seznamu
 				echo "\t\t\t\t\t\t\t<td>{$val}</td>\n";
 			}
 			echo "\t\t\t\t\t\t</tr>\n";
 		}
 		
-		free_result($q);                                                         // Uvolnění paměti pro bezpečný chod serveru
+		free_result($q);                                                     // Uvolnění paměti pro bezpečný chod serveru
 
 		echo <<<HTML
 				</tbody>
@@ -452,42 +461,44 @@ HTML;
 			return;
 		}
 
-		$update_guid = (string)getinput('update_guid');
+		$update_guid = (string)getinput('update_guid');                      // Získání ID vybraného záznamu
 		if ($update_guid === '') {
 			echo "<div class='msg-info'>Vyberte záznam z levého panelu.</div>";
 			return;
 		}
 
-		global $datarow;
+		global $datarow;                                                     // Globální pole pro aktuální řádek
 
-		if ($update_guid === 'NEW') {$datarow = [];
+		if ($update_guid === 'NEW') {$datarow = [];                                                   // Inicializace prázdného záznamu
 			foreach ($this->em->get_columns() as $colname =>$meta) {
-				$type =$meta['input_type'] ?? 'text';
-				$datarow[$colname] = ($type === 'checkbox') ? '0' : '';  			}$datarow['object_is_mine'] = 1;
-			$is_mine = true;
+				$type =$meta['input_type'] ?? 'text';                       // Typ vstupního prvku
+				$datarow[$colname] = ($type === 'checkbox') ? '0' : ''; 		}$datarow['object_is_mine'] = 1;                                  // Nový záznam patří vždy uživateli
+			$is_mine = true;                                                 // Příznak vlastnictví záznamu
 		} else {
 			// Načtení dat přes T-SQL (včetně překladových mechanismů pro stringy)
 			$sql = $this->em->build_select_query("m.original = " . guidliteral($update_guid));
-			$q = sqlrun($sql);
+			$q = sqlrun($sql);                                               // Spuštění dotazu pro detail
 			
-			$datarow = fetch($q);
-			free_result($q);                                                     // Nutné pro zamezení memory leaků
+			$datarow = fetch($q);                                            // Načtení dat detailu
+			free_result($q);                                                 // Nutné pro zamezení memory leaků
 			
 			if (!$datarow) {
 				echo "<div class='msg-err'>Záznam nebyl nalezen.</div>";
 				return;
 			}
 			
-			$is_mine = (bool)$datarow['object_is_mine'];
+			$is_mine = (bool)$datarow['object_is_mine'];                     // Zda záznam vlastní aktuální tenant
 		}
 
-		$page_param = urlencode((string)getinput('page'));
+		$page_param = urlencode((string)getinput('page'));                   // Název aktuální stránky
 		
 		// Dynamická propagace kontextových parametrů do URL i do skrytých polí
-		$url_suffix = $this->get_context_url_suffix();$hidden_inputs = $this->get_context_hidden_inputs();$discard_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}");
+		$url_suffix =$this->get_context_url_suffix();                       // Přívažek URL s kontextem
+		$hidden_inputs =$this->get_context_hidden_inputs();                 // Skrytá pole s kontextem
+		$discard_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}");
 		$form_action = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$update_guid}");
 		
-		$header_html =$this->get_detail_header();
+		$header_html =$this->get_detail_header();                           // Nadpis detailního panelu
 
 		echo <<<HTML
 		<!-- Obalový form využívá celou výšku (flex) pro rolovatelný obsah -->
@@ -508,19 +519,19 @@ HTML;
 HTML;
 
 		// Volání hooku pro custom notifikace (např. upozornění na dědičnost)
-		$this->render_detail_top();
+		$this->render_detail_top();                                          // Vykreslení horní části detailu
 
 		// Vyhodnocení strukturálních bloků definovaných potomkem
-		$groups =$this->form_groups;
+		$groups =$this->form_groups;                                        // Skupiny polí definované v potomkovi
 		
 		// Bezpečnostní fallback pro případ, že potomek skupiny nedefinoval (vysype se vše)
-		if (empty($groups)) {$all_cols = [];
+		if (empty($groups)) {$all_cols = [];                                                  // Seznam všech viditelných sloupců
 			foreach ($this->em->get_columns() as $colname =>$meta) {
 				if (empty($meta['hidden'])) {
-					$all_cols[] =$colname;
+					$all_cols[] =$colname;                                  // Zařazení neskrytého sloupce
 				}
 			}
-			$groups = ['' =>$all_cols];
+			$groups = ['' =>$all_cols];                                     // Jedna bezejmenná skupina
 		}
 
 		// Iterace přes bloky a generování tabulek s input prvky
@@ -531,7 +542,7 @@ HTML;
 			
 			echo "\t\t\t\t<table class=\"md-table\" style=\"margin-bottom: 30px;\">\n";
 			
-			foreach ($columns as $colname) {$meta = $this->em->get_column_meta($colname);
+			foreach ($columns as $colname) {$meta = $this->em->get_column_meta($colname);                // Načtení metadat sloupce
 				
 				// Ignorovat neexistující nebo skryté prvky
 				if (empty($meta)) {
@@ -543,7 +554,7 @@ HTML;
 				
 				// Názvosloví s fallback mechanismem (Label -> Caption -> Colname)
 				$label = htmlspecialchars((string)($meta['label'] ?: $meta['caption'] ?:$colname));
-				$helptext = (string)($meta['helptext'] ?? '');
+				$helptext = (string)($meta['helptext'] ?? '');               // Text nápovědy k poli
 				
 				// Nápověda vložená jako bublinový tooltip do obalové <td>
 				$title_attr = $helptext !== '' ? " title=\"" . htmlspecialchars($helptext) . "\"" : "";
@@ -567,7 +578,7 @@ HTML;
 		}
 
 		// Vložení globální auditní stopy
-		$this->render_audit_trail();
+		$this->render_audit_trail();                                         // Vykreslení informací o změnách
 
 		echo "\t\t\t</div>\n\t\t</form>\n";
 	}
@@ -576,19 +587,23 @@ HTML;
 	 * Připojí pod formulář standardizovanou patku o vytvoření a úpravě dat (who/when).
 	 */
 	protected function render_audit_trail(): void {
-		global $datarow;
+		global $datarow;                                                     // Načtený datový řádek
 		
 		if (empty($datarow) || (empty($datarow['date_created']) && empty($datarow['date_modified']))) {
 			return;
 		}
 
-		$html = '';
+		$html = '';                                                          // Výstupní HTML auditní stopy
 		
-		if (!empty($datarow['date_created'])) {$date_c = date_format4($datarow['date_created'], 16);$who_c_name = !empty($datarow['who_created_info']) ?$datarow['who_created_info'] : 'Neznámý uživatel';
+		if (!empty($datarow['date_created'])) {
+			$date_c = date_format4($datarow['date_created'], 16);            // Zformátované datum vytvoření
+			$who_c_name = !empty($datarow['who_created_info']) ?$datarow['who_created_info'] : 'Neznámý uživatel';
 			$html .= "<div>Vytvořil {$date_c} " . htmlspecialchars((string)$who_c_name) . "</div>";
 		}
 
-		if (!empty($datarow['date_modified'])) {$date_m = date_format4($datarow['date_modified'], 16);$who_m_name = !empty($datarow['who_modified_info']) ?$datarow['who_modified_info'] : 'Neznámý uživatel';
+		if (!empty($datarow['date_modified'])) {
+			$date_m = date_format4($datarow['date_modified'], 16);           // Zformátované datum úpravy
+			$who_m_name = !empty($datarow['who_modified_info']) ?$datarow['who_modified_info'] : 'Neznámý uživatel';
 			$html .= "<div>Změnil &nbsp;&nbsp;{$date_m} " . htmlspecialchars((string)$who_m_name) . "</div>";
 		}
 
