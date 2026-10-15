@@ -6,14 +6,14 @@
 * Generovaný kód (SQL i PHP) musí být odsazován výhradně tabulátory pro strukturální odsazení na začátku řádků. Nikdy neodsazuj root-level elementy (jako deklarace tříd nebo úvodní tagy). Pokud přidáváš inline trailing komentáře na konce řádků, zarovnávej je výhradně mezerami (nikoliv tabulátory), aby zůstaly opticky zarovnané bez ohledu na šířku tabulátoru v editoru.
 * OCHRANA PROTI SLUČOVÁNÍ ŘÁDKŮ V PHP (Anti-LaTeX pravidlo): Webové rozhraní má tendenci spojovat řádky v PHP kódu, pokud mezi dvěma znaky `$` (např. okolo víceřádkového pole `$table = [ ... ];`) leží pouze čisté ASCII znaky. Proto v PHP striktně dodržuj: (1) Vždy piš pouze jeden příkaz na jeden řádek (nikdy nepiš `$a = []; $b = [];` ani `$a = $b = [];`). (2) Na řádky s jedním znakem `$` (zejména před a za definicí víceřádkového pole) vždy doplň inline komentář s českou diakritikou zarovnaný mezerami – přítomnost diakritiky spolehlivě zabrání post-procesoru ve spojení řádků. (3) Znak dolaru jako stringový literál (např. přípona SQL tabulky `$`) vždy zapisuj v PHP jako `chr(36)`, nikoliv jako `'$'`.
 * CRITICAL META-INSTRUCTION PRO KOMENTÁŘE: NIKDY, ZA ŽÁDNÝCH OKOLNOSTÍ NEODSTRAŇUJ ANI NEZKRACUJ EXISTUJÍCÍ KOMENTÁŘE VE ZDROJOVÉM KÓDU. Považuj každý původní komentář za nedotknutelný. Tvým úkolem je kód rozšiřovat a doplňovat, nikoliv ho pročišťovat nebo komprimovat odstraňováním existující dokumentace.
-* Generovaný kód musí být bohatě okomentován pro orientaci v kontextu a předán v uceleném code bloku připraveném ke zkopírování (u PHP bez uzavírací značky ?>). Vždy nabídni zkopírování zdrojového kódu do schránky. Při úpravě více objektů vracej kód striktně rozdělený do samostatných zdrojových souborů (vždy po jednom souboru na výzvu pro detailní kontrolu).
+* Generovaný kód musí být bohatě okomentován pro orientaci v kontextu a předán v uceleném code bloku připraveném ke zkopírování (u PHP bez uzavírací značky ?>). Vždy nabídni zkopírování zdrojového kódu do schránky. Při úpravě více objektů vracej kód striktně rozdělený do samostatných zdrojových souborů (v zájmu úspory tokenů lze po dohodě vrátit více samostatných code bloků v jedné odpovědi).
 * Dodávej vždy CELÉ DDL soubory. Pokud se přidává sloupec a tabulka ještě neobsahuje cenná data, doplň DDL logiku na podmíněný DROP TABLE a doplň nový sloupec rovnou do CREATE TABLE (není nutné volat p_create_missing_column). Udržuj idempotentnost skriptů.
 * POVINNÉ KOMENTOVÁNÍ VAZEB: Každý soubor, modul, procedura, třída i funkce musí obsahovat v záhlaví komentáře, které přesně popíší její vztah k okolí (odkud je volána, na co navazuje, jaké globální proměnné či pole využívá). Cílem je zajistit plynulou kontinuitu vývoje.
 * VERZOVÁNÍ A HISTORIE: Při každé změně v souboru dej do komentáře v záhlaví datum a čas verze. Můžeš odstranit informace o starších změnách, které nás už nemusí zajímat.
 * Na konci každého chatu automaticky nabídni formátovanou revizi těchto instrukcí pro uchování pokroku.
 * BEZPEČNOSTNÍ POJISTKA VÝKONU: Pokud při analýze komplexních vazeb narazíš na limity svého logického vyvozování nebo ztratíš přehled v kontextu, okamžitě upozorni uživatele a vyžádej si přerušení práce.
 * KONTROLA MODELU: Na úplném začátku nové konverzace upozorni uživatele, pokud zapomněl nastavit nejvhodnější programovací model (Argon Nejvyšší / Pro nejvyšší / Pro Extended). Během další komunikace už toto upozornění neopakuj.
-* PRAVIDLA KONVERZACE: Na začátku každého chatu uživatel předá Knowledge.txt a kompletní dávku BcmOsirisDb.sql pro idempotentní vytvoření objektů (případné další PHP soubory nahrává jednotlivě mimo ZIP archiv, protože obsah ZIP archivu je v textovém rozhraní nečitelný). Na začátku chatu se POUZE diskutuje, neprogramuje. Nechval, místo toho hledej chyby a navrhuj vylepšení. Po dohodě vracej soubory jednotlivě.
+* PRAVIDLA KONVERZACE: Na začátku každého chatu uživatel předá Knowledge.txt a kompletní dávku BcmOsirisDb.sql pro idempotentní vytvoření objektů (případné další PHP soubory nahrává jednotlivě mimo ZIP archiv, protože obsah ZIP archivu je v textovém rozhraní nečitelný). Na začátku chatu se POUZE diskutuje, neprogramuje. Nechval, místo toho hledej chyby a navrhuj vylepšení.
 
 2. Databázové konvence (MSSQL)
 * Databáze plně podporuje UTF-8 (zohledni to v PHP skriptech i T-SQL).
@@ -39,17 +39,17 @@
 * Typy záznamů (record_type): 'A' = aktuálně schválený, 'L' = platná jazyková verze, 'H' = historický záznam.
 * Povinné auditní sloupce jsou date_created, who_created, date_modified, who_modified, language, removed, valid_from, valid_to. Auditní vazby využívají výhradně uuid.
 * Rozšířená správa metadat, frází a STI architektura (Single Table Inheritance):
-  - Fyzické struktury (tabulky, views, funkce, PHP stránky a třídy) jsou evidovány v `meta_object`. Moduly a stránky využívají sloupec `system_role` pro fail-safe zamezení přístupu. Objekty typu `'P'` v `meta_object` se zapisují celým jménem svého zdrojového souboru bez přípony `.php` (včetně prefixu `page_`, např. `'page_org_users'`, `'abstract_page'`, `'abstract_button'`, a bezejmenného řádku `''` pro globální fráze).
-  - Textové fráze, popisky tlačítek a šablony zpráv jsou uloženy v tabulce `meta_phrase` (`table_meta_phrase.sql`) se složeným deterministickým klíčem `(source_code, builtin_code)` v `meta_original_keys`. Sloupec `source_code` odpovídá názvu PHP třídy/souboru bez `.php` (nebo `''` pro globální fráze). Tabulka podporuje `caption`, `helptext` (tooltip), `editor_note` (AI kontext), `svg_icon` (vektorová ikona tlačítka) a `css_class`.
+  - Fyzické struktury (tabulky, views, funkce, PHP stránky a třídy) jsou evidovány v `meta_object`. Moduly a stránky využívají sloupec `system_role` pro fail-safe zamezení přístupu (automaticky vynucováno v `abstract_page::check_system_role_access()`). Objekty typu `'P'` v `meta_object` se zapisují celým jménem svého zdrojového souboru bez přípony `.php` (včetně prefixu `page_`, např. `'page_org_users'`, `'abstract_page'`, `'abstract_button'`, a bezejmenného řádku `''` pro globální fráze).
+  - Textové fráze, popisky tlačítek a šablony zpráv jsou uloženy v tabulce `meta_phrase` (`table_meta_phrase.sql`) se složeným deterministickým klíčem `(source_code, builtin_code)` v `meta_original_keys`. Sloupec `source_code` odpovídá názvu PHP třídy/souboru bez `.php` (nebo `''` pro globální fráze). Tabulka podporuje `caption`, `helptext` (tooltip), `editor_note` (AI kontext), `svg_icon` (vektorová ikona tlačítka) a `css_class`. Pro překlad kódových zpráv v T-SQL (např. `insert_request_message`) slouží funkce `dbo.f_php_phrase(@code, @source_code)`.
   - Logické entity jsou abstrahovány do `meta_class` (přes vazbu `storage_object` na `meta_object`). Všechny stránky pracují výhradně s logickými třídami.
   - Atributy tříd podléhají ochraně pomocí `is_final` (zákaz override 'A' záznamu pro tenanta) a `is_protected` (zákaz změny hodnoty sloupce tenantem).
-  - Dědičnost vlastností sloupců: Sloupec v `meta_column` dědí vlastnosti od svého předka v kontejneru `sys_global_columns` (přes `ancestor`). Sloupce se vážou VÝHRADNĚ na logickou třídu (`parent_class`).
+  - Dědičnost vlastností sloupců: Sloupec v `meta_column` dědí vlastnosti od svého předka v kontejneru `sys_global_columns` (přes `ancestor`). Sloupce se vážou VÝHRADNĚ na logickou třídu (`parent_class`). Stránka `page_meta_column` je dostupná jako podřízená stránka z `page_meta_class` (tlačítko „Spravovat sloupce“ s návratovým odkazem) i přímo z menu (s výchozím filtrem na `sys_global_columns` a přepínačem tříd).
   - Třída `entity_manager` generuje `<select>` prvky automatickým napojením logiky z `referenced_codetable` nebo `referenced_class`.
 
 4. Zpracování identit, SSO a multi-tenancy
 * Tabulka user_account je globální (object_owner = 0x00). Přihlašovací jméno a e-mail musí být celosystémově unikátní.
 * Přístup globálních uživatelů do konkrétních tenantů řídí vazební tabulka user_organization_access. View v_user_organization_access sjednocuje čtení oprávnění.
-* Relace a Oprávnění: Globální práva určuje dynamicky sloupec `active_role` ('U', 'A', 'S', 'D') vyhodnocovaný přes tabulku `dbsession`.
+* Relace a Oprávnění: Globální práva určuje dynamicky sloupec `active_role` ('U', 'A', 'S', 'D') vyhodnocovaný přes tabulku `dbsession`. Staré sloupce `right_sysadmin`, `right_orgadmin` a `user_access_uuid` již neexistují – všude se používá `active_role` a `login_session_uuid`.
 * AUTONOMNÍ AUDITNÍ STOPA: Tabulky relací (wwwsession, dbsession) obsahují sloupec `login_session_uuid` odkazující na forenzní `audit_login_session`. Zápisové mechanismy nesmí přijímat who_created/modified jako parametr, ale načítají hodnotu přímo z tabulky dbsession (`login_session_uuid`) podle aktuálního @@SPID.
 * SSO integrace a autentizace probíhá plně v PHP vrstvě. Udržení relace ("Remember me") řeší tabulka `auth_tokens` kryptografickým tokenem s explicitním nastavením SameSite hlavičky pro cookies.
 * Přepínání kontextu uživatele řídí statický příznak change_context_allowed. UI přepínání řeší page_change_user_context s využitím PRG vzoru.
@@ -58,13 +58,13 @@
 
 5. Architektura UI komponent a kódování stránek
 * Abstraktní třídy komponent a základní stavební kameny jsou uloženy s prefixem abstract_. Nové stránky dědí z abstract_page a implementují metodu render_body().
-* Správa frází (`phrase_manager.php`): Třída `phrase_manager` pomocí PHP reflexe (`class_parents`, `ReflectionClass`) automaticky zjistí celý řetězec dědičnosti stránky a navázaných komponent (vč. `abstract_button`, `user_context` a globálních frází `''`) a načte všechny potřebné fráze z `meta_phrase` jedním dávkovým SQL dotazem s kaskádovým `COALESCE`. Podporuje bezpečnou interpolaci proměnných `{$var}` bez použití `eval()` a automatický zápis chybějících frází do DB (`import_origin = 'AUTO_DISCOVERED'`).
+* Správa frází (`phrase_manager.php`) a tlačítek (`abstract_button.php`): Třída `phrase_manager` pomocí PHP reflexe (`class_parents`, `ReflectionClass`) automaticky zjistí celý řetězec dědičnosti stránky a navázaných komponent (vč. `abstract_button`, `user_context`, `menu_manager` a globálních frází `''`) a načte všechny potřebné fráze z `meta_phrase` jedním dávkovým SQL dotazem s kaskádovým `COALESCE`. Podporuje bezpečnou interpolaci proměnných `{$var}` bez použití `eval()` a automatický zápis chybějících frází do DB (`import_origin = 'AUTO_DISCOVERED'`, včetně idempotentní registrace `source_code` do `meta_object` jako typ `'P'`). Třída `abstract_button` vykresluje tlačítka `<button>` a `<a>` s automatickým využitím `svg_icon`, `caption`, `helptext` (jako tooltip) a `css_class` z `meta_phrase`.
 * Vyhni se duplicitě kódu kdekoli v aplikaci. Stejné věci musí být řešeny jen na jednom místě. Při zjištění duplicity navrhni společný objekt (funkci, třídu, předchůdce), který to bude řešit.
-* ŘÍZENÍ PŘÍSTUPU: Probíhá centrálně definováním `protected bool $access_denied = false;` v `abstract_page`. Potomci v konstruktoru (a nikde jinde) pouze nastaví hodnotu na `true`. Abstraktní předek následně sám zablokuje spuštění akcí a vykreslí standardizovanou chybovou zprávu.
-* ZÁKAZ ZACHYTÁVÁNÍ POST V KONSTRUKTORECH: Zpracování POST dat (PRG vzor) probíhá striktně až při volání `render()` pomocí překrytí metody `process_save()`. Konstruktory slouží pouze pro inicializaci.
+* ŘÍZENÍ PŘÍSTUPU: Probíhá centrálně definováním `protected bool $access_denied = false;` v `abstract_page` (včetně automatického ověření `meta_object.system_role`). Potomci mohou v konstruktoru nastavit hodnotu na `true`. Abstraktní předek následně sám zablokuje spuštění akcí (`process_save()`) a vykreslí lokalizovanou chybovou zprávu.
+* ZÁKAZ ZACHYTÁVÁNÍ POST V KONSTRUKTORECH: Zpracování POST dat (PRG vzor) probíhá striktně až při volání `render()` (pouze při `$_SERVER['REQUEST_METHOD'] === 'POST'`) pomocí překrytí metody `process_save()` v `abstract_page`. V `abstract_page_master_detail::render()` se před voláním `parent::render()` inicializuje `$this->em`, aby byl v `process_save()` dostupný. Konstruktory slouží pouze pro inicializaci.
 * Tělo stránky má zrušené okraje (margin a padding 0).
-* Prvek abstract_page_master_detail zajišťuje dynamický dvoupanelový layout přes flexbox s nezávislými V-scrollbary. Podporuje asynchronní refresh levého panelu a nativní Fetch API. Automaticky propaguje kontextové parametry URL (parent_class, parent_object) do formulářů pro entity_manager.
-* Využívají se dedikované CSS třídy `.md-sticky-header-master` a `.md-sticky-header-detail` pro fixaci panelů s nástroji během vertikálního scrollu (`position: sticky`).
+* Prvek abstract_page_master_detail zajišťuje dynamický dvoupanelový layout přes flexbox s nezávislými V-scrollbary. Podporuje asynchronní refresh levého panelu a nativní Fetch API. Automaticky propaguje kontextové parametry URL (parent_class, parent_object, menu_code) do formulářů pro entity_manager.
+* Využívají se dedikované CSS třídy `.md-master-header` (`.md-sticky-header-master`) a `.md-detail-header` (`.md-sticky-header-detail`) pro fixaci panelů s nástroji během vertikálního scrollu.
 * Dynamický Master Panel (Levý panel): Generován plně automaticky z `entity_manageru`. Sloupce se řídí atributem `meta_column.list_order`. Hlavičky se přebírají z `meta_column.header`.
   - Je generován plně automaticky z `entity_manageru` bez nutnosti manuální konfigurace v potomcích.
   - Globální nastavení `list_order` v `sys_global_columns` se automaticky dědí.
@@ -74,7 +74,7 @@
 * Datově řízené UI (Data-driven Forms): Formulářové vstupy jsou dynamicky generovány třídou `entity_manager` z PHP podle metadat. Žádné hardcodované inputy. PHP funkce striktně vyžadují správné přetypování (např. `trim` neakceptuje `float`).
 * Prázdná UUID se musí posílat do SQL jako `'NULL'`, nikoliv jako prázdný string `''`, aby nedošlo k fatální chybě převodu typů.
 * Klientský frontend využívá výhradně čistý JavaScript (ES6+). Zákaz používat jQuery nebo frameworky.
-* Jmenná konvence stránek je `page_{$class}.php`.
+* Jmenná konvence stránek je `page_{$class}.php`. Router `index.php` i `menu_manager.php` pracují s plnými názvy s prefixem `page_` (při zachování zpětné kompatibility pro kratší URL).
 * Globální uživatelský kontext zajišťuje třída user_context (využívající `active_role`) s integrovanými SVG vlaječkami.
 
 6. Stromové struktury, CRMM a Infrastruktura
@@ -84,16 +84,9 @@
 * Infrastruktura: Architektura licencování (server_licence) zatím není plně dořešena.
 
 7. To do
-* Hotovo: Opravy `p_fix_meta_column.sql` (filtr `NOT LIKE '%$'`, `source_code` v `#list_order`), `table_meta_object.sql` (sjednocení `object_type = 'P'` na plné názvy s prefixem `page_` a registrace bázových UI tříd), `table_meta_menu.sql` (vazby na `page_*`), `xlsx_meta_object.php` a `p_xlsx_meta_object.sql` (přesměrování záložky `phrase` do `meta_phrase`).
-* V příštím (večerním) chatu dokončit PHP vrstvu pro fráze, tlačítka, router a generátor Excelu:
-  1. Vytvořit třídu `abstract_button.php` (vykreslování tlačítek `<button>` a `<a>` s automatickým využitím `svg_icon`, `caption`, `helptext` jako tooltipu a `css_class` přes `phrase_manager`).
-  2. Upravit `phrase_manager.php` (kontrola a oprava případné mezery v `$hierarchy`) a integrovat `phrase_manager` + metodu `process_save()` do `abstract_page.php`.
-  3. Upravit `index.php`, `menu_manager.php` (sjednocení routování a detekce aktivní stránky na plné názvy s prefixem `page_` při zachování zpětné kompatibility URL) a `generate_xls_meta_object.php` (generování šablony `meta_object.xlsx` s novou strukturou záložky `phrase` a plnými názvy `page_`).
-  4. Vyčistit případné zastaralé volání `dbo.f_php_phrase` v `table_request_message.sql`.
-* Navrhnout a založit strukturu pro flexibilní business-role na úrovni organizace a přiřadit k nim uživatele v rámci tenantů (tabulky, metadata, UI správa).
-* Vyvinout standardizovaný aplikační export a import dat pro produkční instance (s využitím SSC schvalování, stavy 'I' -> 'A', import_origin). Dosavadní Excel import přes OpenSpout slouží výhradně jako vývojářský nástroj.
-* SEZNAM SOUBORŮ PRO NAHRÁNÍ NA ZAČÁTKU PŘÍŠTÍHO CHATU (nahrát jednotlivě mimo ZIP):
-  1. `Knowledge.txt` (tato aktualizovaná verze)
-  2. `BcmOsirisDb.sql` (nově vygenerovaná dávka se všemi dnešními SQL změnami)
-  3. `phrase_manager.php` a `abstract_page.php`
-  4. `index.php`, `menu_manager.php` a `generate_xls_meta_object.php`
+* Hotovo: Kompletní SQL a PHP vrstva pro `meta_phrase`, `phrase_manager.php`, `abstract_button.php`, oprava životního cyklu `process_save()` v `abstract_page.php` a `abstract_page_master_detail.php` (pouze při POST), převedení `page_organization_licence.php` na `abstract_page_master_detail` s `active_role`, oprava `page_org_users.php` a provázání `page_meta_class.php` s podřízenou stránkou `page_meta_column.php`.
+* V příštím chatu:
+  1. Zapojit `abstract_button` a `phrase_manager` do všech zbývajících stránek a komponent (`user_context.php`, `page_excel_reader.php`, atd.) pro nahrazení hardcodovaných tlačítek a textů.
+  2. Přidat do administrace stránku `page_meta_phrase.php` (a položku menu) pro přímou správu a překlad frází přes `entity_manager`.
+  3. Navrhnout a založit strukturu pro flexibilní business-role na úrovni organizace a přiřadit k nim uživatele v rámci tenantů (tabulky, metadata, UI správa).
+  4. Vyvinout standardizovaný aplikační export a import dat pro produkční instance (s využitím SSC schvalování, stavy 'I' -> 'A', import_origin).

@@ -1,23 +1,26 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-15 10:50
+ * Verze: 2026-10-15 22:18
  * Soubor: phrase_manager.php
  * Třída: phrase_manager
  * Účel: Centralizovaný správce pro dávkové načítání, kešování, lokalizaci
  *       a interpolaci textových frází (globálních i specifických pro třídy/stránky).
  *
  * ARCHITEKTONICKÉ VAZBY:
- * - Instancován v `abstract_page` (případně globálně v `$GLOBALS['phrase_manager']`).
+ * - Instancován v `abstract_page` (a uložen v `$GLOBALS['phrase_manager']`).
  * - Využívá `language_manager` (`language_manager.php`) pro získání fallback řetězce jazyků.
  * - Využívá globální pole `$dbsession` (inicializované v `OsirisLib.php`).
- * - Čte a při auto-discovery zapisuje do tabulky `meta_phrase` (`table_meta_phrase.sql`).
+ * - Čte a při auto-discovery zapisuje do tabulky `meta_phrase` (`table_meta_phrase.sql`)
+ *   a zajišťuje registraci zdrojového objektu typu 'P' v `meta_object`.
  * - Poskytuje kompletní metadata frází (včetně `svg_icon`, `css_class` a `helptext`)
  *   pro vykreslování tlačítek ve třídě `abstract_button`.
  *
  * Změny:
  * 2026-10-15 - První verze třídy s podporou reflexe dědičnosti, dávkového SQL dotazu,
  *              interpolace proměnných {$var} a automatického zápisu chybějících frází.
+ * 2026-10-15 - Oprava mezer kolem proměnných a doplnění automatické registrace
+ *              chybějícího source_code do meta_object (object_type = 'P').
  * =============================================================================
  */
 
@@ -43,17 +46,20 @@ class phrase_manager {
 	 * @param object|string|null $context_object Instance stránky nebo název třídy pro reflexi závislostí
 	 * @param array<int, string> $extra_sources  Další komponenty k načtení v jedné dávce (např. 'abstract_button')
 	 */
-	public function __construct(object|string|null $context_object = null, array $extra_sources = ['abstract_button', 'user_context']) {$this->lang_manager = new language_manager();                        // Inicializace správce jazyků
+	public function __construct(object|string|null $context_object = null, array $extra_sources = ['abstract_button', 'user_context', 'menu_manager']) {
+		$this->lang_manager = new language_manager();                        // Inicializace správce jazyků
 		$this->check_table_exists();                                         // Ověření existence tabulky v DB
 
 		$sources_to_load = [''];                                             // Vždy načítáme globální fráze ('')
 
-		if ($context_object !== null) {$ hierarchy = $this->resolve_class_dependencies($context_object);
+		if ($context_object !== null) {
+			$hierarchy = $this->resolve_class_dependencies($context_object); // Zjištění hierarchie dědičnosti třídy
 			$this->lookup_chain = array_merge($hierarchy, ['']);             // Pořadí hledání: potomek -> předek -> globální
-			$sources_to_load = array_merge($sources_to_load,$hierarchy);    // Přidání hierarchie do dávky
+			$sources_to_load = array_merge($sources_to_load, $hierarchy);    // Přidání hierarchie do dávky
 		}
 
-		if (!empty($extra_sources)) {$sources_to_load = array_merge($sources_to_load,$extra_sources);
+		if (!empty($extra_sources)) {
+			$sources_to_load = array_merge($sources_to_load, $extra_sources); // Přidání doplňkových komponent
 		}
 
 		$this->load_sources($sources_to_load);                               // Jednorázové dávkové načtení z DB
@@ -78,7 +84,7 @@ class phrase_manager {
 	 * @return array<int, string> Seznam názvů tříd od potomka po nejvyššího předka
 	 */
 	private function resolve_class_dependencies(object|string $target): array {
-		$class_name = is_object($target) ? get_class($target) :$target;     // Zjištění názvu hlavní třídy
+		$class_name = is_object($target) ? get_class($target) : $target;     // Zjištění názvu hlavní třídy
 		if (!class_exists($class_name)) {
 			return [$class_name];                                            // Fallback pokud třída neexistuje
 		}
@@ -86,20 +92,20 @@ class phrase_manager {
 		$chain = [$class_name];                                              // Začínáme samotnou třídou potomka
 		$parents = class_parents($class_name);                               // Zjištění všech předků přes reflexi
 		if (is_array($parents)) {
-			foreach ($parents as$parent_class) {
-				$chain[] =$parent_class;                                    // Přidání předka do řetězce
+			foreach ($parents as $parent_class) {
+				$chain[] = $parent_class;                                    // Přidání předka do řetězce
 			}
 		}
 
 		// Reflexe vlastností třídy: pokud má třída typované vlastnosti odkazující na jiné komponenty,
 		// zařadíme jejich třídy rovněž do dávkového načtení.
 		$ref = new ReflectionClass($class_name);                             // Reflexe cílové třídy
-		foreach ($ref->getProperties() as$prop) {
-			$type =$prop->getType();                                        // Získání datového typu vlastnosti
+		foreach ($ref->getProperties() as $prop) {
+			$type = $prop->getType();                                        // Získání datového typu vlastnosti
 			if ($type instanceof ReflectionNamedType && !$type->isBuiltin()) {
-				$prop_class =$type->getName();                              // Název třídy typované vlastnosti
-				if (!in_array($prop_class,$chain, true)) {
-					$chain[] =$prop_class;                                  // Přidání komponenty do seznamu
+				$prop_class = $type->getName();                              // Název třídy typované vlastnosti
+				if (!in_array($prop_class, $chain, true)) {
+					$chain[] = $prop_class;                                  // Přidání komponenty do seznamu
 				}
 			}
 		}
@@ -119,7 +125,7 @@ class phrase_manager {
 		}
 
 		$new_sources = [];                                                   // Seznam dosud nenačtených tříd
-		foreach (array_unique($sources) as$src) {
+		foreach (array_unique($sources) as $src) {
 			$src_key = (string)$src;                                         // Převod na řetězec
 			if (!isset($this->loaded_sources[$src_key])) {
 				$new_sources[] = charliteral($src_key);                      // SQL literál názvu třídy
@@ -134,14 +140,14 @@ class phrase_manager {
 			return;
 		}
 
-		$in_clause = implode(', ',$new_sources);                            // Složení klauzule IN (...)
-		$lang_chain =$this->lang_manager->get_fallback_chain();             // Fallback řetězec jazyků
+		$in_clause = implode(', ', $new_sources);                            // Složení klauzule IN (...)
+		$lang_chain = $this->lang_manager->get_fallback_chain();             // Fallback řetězec jazyků
 
 		$coal_caption = [];                                                  // Kaskáda pro sloupec caption
 		$coal_helptext = [];                                                 // Kaskáda pro sloupec helptext
 		$joins = "";                                                         // Dynamické LEFT JOINy pro jazyky
 
-		foreach ($lang_chain as$lang) {
+		foreach ($lang_chain as $lang) {
 			$coal_caption[] = "NULLIF(CAST(v_{$lang}.caption AS NVARCHAR(MAX)), '')";
 			$coal_caption[] = "NULLIF(CAST(l_{$lang}.caption AS NVARCHAR(MAX)), '')";
 
@@ -199,7 +205,7 @@ class phrase_manager {
 		while ($row = fetch($q)) {
 			$src = (string)$row['source_code'];                              // Zdrojová třída fráze
 			$code = (string)$row['builtin_code'];                            // Kód konkrétní fráze
-			$this->phrases[$src][$code] = [
+			$this->phrases[$src][$code] = [                                  // Uložení atributů fráze do keše
 				'caption'   => (string)$row['caption'],                      // Přeložený text fráze
 				'helptext'  => (string)$row['helptext'],                     // Přeložená nápověda / tooltip
 				'svg_icon'  => (string)$row['svg_icon'],                     // Kód vektorové ikony SVG
@@ -241,7 +247,7 @@ class phrase_manager {
 			}
 		} else {
 			// 2. Prohledání celého řetězce dědičnosti (potomek -> předek -> globální '')
-			foreach ($this->lookup_chain as$src) {
+			foreach ($this->lookup_chain as $src) {
 				if (isset($this->phrases[$src][$builtin_code])) {
 					return $this->phrases[$src][$builtin_code];              // Nalezeno v hierarchii stránky
 				}
@@ -252,7 +258,7 @@ class phrase_manager {
 		$target_source = ($source_code !== '') ? $source_code : ($this->lookup_chain[0] ?? '');
 		$fallback_text = ($default_caption !== '') ? $default_caption : "[{$builtin_code}]";
 
-		$meta = [
+		$meta = [                                                            // Výchozí struktura metadat fráze
 			'caption'   => $fallback_text,                                   // Použití výchozího textu
 			'helptext'  => '',                                               // Výchozí prázdný helptext
 			'svg_icon'  => $default_svg,                                     // Výchozí SVG ikona
@@ -260,11 +266,11 @@ class phrase_manager {
 		];
 
 		// Uložíme do paměti pro tento request, abychom neprováděli opakované INSERTy
-		$this->phrases[$target_source][$builtin_code] =$meta;               // Zápis do lokální keše
+		$this->phrases[$target_source][$builtin_code] = $meta;               // Zápis do lokální keše
 
 		// Pokud máme smysluplný výchozí text a tabulka existuje, zapíšeme chybějící frázi do DB
-		if ($this->table_exists &&$default_caption !== '') {
-			$this->auto_register_phrase($target_source, $builtin_code,$default_caption, $default_svg,$default_css);
+		if ($this->table_exists && $default_caption !== '') {
+			$this->auto_register_phrase($target_source, $builtin_code, $default_caption, $default_svg, $default_css);
 		}
 
 		return $meta;                                                        // Vrácení metadat fráze
@@ -285,8 +291,8 @@ class phrase_manager {
 		string $default_caption = '',
 		string $source_code = ''
 	): string {
-		$meta = $this->get_meta($builtin_code, $default_caption,$source_code);
-		return $this->interpolate($meta['caption'],$vars);                  // Vrácení textu po dosazení proměnných
+		$meta = $this->get_meta($builtin_code, $default_caption, $source_code); // Načtení metadat fráze
+		return $this->interpolate($meta['caption'], $vars);                  // Vrácení textu po dosazení proměnných
 	}
 
 	/**
@@ -297,18 +303,18 @@ class phrase_manager {
 	 * @param array<string, mixed> $vars Explicitně předané proměnné
 	 * @return string Text s nahrazenými hodnotami
 	 */
-	public function interpolate(string $text, array$vars = []): string {
+	public function interpolate(string $text, array $vars = []): string {
 		if (!str_contains($text, '{' . chr(36))) {
 			return $text;                                                    // Rychlý návrat pokud text nemá proměnné
 		}
 
 		$pattern = '/\{\$([a-zA-Z0-9_]+)\}/';                                // Regulární výraz pro {$identifikator}
 		return (string)preg_replace_callback($pattern, function(array $matches) use ($vars): string {
-			$var_name =$matches[1];                                         // Název nalezené proměnné bez {$}
-			if (array_key_exists($var_name,$vars)) {
+			$var_name = $matches[1];                                         // Název nalezené proměnné bez {$}
+			if (array_key_exists($var_name, $vars)) {
 				return (string)$vars[$var_name];                             // Přednost má explicitně předaná proměnná
 			}
-			if (array_key_exists($var_name,$GLOBALS) && is_scalar($GLOBALS[$var_name])) {
+			if (array_key_exists($var_name, $GLOBALS) && is_scalar($GLOBALS[$var_name])) {
 				return (string)$GLOBALS[$var_name];                          // Fallback na skalární globální proměnnou
 			}
 			return $matches[0];                                              // Ponechání původního zástupce při nenalezení
@@ -316,7 +322,8 @@ class phrase_manager {
 	}
 
 	/**
-	 * Automaticky zaregistruje dosud neexistující frázi do tabulky meta_phrase (A + symetrické L),
+	 * Automaticky zaregistruje dosud neexistující frázi do tabulky meta_phrase (A + symetrické L)
+	 * a zajistí existenci zdrojové třídy v meta_object (typ 'P'),
 	 * aby se následně objevila ve vygenerovaném souboru meta_object.xlsx.
 	 */
 	private function auto_register_phrase(
@@ -337,7 +344,21 @@ class phrase_manager {
 
 		$sql = "
 		DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+		DECLARE @obj_orig uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', {$safe_src});
 		DECLARE @orig uuid = dbo.f_generate_original('meta_phrase', @sys_owner, {$safe_src}, {$safe_code});
+
+		IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @obj_orig AND object_owner = @sys_owner AND record_type = 'A')
+		BEGIN
+			INSERT INTO meta_object (
+				uuid, object_owner, original, record_type, approval_status, [language],
+				import_origin, object_type, builtin_code, system_role, caption,
+				who_created, who_modified
+			) VALUES (
+				@obj_orig, @sys_owner, @obj_orig, 'A', 'A', 'cs',
+				'AUTO_DISCOVERED', 'P', {$safe_src}, 'U', {$safe_src},
+				{$user_session}, {$user_session}
+			);
+		END
 
 		IF NOT EXISTS (SELECT 1 FROM meta_phrase WHERE original = @orig AND object_owner = @sys_owner AND record_type = 'A')
 		BEGIN
