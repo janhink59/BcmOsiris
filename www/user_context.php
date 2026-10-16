@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-16 08:50
+ * Verze: 2026-10-16 10:15
  * Soubor: user_context.php
  * Třída: user_context
  * Účel: Kompaktní vizuální komponenta (logo, uživatel, organizace, role, odhlášení)
@@ -17,13 +17,11 @@
  * - Využívá `abstract_button` pro vykreslení odhlašovacího tlačítka.
  *
  * Změny:
+ * 2026-10-16 10:15 - Nahrazení symbolických operátorů || a && slovními OR a AND (Anti-LaTeX).
+ * 2026-10-16 09:55 - Rozdělení spojeného řádku v metodě phrase() a doplnění diakritiky
+ *                    do inline komentářů (Anti-LaTeX ochrana).
  * 2026-10-16 08:50 - Oprava komentářů s diakritikou ve switch ($active_role) bránící
  *                    spojení řádků s proměnnou $roleClass a doplnění výchozí inicializace.
- * 2026-10-16 07:45 - Zapojení phrase_manager a abstract_button pro veškeré texty,
- *                    tooltipy, popisky rolí a tlačítko odhlášení.
- *                  - Sjednocení odkazů na plné názvy s prefixem page_
- *                    (page_change_user_context, page_logout).
- *                  - Oprava spojených řádků (Anti-LaTeX pravidlo).
  * =============================================================================
  */
 
@@ -34,12 +32,13 @@ class user_context {
 	/**
 	 * Pomocná metoda pro získání lokalizované fráze patřící komponentě user_context.
 	 */
-	private function phrase(string $builtin_code, string$default_caption): string {
+	private function phrase(string $builtin_code, string $default_caption): string { // Načtení přeložené fráze
 		global $phrase_manager;                                              // Globální instance správce frází
-		if (!isset($phrase_manager) || !($phrase_manager instanceof phrase_manager)) {$phrase_manager = new phrase_manager();                          // Nouzová inicializace správce frází
-			$GLOBALS['phrase_manager'] =$phrase_manager;                    // Uložení do globálního kontextu
+		if (!isset($phrase_manager) OR !($phrase_manager instanceof phrase_manager)) { // Kontrola existence správce frází
+			$phrase_manager = new phrase_manager();                          // Nouzová inicializace správce frází
+			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
 		}
-		return $phrase_manager->get($builtin_code, [],$default_caption, 'user_context'); // Načtení fráze komponenty
+		return $phrase_manager->get($builtin_code, [], $default_caption, 'user_context'); // Načtení fráze komponenty
 	}
 
 	public function __toString(): string {
@@ -59,7 +58,7 @@ class user_context {
 		// =====================================================================
 		
 		// Příprava URL pro návrat po změně jazyka (očištění od předchozího set_lang parametru)
-		$get_params =$_GET;                                                 // Kopie aktuálních GET parametrů
+		$get_params = $_GET;                                                 // Kopie aktuálních GET parametrů
 		unset($get_params['set_lang']);                                      // Odstranění parametru změny jazyka
 		$return_url = 'index.php';                                           // Základní návratová adresa
 		if (!empty($get_params)) {                                           // Pokud v URL zůstaly další parametry
@@ -67,25 +66,25 @@ class user_context {
 		}
 
 		// Zpracování případného požadavku na změnu jazyka z UI
-		$requested_lang = (isset($_GET['set_lang']) && is_string($_GET['set_lang'])) ?$_GET['set_lang'] : null; // Požadovaný jazyk z URL
+		$requested_lang = (isset($_GET['set_lang']) AND is_string($_GET['set_lang'])) ? $_GET['set_lang'] : null; // Požadovaný jazyk z URL
 		$lang_manager = new language_manager($requested_lang);               // Inicializace správce jazyků
 
 		// PRG vzor: Po přepnutí uložíme data do DB a přesměrujeme na čisté URL
 		if ($requested_lang !== null) {                                      // Pokud došlo k přepnutí jazyka
 			// K zápisu použijeme bezpečně zvalidovaný jazyk z objektu language_manager
-			$valid_lang =$lang_manager->get_current_language();             // Zvalidovaný kód jazyka
+			$valid_lang = $lang_manager->get_current_language();             // Zvalidovaný kód jazyka
 			$safe_lang = charliteral($valid_lang, 2);                        // SQL literál kódu jazyka
 			
 			// 1. Aktualizace jazyka v běžících relacích aktuálního SPID
 			sqlrun("
 				UPDATE dbsession SET [language] = {$safe_lang} WHERE spid = @@SPID;
 				UPDATE wwwsession SET [language] = {$safe_lang} WHERE spid = @@SPID;
-			");
+			");                                                              // Aktualizace jazyka v databázové relaci
 			
 			// 2. Trvalé uložení jazykové preference k uživatelskému účtu
 			if (!empty($dbsession['user_account'])) {                        // Kontrola přítomnosti účtu
 				$safe_user = guidliteral((string)$dbsession['user_account']); // SQL literál UUID uživatele
-				sqlrun("UPDATE user_account SET [language] = {$safe_lang} WHERE original = {$safe_user} AND record_type = 'A'");
+				sqlrun("UPDATE user_account SET [language] = {$safe_lang} WHERE original = {$safe_user} AND record_type = 'A'"); // Uložení jazyka k účtu
 			}
 			
 			header('Location: ' . $return_url);                              // Přesměrování bez parametru set_lang
@@ -98,8 +97,8 @@ class user_context {
 		// =====================================================================
 		// LOKALIZACE POPISKŮ, ROLÍ A TLAČÍTEK
 		// =====================================================================
-		$default_user =$this->phrase('lbl_default_user', 'Uživatel');       // Výchozí označení uživatele
-		$default_org =$this->phrase('lbl_default_org', 'Organizace');       // Výchozí označení organizace
+		$default_user = $this->phrase('lbl_default_user', 'Uživatel');       // Výchozí označení uživatele
+		$default_org = $this->phrase('lbl_default_org', 'Organizace');       // Výchozí označení organizace
 
 		$displayName = (string)($dbsession['display_name'] ?? $dbsession['user_name'] ?? $default_user); // Jméno přihlášeného uživatele
 		$orgName = (string)($dbsession['organization_name'] ?? $default_org); // Název aktivní organizace
@@ -109,22 +108,22 @@ class user_context {
 		$roleText = 'USER';                                                  // Výchozí popisek uživatelské role
 		$roleClass = 'usr';                                                  // Výchozí CSS třída uživatelské role
 
-		switch ($active_role) {
+		switch ($active_role) {                                              // Rozlišení stylu a popisku podle aktivní role
 			case 'D':
-				$roleText =$this->phrase('role_dev', 'DEV');                // Zkratka vývojářské role Developer
+				$roleText = $this->phrase('role_dev', 'DEV');                // Zkratka vývojářské role Developer
 				$roleClass = 'sys';                                          // Červený styl pro systémovou roli
 				break;
 			case 'S':
-				$roleText =$this->phrase('role_sysadmin', 'SYSADMIN');      // Zkratka systémové role Sysadmin
+				$roleText = $this->phrase('role_sysadmin', 'SYSADMIN');      // Zkratka systémové role Sysadmin
 				$roleClass = 'sys';                                          // Červený styl pro systémovou roli
 				break;
 			case 'A':
-				$roleText =$this->phrase('role_admin', 'ADMIN');            // Zkratka správcovské role Admin
+				$roleText = $this->phrase('role_admin', 'ADMIN');            // Zkratka správcovské role Admin
 				$roleClass = 'org';                                          // Modrý styl pro roli organizace
 				break;
 			case 'U':
 			default:
-				$roleText =$this->phrase('role_user', 'USER');              // Zkratka běžného uživatele
+				$roleText = $this->phrase('role_user', 'USER');              // Zkratka běžného uživatele
 				$roleClass = 'usr';                                          // Šedý styl pro běžného uživatele
 				break;
 		}
@@ -148,7 +147,7 @@ class user_context {
 		// Tlačítko odhlášení vykreslené přes abstract_button
 		$btn_logout = new abstract_button('btn_logout', 'Odhlásit', 'user_context', '', 'ctx-logout'); // Komponenta tlačítka odhlášení
 		$btn_logout->set_href('index.php?page=page_logout');                 // Nastavení odkazu na odhlášení
-		$logoutHtml =$btn_logout->render();                                 // Vykreslení odhlašovacího odkazu
+		$logoutHtml = $btn_logout->render();                                 // Vykreslení odhlašovacího odkazu
 
 		// =====================================================================
 		// HTML VÝSTUP A STYLY KOMPONENTY

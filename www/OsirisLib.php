@@ -133,8 +133,8 @@ function data_seek($res, $num) {
 // FREE_RESULT: Odstíní platformově toto volání
 function free_result($res=null) {
 	global $dbquery;
-	if(!$res) $res=$dbquery;
-	
+	if($res===null) $res=$dbquery;
+	if(!is_resource($res) && !is_object($res)) return true;
 	return @sqlsrv_cancel($res);
 }
 

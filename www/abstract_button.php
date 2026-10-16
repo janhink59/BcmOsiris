@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-15 23:45
+ * Verze: 2026-10-16 10:15
  * Soubor: abstract_button.php
  * Třída: abstract_button
  * Účel: Univerzální komponenta pro vykreslování tlačítek (<button> i <a>)
@@ -17,10 +17,11 @@
  *   nebo z ní dědit specializovaná tlačítka.
  *
  * Změny:
+ * 2026-10-16 10:15 - Nahrazení symbolických operátorů || a && slovními OR a AND (Anti-LaTeX).
+ * 2026-10-16 09:55 - Rozdělení spojených řádků v metodách add_class() a render()
+ *                    a důsledné doplnění diakritiky do všech komentářů (Anti-LaTeX).
  * 2026-10-15 23:45 - Doplněna vlastnost $style a metoda set_style() pro podporu
  *                    inline CSS stylů bez nutnosti ručního psaní HTML tagů.
- *                  - Opraveno spojení řádků v render() a doplněna ochrana proti
- *                    slučování řádků (Anti-LaTeX komentáře s diakritikou).
  * =============================================================================
  */
 
@@ -63,66 +64,67 @@ class abstract_button {
 		string $default_svg = '',                                            // Výchozí vektorová ikona SVG
 		string $default_css = ''                                             // Výchozí doplňková CSS třída
 	) {
-		$this->builtin_code =$builtin_code;                                 // Uložení kódu fráze
-		$this->default_caption =$default_caption;                           // Uložení výchozího popisku
-		$this->source_code =$source_code;                                   // Uložení zdrojové třídy
-		$this->default_svg =$default_svg;                                   // Uložení výchozí SVG ikony
-		$this->default_css =$default_css;                                   // Uložení výchozí CSS třídy
+		$this->builtin_code = $builtin_code;                                 // Uložení kódu fráze
+		$this->default_caption = $default_caption;                           // Uložení výchozího popisku
+		$this->source_code = $source_code;                                   // Uložení zdrojové třídy
+		$this->default_svg = $default_svg;                                   // Uložení výchozí SVG ikony
+		$this->default_css = $default_css;                                   // Uložení výchozí CSS třídy
 	}
 
 	/**
 	 * Nastaví HTML typ tlačítka ('submit', 'button', 'reset').
 	 */
-	public function set_type(string $type): self {
-		$this->type =$type;                                                 // Nastavení atributu type
+	public function set_type(string $type): self {                           // Nastavení typu HTML tlačítka
+		$this->type = $type;                                                 // Uložení atributu type
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
 	/**
 	 * Nastaví atributy name a value pro odeslání formuláře.
 	 */
-	public function set_name_value(string $name, string$value = '1'): self {
-		$this->name =$name;                                                 // Nastavení atributu name
-		$this->value =$value;                                               // Nastavení atributu value
+	public function set_name_value(string $name, string $value = '1'): self { // Nastavení jména a hodnoty tlačítka
+		$this->name = $name;                                                 // Nastavení atributu name
+		$this->value = $value;                                               // Nastavení atributu value
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
 	/**
 	 * Přepne tlačítko do režimu odkazu <a href="..."> (volitelně s target oknem).
 	 */
-	public function set_href(string $href, string$target = ''): self {
-		$this->href =$href;                                                 // Nastavení cílové URL adresy
-		$this->target =$target;                                             // Nastavení cílového okna
+	public function set_href(string $href, string $target = ''): self {      // Nastavení odkazu a cílového okna
+		$this->href = $href;                                                 // Nastavení cílové URL adresy
+		$this->target = $target;                                             // Nastavení cílového okna
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
 	/**
 	 * Nastaví vlastní JavaScript pro událost onclick.
 	 */
-	public function set_onclick(string $onclick): self {
-		$this->onclick =$onclick;                                           // Nastavení JS kódu pro onclick
+	public function set_onclick(string $onclick): self {                     // Nastavení JS obsluhy kliknutí
+		$this->onclick = $onclick;                                           // Nastavení JS kódu pro onclick
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
 	/**
 	 * Nastaví potvrzovací dialog confirm(...) před provedením akce tlačítka.
 	 */
-	public function set_confirm(string $message): self {
-		$this->confirm_message =$message;                                   // Text potvrzovacího dialogu
+	public function set_confirm(string $message): self {                     // Nastavení potvrzovacího dotazu
+		$this->confirm_message = $message;                                   // Text potvrzovacího dialogu
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
 	/**
 	 * Přidá doplňkovou CSS třídu k tlačítku.
 	 */
-	public function add_class(string $css_class): self {$this->extra_css = trim($this->extra_css . ' ' .$css_class);        // Připojení další CSS třídy
+	public function add_class(string $css_class): self {                     // Přidání rozšiřující CSS třídy
+		$this->extra_css = trim($this->extra_css . ' ' . $css_class);        // Připojení další CSS třídy
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
 	/**
 	 * Nastaví inline CSS styl tlačítka (atribut style="...").
 	 */
-	public function set_style(string $style): self {
+	public function set_style(string $style): self {                         // Nastavení přímého CSS stylu
 		$this->style = trim($style);                                         // Nastavení vlastního inline stylu
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
@@ -130,16 +132,16 @@ class abstract_button {
 	/**
 	 * Nastaví HTML atribut id.
 	 */
-	public function set_id(string $id): self {
-		$this->id =$id;                                                     // Nastavení identifikátoru elementu
+	public function set_id(string $id): self {                               // Nastavení HTML identifikátoru
+		$this->id = $id;                                                     // Nastavení identifikátoru elementu
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
 	/**
 	 * Zapne nebo vypne disabled stav tlačítka.
 	 */
-	public function set_disabled(bool $disabled = true): self {
-		$this->disabled =$disabled;                                         // Nastavení příznaku deaktivace
+	public function set_disabled(bool $disabled = true): self {              // Nastavení neaktivního stavu tlačítka
+		$this->disabled = $disabled;                                         // Nastavení příznaku deaktivace
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
@@ -148,8 +150,8 @@ class abstract_button {
 	 *
 	 * @param array<string, mixed> $vars Asociativní pole proměnných
 	 */
-	public function set_vars(array $vars): self {
-		$this->vars =$vars;                                                 // Uložení proměnných pro interpolaci
+	public function set_vars(array $vars): self {                            // Předání proměnných pro interpolaci
+		$this->vars = $vars;                                                 // Uložení proměnných pro interpolaci
 		return $this;                                                        // Vrácení instance pro řetězení
 	}
 
@@ -158,11 +160,12 @@ class abstract_button {
 	 */
 	public function render(): string {
 		global $phrase_manager;                                              // Globální instance správce frází
-		if (!isset($phrase_manager) || !($phrase_manager instanceof phrase_manager)) {$phrase_manager = new phrase_manager();                          // Nouzová inicializace správce frází
-			$GLOBALS['phrase_manager'] =$phrase_manager;                    // Uložení do globálního kontextu
+		if (!isset($phrase_manager) OR !($phrase_manager instanceof phrase_manager)) { // Kontrola inicializace správce frází
+			$phrase_manager = new phrase_manager();                          // Nouzová inicializace správce frází
+			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
 		}
 
-		$meta =$phrase_manager->get_meta(                                   // Načtení metadat tlačítka z DB
+		$meta = $phrase_manager->get_meta(                                   // Načtení metadat tlačítka z DB
 			$this->builtin_code,                                             // Kód požadované fráze
 			$this->default_caption,                                          // Výchozí popisek při neexistenci
 			$this->source_code,                                              // Zdrojová třída v meta_phrase
@@ -170,20 +173,20 @@ class abstract_button {
 			$this->default_css                                               // Výchozí CSS třída tlačítka
 		);
 
-		$caption =$phrase_manager->interpolate($meta['caption'],$this->vars);   // Interpolace popisku
-		$helptext =$phrase_manager->interpolate($meta['helptext'],$this->vars); // Interpolace tooltipu
+		$caption = $phrase_manager->interpolate($meta['caption'], $this->vars);   // Interpolace popisku
+		$helptext = $phrase_manager->interpolate($meta['helptext'], $this->vars); // Interpolace tooltipu
 		$svg_icon = trim($meta['svg_icon']);                                 // Kód SVG ikony
 		$db_css = trim($meta['css_class']);                                  // CSS třída z databáze
 
 		// Složení výsledného seznamu CSS tříd
 		$classes = ['btn'];                                                  // Základní třída všech tlačítek
 		if ($db_css !== '') {                                                // Kontrola existence třídy z DB
-			$classes[] =$db_css;                                            // Přidání třídy z meta_phrase
+			$classes[] = $db_css;                                            // Přidání třídy z meta_phrase
 		}
 		if ($this->extra_css !== '') {                                       // Kontrola existence extra třídy
-			$classes[] =$this->extra_css;                                   // Přidání třídy z PHP kódu
+			$classes[] = $this->extra_css;                                   // Přidání třídy z PHP kódu
 		}
-		if ($this->disabled &&$this->href !== '') {                         // Deaktivace odkazu pomocí třídy
+		if ($this->disabled AND $this->href !== '') {                        // Deaktivace odkazu pomocí třídy
 			$classes[] = 'disabled';                                         // Vizuální deaktivace pro odkaz <a>
 		}
 		$class_attr = htmlspecialchars(implode(' ', array_unique($classes))); // Ošetřený seznam CSS tříd
@@ -207,7 +210,7 @@ class abstract_button {
 			$js_parts[] = "if(!confirm('{$safe_confirm}')) return false;";   // Podmínka potvrzení akce
 		}
 		if ($this->onclick !== '') {                                         // Pokud je zadán vlastní JS handler
-			$js_parts[] =$this->onclick;                                    // Vlastní JS kód
+			$js_parts[] = $this->onclick;                                    // Vlastní JS kód
 		}
 		if (!empty($js_parts)) {                                             // Složení výsledného onclick atributu
 			$attrs .= ' onclick="' . htmlspecialchars(implode(' ', $js_parts)) . '"'; // Připojení onclick handleru
@@ -232,7 +235,7 @@ class abstract_button {
 		$type_attr = htmlspecialchars($this->type);                          // Typ tlačítka (submit/button)
 		$name_attr = ($this->name !== '') ? ' name="' . htmlspecialchars($this->name) . '"' : ''; // Volitelný atribut name
 		$val_attr = ($this->name !== '') ? ' value="' . htmlspecialchars($this->value) . '"' : ''; // Volitelný atribut value
-		$dis_attr =$this->disabled ? ' disabled' : '';                      // HTML atribut disabled
+		$dis_attr = $this->disabled ? ' disabled' : '';                      // HTML atribut disabled
 
 		return "<button type=\"{$type_attr}\" {$attrs}{$name_attr}{$val_attr}{$dis_attr}>{$inner_html}</button>"; // Výsledný tag tlačítka
 	}
