@@ -1,0 +1,72 @@
+Odpovědi na tvoje připomínky k chybám a nekonzistenci.
+
+1. Porušení symetrie je třeba opravit.
+
+2. Unikátnost loginu je OK. Na e-mailu unikátnost být nemusí.
+Jeden autentizační e-mail může sloužit více uživatelským účtům.
+Pro zaslání hesla je třeba, aby uživatel uvedl i login uživatele,
+pro který zaslání platí.
+Pokud se uživatel přihlásí pomocí g-mailu, provede se přihlášení 
+ke stejnému účtu, k jakému se přihlásil naposled. K tomu slouží sloupce
+last_login_date a last_login_organization
+
+3. Mrtvý kód se může odstranit, zachování konvence, že každá stránka má svou proceduru,
+je otázkou. U složitějších stránek to bude užitečné.
+
+4. Chybějící standardní sloupce je třeba doplnit.
+
+5. Entity manager by měl pro zjištění jazykových mutací metadat používat
+stejný mechanismus, jako sám poskytuje jiným objektům.
+Měl by zjistit "original" pro každou entitu a pro ni zjisit modifikované
+záznamy organizace, pokud existují, a jazykové mutace.
+
+=============================
+
+Architektura pro bod 1
+
+- tabulka org_role, souhlasím se strukturou, ale neměla by se předvyplňovat.
+Předvyplňování rolí na úrovni systému necháme na později, bude-li třeba.
+Pokud role v organizaci chybí, tak ke všem entitám má přístup pouze Admin organizace.
+Mezi rolemi může být vztah nadřízená-podřízená. Role může mít i víc nadřízených
+a díky tomu mohou mít role podobu acyklického grafu.
+Případné zacyklení můžeme řešit databázovou funkcí f_resolve_hierarchy.
+Přiřadíme-li pak roli přístup k nějaké třídě, zdědí toto právo všechny další role v podřízené struktuře.
+Přístup bychom měli řešit ve dvou rovinách, elementárních oprávnění a aplikační role.
+Elementární oprávnění by mohly mít podobu bitové mapy, která může být v tabulce, ale může být napevno zašitá v logice.
+permission	permission_code	name
+1	x	Use
+2	c	Create
+4	r	Read
+8	u	Update
+16	d	Delete
+32	i	Import
+64	e	Export
+128	a	ACL
+256	o	Owner
+512 h   Audit (čtení historie)
+
+Aplikační role má vlastnost "permission_bitmap", která vyjadřuje všechna oprávnění k objektu.
+
+Seznam aplikačních rolí může být rozvěž pevný a final, bez nutnosti lokalizace.
+Měl by odpovídat základním funkcím v modelu RACI:
+author = může vkládat data jako koncept, ale sám je nemůže schvalovat
+editor = schvaluje a tím zodpovídá za obsah
+cooperator = Čtení konceptů ke schválení, podílí se na schvalování
+user = může získávat přístup zprostředkovaně, dle agendy, která mu právo propůjčí
+reader = může číst všechna data, být informován o změnách
+auditor = čtenář včetně historie
+admin = edituje přístupová práva (ACL)
+owner = accountable
+
+Aplikační roli mohou dostat subjekty pouze business role.
+Business roli mohou dostat
+- uživatelé
+- organizační jednotky
+
+Vzhledem k tomu, že business role mohou být propojeny do acyklického grafu,
+úplně postačí, když každý uživatel organizace bude mít právě jednu business roli (1:N)
+a rovněž každá organizační jednotka bude mít nejvýše jednu business roli.
+
+Navíc připojuji původní dokument, kdy by každý záznam v databázi mohl mí vlastní schéma pro přístup k němu.
+
+Dává ti ti smysl?

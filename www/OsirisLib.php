@@ -348,7 +348,7 @@ function print_sqlprocresult(){
 */
 function fetch($q=null){
 	global $dbquery;
-	if(!$q) $q=$dbquery;
+	if($q===null) $q=$dbquery;
 	
 	znovu:
 	$r = sqlsrv_fetch_array($q, SQLSRV_FETCH_BOTH);
@@ -1965,7 +1965,7 @@ function csv_export($q=null,$delimiter='',$headers=array(),$excludeColumns=''){
 	// Je-li prvním parametrem pole, pak byly první dva vynechány
 	elseif(is_array($q)) {$excludeColumns=$delimiter; $headers=$q; $delimiter='';}
 	if(is_string($excludeColumns)) $excludeColumns=explode(',',$excludeColumns);
-	if(!$q) $q=$dbquery;
+	if($q===null) $q=$dbquery;
 	if(!$delimiter) {
 		$delimiter=",";
 		if(in_array(($dbsession['language'] ?? ''),array('cs','sk'))) $delimiter=";";
