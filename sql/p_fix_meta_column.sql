@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-15 14:55
+ * Verze: 2026-10-16 07:40
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -26,6 +26,9 @@ GO
  * - 2026-10-15: Doplněn filtr tabname NOT LIKE '%$' při čtení z v_syscolumns
  *   a cleanup případných uvízlých staging tabulek XLSX_*$. Rozšířen seznam
  *   překládaných sloupců (translate = 1) v globálním slovníku.
+ * - 2026-10-16: Doplněno automatické nastavení vazby referenced_class pro
+ *   sloupce parent_class, ancestor_class, referenced_class, storage_object
+ *   a ancestor v globálním slovníku pro automatické generování <select> prvků.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -391,6 +394,38 @@ BEGIN
 			'shortname', 'description', 'description_text', 'helptext', 'help_text',
 			'caption_forward', 'caption_backward', 'note'
 		)
+
+	-- -------------------------------------------------------------------------
+	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class V GLOBÁLNÍM SLOVNÍKU
+	--     Zajistí automatické vykreslení <select> prvků v entity_manageru.
+	-- -------------------------------------------------------------------------
+	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
+	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');
+	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
+
+	UPDATE meta_column
+	SET referenced_class = @cls_meta_class
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name IN ('parent_class', 'ancestor_class', 'referenced_class', 'from_class', 'to_class')
+	  AND referenced_class IS NULL;
+
+	UPDATE meta_column
+	SET referenced_class = @cls_meta_object
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name IN ('storage_object', 'target_object')
+	  AND referenced_class IS NULL;
+
+	UPDATE meta_column
+	SET referenced_class = @cls_meta_column
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name = 'ancestor'
+	  AND referenced_class IS NULL;
 
 	-- -------------------------------------------------------------------------
 	-- 6. OPRAVA HISTORICKÝCH DAT: Doplnění chybějícího caption u existujících tříd

@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-15 09:40
+ * Verze: 2026-10-16 07:45
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
  * 
@@ -9,8 +9,9 @@
  * - Instancován z potomků `abstract_page_master_detail` (v metodě `render()`).
  * - Využívá globální pole `$dbsession` (inicializované v `OsirisLib.php` přes `initsession()`).
  * - Využívá třídu `language_manager` (`language_manager.php`) pro získání fallback řetězce jazyků.
+ * - Využívá globální `$phrase_manager` (`phrase_manager.php`) pro lokalizaci systémových hlášek a voleb.
  * - Využívá databázové funkce z `OsirisLib.php` (`sqlrun`, `fetch`, `free_result`,
- *   `charliteral`, `guidliteral`, `fatal_error`).
+ *   `charliteral`, `guidliteral`, `fatal_error`, `getinput`).
  * - Čte metadata z tabulek `meta_class`, `meta_object`, `meta_column`, `meta_codetable`,
  *   `meta_original_keys` a systémového pohledu `v_syscolumns`.
  * - V SQL dotazech volá databázové funkce `dbo.f_get_user_info`, `dbo.f_generate_original`
@@ -34,12 +35,15 @@
  *    přes všechny dostupné fallback jazyky definované v language_manager,
  *    následně přes vlastní/systémový originál a nakonec přes hodnoty předka.
  * 
- * 4. Ochranné zámky (is_final a is_protected)
+ * 4. Ochranné zámky (is_final, is_protected a role Developer 'D' u metadat)
  *    - is_final: Je-li nastaveno na třídě, tenant (vyjma 0x00) NESMÍ vůbec 
  *      založit vlastní 'A' záznam (tzv. override). Může dělat jen 'L' překlady.
  *    - is_protected: Je-li nastaveno na sloupci, tenant NESMÍ tento sloupec
  *      přepsat. V SQL (při čtení) i v PHP (při zápisu) se tvrdě vynucuje 
  *      hodnota ze systémového originálu (0x00).
+ *    - Ochrana metadat (meta_*): Funkčně významné atributy metadat (translate = 0)
+ *      smí upravovat výhradně uživatel s active_role = 'D' (Developer). Překladové
+ *      sloupce (translate = 1) mohou upravovat všichni uživatelé.
  * 
  * 5. Asymetrický zápis překladů (right_translate)
  *    Překlady do 'L' záznamů může dělat každý tenant. Pokud ale uživatel patří 
@@ -53,6 +57,11 @@
  *    kompletní data bez nutnosti plošného využívání NULL.
  * 
  * Změny:
+ * 2026-10-16 07:45 - Doplněna ochrana funkčních atributů metadat (meta_*) výhradně pro roli 'D',
+ *                    zatímco překlady (translate = 1) mohou upravovat všichni uživatelé.
+ *                  - Doplněno automatické generování <select> prvků pro referenced_class
+ *                    a pro sloupec source_code v tabulce meta_phrase.
+ *                  - Zapojen phrase_manager pro lokalizaci textů a chybových zpráv.
  * 2026-10-15 - Oprava spojených řádků v save_post_data() a build_select_query() (Anti-LaTeX ochrana).
  *            - Doplněna aktualizace date_modified a who_modified na hlavním 'A' záznamu
  *              i při samostatné úpravě 'L' záznamu.
@@ -89,6 +98,30 @@ class entity_manager {
 		$this->class_name = $class_name;                                     // Uložení identifikátoru třídy
 		$this->lang_manager = new language_manager();                        // Inicializace jazykového manažeru
 		$this->load_metadata();                                              // Načtení metadat třídy a sloupců
+	}
+
+	/**
+	 * Pomocná metoda pro překlad interních textů třídy entity_manager.
+	 *
+	 * @param string               $builtin_code    Kód fráze
+	 * @param string               $default_caption Výchozí český text
+	 * @param array<string, mixed> $vars            Proměnné pro interpolaci
+	 * @return string Přeložený text
+	 */
+	private function phrase(string $builtin_code, string $default_caption, array $vars = []): string {
+		global $phrase_manager;                                              // Globální instance správce frází
+		if (!isset($phrase_manager) || !($phrase_manager instanceof phrase_manager)) {
+			$phrase_manager = new phrase_manager();                          // Nouzová inicializace správce frází
+			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
+		}
+		return $phrase_manager->get($builtin_code, $vars, $default_caption, 'entity_manager'); // Vrácení přeložené fráze
+	}
+
+	/**
+	 * Určuje, zda aktuální entita patří mezi systémové metadatové tabulky (meta_*).
+	 */
+	private function is_metadata_entity(): bool {
+		return str_starts_with($this->storage_table, 'meta_');               // Detekce prefixu meta_ u fyzické tabulky
 	}
 
 	/**
@@ -324,7 +357,9 @@ class entity_manager {
 	 */
 	public function build_select_query(string $where = '', string$order_by = ''): string {
 		if (!$this->is_initialized) {
-			fatal_error("Entity manager", "Metadata pro logickou třídu '{$this->class_name}' nebyla nalezena.");
+			$err_title = $this->phrase('err_em_title', 'Entity manager');    // Lokalizovaný titulek chyby
+			$err_msg = $this->phrase('err_meta_not_found', 'Metadata pro logickou třídu {' . chr(36) . 'class} nebyla nalezena.', ['class' => $this->class_name]);
+			fatal_error($err_title, $err_msg);                               // Vyvolání fatální chyby
 		}
 
 		$table = $this->storage_table;                                       // Název cílové tabulky
@@ -549,17 +584,21 @@ class entity_manager {
 	 * Dynamický HTML generátor formulářových prvků na základě metadat v DB.
 	 * Zajišťuje vizuální vykreslení datových typů, maximálních délek a zamykání polí.
 	 * 
-	 * @param string $column_name Název sloupce (klíč v databázi, např. 'caption')
-	 * @param string $value Aktuální hodnota k zobrazení
-	 * @param bool $is_mine Příznak, zda tenant vytvořil pro tento záznam svůj vlastní 'A' override
+	 * @param string $column_name    Název sloupce (klíč v databázi, např. 'caption')
+	 * @param string $value          Aktuální hodnota k zobrazení
+	 * @param bool   $is_mine        Příznak, zda tenant vytvořil pro tento záznam svůj vlastní 'A' override
+	 * @param bool   $force_readonly Vynucení režimu pouze pro čtení z nadřazeného panelu
 	 * @return string Vygenerovaný HTML string (např. tag <input> nebo <select>)
 	 */
-	public function render_dynamic_input(string $column_name, string $value, bool $is_mine = true): string {
+	public function render_dynamic_input(string $column_name, string $value, bool $is_mine = true, bool $force_readonly = false): string {
 		$meta = $this->get_column_meta($column_name);                        // Načtení metadat sloupce
 		
 		if (empty($meta)) {
 			return "<!-- Neznámý sloupec: {$column_name} -->";
 		}
+
+		global $dbsession;                                                   // Globální kontext relace
+		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role uživatele v relaci
 
 		$type = $meta['input_type'] ?: 'text';                               // Výchozí typ prvku je text
 		$safe_name = htmlspecialchars($column_name);                         // Ošetřený název prvku
@@ -581,11 +620,15 @@ class entity_manager {
 		}
 		
 		// Zpracování oprávnění k editaci na frontendu
-		$is_readonly = false;                                                // Příznak uzamčení prvku
+		$is_readonly = $force_readonly;                                      // Výchozí stav uzamčení dle panelu
 		
 		if (!empty($meta['is_computed'])) {
 			$is_readonly = true;                                             // Vypočítávaný sloupec nelze měnit
-		} elseif (!$is_mine && !empty($meta['is_protected'])) {
+		} elseif ($this->is_metadata_entity() && $active_role !== 'D' && empty($meta['translate'])) {
+			// U metadatových tabulek (meta_*) smí funkčně významné atributy (translate = 0)
+			// upravovat výhradně uživatel s rolí Developer ('D'). Překlady mohou upravovat všichni.
+			$is_readonly = true;                                             // Uzamčení funkčního atributu metadat
+		} elseif (!$is_mine && !empty($meta['is_protected']) && empty($meta['translate'])) {
 			$is_readonly = true;                                             // Chráněný systémový sloupec
 		} 
 		
@@ -603,10 +646,33 @@ class entity_manager {
 		}
 
 		$attr_string = implode(' ', $attrs);                                 // Spojení atributů do řetězce
+		$lbl_select = htmlspecialchars($this->phrase('opt_select_default', '--- Vyberte ---')); // Výchozí volba roletky
 
-		// Generování <select> seznamů pro číselníky napojené v metadatech (STI)
+		// 1. Speciální podpora pro sloupec source_code v tabulce meta_phrase (výběr PHP třídy/stránky z meta_object)
+		if ($this->storage_table === 'meta_phrase' && $column_name === 'source_code') {
+			$lbl_global = htmlspecialchars($this->phrase('opt_global_phrase_source', '(Globální fráze bez třídy)'));
+			$sel_empty = ($value === '') ? 'selected' : '';                  // Označení globální fráze
+			$options_html = "<option value=\"\" {$sel_empty}>{$lbl_global}</option>"; // Volba pro prázdný source_code
+
+			$q_src = sqlrun("SELECT builtin_code, caption FROM meta_object WHERE object_type = 'P' AND builtin_code <> '' AND object_owner = 0x00 AND record_type = 'A' AND removed = 0 ORDER BY builtin_code");
+			while ($r_src = fetch($q_src)) {
+				$b_code = (string)$r_src['builtin_code'];                    // Název PHP třídy
+				$b_cap = (string)$r_src['caption'];                          // Popisek třídy
+				$sel = ($b_code === $value) ? 'selected' : '';               // Shoda s aktuální hodnotou
+				$opt_label = ($b_cap !== '' && $b_cap !== $b_code) ? "{$b_code} ({$b_cap})" : $b_code;
+				$options_html .= "<option value=\"" . htmlspecialchars($b_code) . "\" {$sel}>" . htmlspecialchars($opt_label) . "</option>";
+			}
+			free_result($q_src);                                             // Uvolnění dotazu objektů
+
+			if ($is_readonly) {
+				return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$safe_val}\"><select disabled {$attr_string}>{$options_html}</select>";
+			}
+			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>";
+		}
+
+		// 2. Generování <select> seznamů pro číselníky napojené v metadatech (referenced_codetable)
 		if (!empty($meta['referenced_codetable'])) {
-			$options_html = '<option value="">--- Vyberte ---</option>';
+			$options_html = "<option value=\"\">{$lbl_select}</option>";     // Prázdná výchozí volba číselníku
 			$safe_ct = charliteral($meta['referenced_codetable']);           // Bezpečný literál číselníku
 			$q_opt = sqlrun("SELECT value_code, caption FROM meta_codetable WHERE codetable_name = {$safe_ct} AND record_type = 'A' AND removed = 0 AND inactive = 0 ORDER BY sort_code, caption");
 			
@@ -616,6 +682,59 @@ class entity_manager {
 			}
 			
 			free_result($q_opt);                                             // Uvolnění dotazu číselníku
+			if ($is_readonly) {
+				return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$safe_val}\"><select disabled {$attr_string}>{$options_html}</select>";
+			}
+			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>";
+		}
+
+		// 3. Generování <select> seznamů pro relační odkazy na jiné logické třídy (referenced_class)
+		if (!empty($meta['referenced_class'])) {
+			$options_html = "<option value=\"\">{$lbl_select}</option>";     // Prázdná výchozí volba relace
+			$ref_class_uuid = guidliteral((string)$meta['referenced_class']); // UUID odkazované logické třídy
+
+			$q_rc = sqlrun("
+				SELECT mc.class_name, mo.builtin_code AS ref_table
+				FROM meta_class mc
+				JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
+				WHERE mc.original = {$ref_class_uuid} AND mc.object_owner = 0x00 AND mc.record_type = 'A' AND mc.removed = 0
+			");
+			if ($rc_row = fetch($q_rc)) {
+				$ref_table = (string)$rc_row['ref_table'];                   // Fyzická tabulka cílové třídy
+				free_result($q_rc);                                          // Uvolnění dotazu cílové třídy
+
+				$exclude_self = '';                                          // Podmínka vyloučení sebe sama u stromů
+				$curr_guid = trim((string)getinput('update_guid'));          // Aktuálně editovaný záznam
+				if ($ref_table === $this->storage_table && $curr_guid !== '' && $curr_guid !== 'NEW') {
+					$exclude_self = " AND original <> " . guidliteral($curr_guid); // Zamezení cyklickému odkazu na sebe
+				}
+
+				if ($ref_table === 'meta_class') {
+					$q_items = sqlrun("SELECT original, class_name AS code_col, caption FROM meta_class WHERE object_owner = 0x00 AND record_type = 'A' AND removed = 0 {$exclude_self} ORDER BY class_name");
+				} elseif ($ref_table === 'meta_object') {
+					$q_items = sqlrun("SELECT original, builtin_code AS code_col, caption FROM meta_object WHERE object_owner = 0x00 AND record_type = 'A' AND removed = 0 {$exclude_self} ORDER BY object_type, builtin_code");
+				} elseif ($ref_table === 'meta_column') {
+					$q_items = sqlrun("SELECT original, column_name AS code_col, caption FROM meta_column WHERE object_owner = 0x00 AND record_type = 'A' AND removed = 0 {$exclude_self} ORDER BY column_name");
+				} else {
+					$q_items = sqlrun("SELECT original, '' AS code_col, caption FROM {$ref_table} WHERE record_type = 'A' AND removed = 0 {$exclude_self} ORDER BY caption");
+				}
+
+				while ($item = fetch($q_items)) {
+					$item_uuid = (string)$item['original'];                  // UUID položky v roletce
+					$item_code = (string)$item['code_col'];                  // Technický kód položky
+					$item_cap = (string)$item['caption'];                    // Zobrazovaný název položky
+					$sel = (strcasecmp($item_uuid, $value) === 0) ? 'selected' : ''; // Porovnání UUID bez ohledu na velikost písmen
+					$item_label = ($item_code !== '' && $item_cap !== '' && $item_cap !== $item_code) ? "{$item_code} ({$item_cap})" : ($item_code ?: $item_cap ?: $item_uuid);
+					$options_html .= "<option value=\"" . htmlspecialchars($item_uuid) . "\" {$sel}>" . htmlspecialchars($item_label) . "</option>";
+				}
+				free_result($q_items);                                       // Uvolnění položek relace
+			} else {
+				free_result($q_rc);                                          // Uvolnění dotazu při nenalezení třídy
+			}
+
+			if ($is_readonly) {
+				return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$safe_val}\"><select disabled {$attr_string}>{$options_html}</select>";
+			}
 			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>";
 		}
 
@@ -699,8 +818,8 @@ class entity_manager {
 	/**
 	 * JÁDRO BACKENDU: Provede autonomní zápis dat s uplatněním architektury "Klonování s modifikací".
 	 * 
-	 * 1. Zjistí aktuální oprávnění ze session (right_translate) a master data.
-	 * 2. Zfiltruje chráněná pole (`is_protected`), do kterých tenant nesmí zapisovat.
+	 * 1. Zjistí aktuální oprávnění ze session (right_translate, active_role) a master data.
+	 * 2. Zfiltruje chráněná pole (`is_protected`) a funkční atributy metadat (pro role mimo 'D').
 	 * 3. Zjistí shodu s předlohou (systémovým originálem) a uloží záznam s plně obsazenými 
 	 *    datovými poli, včetně případné dědičnosti z předka.
 	 * 4. Vyčlení přeložená data (`translate=1`) a zapíše je do paralelního 'L' záznamu.
@@ -721,13 +840,16 @@ class entity_manager {
 		global $dbsession;                                                   // Načtení globální relace
 
 		if (empty($dbsession) || empty($dbsession['login_session_uuid'])) {
-			fatal_error("Uložení selhalo", "Nepodařilo se načíst kontext uživatele z globální relace dbsession.");
+			$err_save_title = $this->phrase('err_save_failed_title', 'Uložení selhalo');
+			$err_save_msg = $this->phrase('err_save_no_session', 'Nepodařilo se načíst kontext uživatele z globální relace dbsession.');
+			fatal_error($err_save_title, $err_save_msg);                     // Vyvolání chyby při ztrátě relace
 		}
 
 		// Identita uživatele: zachování surových hodnot pro PHP logiku a tvorba bezpečných SQL literálů
 		$org_uuid_raw = (string)$dbsession['organization'];                  // Surové UUID organizace
 		$user_uuid_raw = (string)$dbsession['login_session_uuid'];           // Surové UUID relace pro audit
 		$sess_lang_raw = (string)$dbsession['language'];                     // Surový kód jazyka relace
+		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role v relaci
 		$right_translate = !empty($dbsession['right_translate']);            // Oprávnění ke globálnímu překladu
 
 		$org_uuid_sql = guidliteral($org_uuid_raw);                          // SQL literál organizace
@@ -735,9 +857,16 @@ class entity_manager {
 		$lang_literal_sql = charliteral($sess_lang_raw);                     // SQL literál jazyka
 		
 		$table = $this->storage_table;                                       // Cílová fyzická tabulka
+		$is_meta_table = $this->is_metadata_entity();                        // Zda jde o tabulku metadat (meta_*)
 
 		$orig_guid_raw = $update_guid;                                       // Surové UUID upravovaného záznamu
 		$orig_guid_sql = ($update_guid === '') ? '' : guidliteral($update_guid);
+
+		// BACKENDOVÁ POJISTKA METADAT: Zakládání zcela nových záznamů v metadatových tabulkách
+		// je povoleno výhradně pro roli Developer ('D').
+		if ($is_meta_table && $orig_guid_sql === '' && $active_role !== 'D') {
+			return;                                                          // Zákaz INSERTu do metadat mimo roli D
+		}
 
 		// 2. Zjištění vlastníka a master jazyka původního 'A' záznamu
 		$a_exists = false;                                                   // Zda již existuje vlastní 'A' záznam
@@ -790,9 +919,17 @@ class entity_manager {
 		$is_native_lang = ($a_lang_raw === $sess_lang_raw);                  // Zda se edituje v mateřském jazyce
 
 		foreach ($post_data as $col => $val) {
+			$is_translated = !empty($this->columns_meta[$col]['translate']); // Zda sloupec podléhá překladu
+
+			// BACKENDOVÁ POJISTKA METADAT: U metadatových tabulek (meta_*) smí funkčně
+			// významné atributy (translate = 0) měnit výhradně role Developer ('D').
+			if ($is_meta_table && $active_role !== 'D' && !$is_translated) {
+				continue;                                                    // Odfiltrování funkčního atributu metadat
+			}
+
 			// BACKENDOVÁ POJISTKA (is_protected): Pokud se nejedná o sysadmina (0x00),
-			// všechny chráněné sloupce vyhodíme. Ignorujeme i případné podvrhy přes HTTP nástroje.
-			if (!$is_sysadmin_org && !empty($this->columns_meta[$col]['is_protected'])) {
+			// všechny chráněné nepřekládané sloupce vyhodíme. Ignorujeme i případné podvrhy přes HTTP nástroje.
+			if (!$is_sysadmin_org && !empty($this->columns_meta[$col]['is_protected']) && !$is_translated) {
 				continue;
 			}
 
@@ -808,8 +945,6 @@ class entity_manager {
 				}
 			}
 
-			$is_translated = !empty($this->columns_meta[$col]['translate']); // Zda sloupec podléhá překladu
-
 			if ($is_translated) {
 				$has_translated_cols = true;                                 // Evidujeme přítomnost překladu
 				$l_post_data[$col] = $val;                                   // Zápis hodnoty do jazykové vrstvy
@@ -824,7 +959,7 @@ class entity_manager {
 			}
 		}
 
-		// BACKENDOVÁ POJISTKA 2 (is_final): Pokud je celá třída nedotknutelná (číselníky),
+		// BACKENDOVÁ POJISTKA 2 (is_final): Pokud je celá třída nedotknutelná (číselníky, metadata),
 		// tenantovi zamezíme jakémukoli vytváření vlastního 'A' overridu vymazáním polí.
 		if (!$is_sysadmin_org && !empty($this->class_meta['is_final'])) {
 			$a_post_data = [];                                               // Zákaz modifikace 'A' záznamu pro tenanta

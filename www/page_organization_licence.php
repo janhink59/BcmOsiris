@@ -1,7 +1,8 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-15 22:50
+ * Verze: 2026-10-16 08:35
+ * Soubor: page_organization_licence.php
  * Stránka: page_organization_licence.php
  * Účel: Master-Detail rozhraní pro evidenci žádostí a licencí organizací.
  * 
@@ -12,7 +13,15 @@
  * - Procedura obratem licenci zpracuje (vygeneruje organizaci, orgadmina
  *   a propojí jejich záznamy v DB) a stav finálně přepne na 'PROCESSED'.
  *
+ * Vazby na okolí:
+ * - Dědí z abstract_page_master_detail (využívá $this->phrase(), render_audit_trail()).
+ * - Využívá abstract_button pro vykreslení akčních tlačítek.
+ * - Volá proceduru p_process_organization_licence při schválení licence.
+ *
  * Změny:
+ * 2026-10-16 08:35 - Zapojena komponenta abstract_button a lokalizace všech textů,
+ *                    popisků pageitem(), stavů licence a hlášek přes $this->phrase().
+ *                  - Doplněna ochrana proti slučování řádků (Anti-LaTeX komentáře).
  * 2026-10-15 22:50 - Přechod na objektovou architekturu (extends abstract_page_master_detail).
  *                  - Oprava kontroly oprávnění ze zrušeného right_sysadmin na active_role ('S', 'D').
  *                  - Oprava auditního klíče ze zrušeného user_access_uuid na login_session_uuid.
@@ -32,37 +41,97 @@ class page_organization_licence extends abstract_page_master_detail {
 		parent::__construct();                                               // Inicializace frází a kontroly role v předkovi
 
 		global $dbsession;                                                   // Globální kontext relace
-		$this->page_title = 'Správa licencí organizací';                     // Titulek stránky
+		$this->page_title = $this->phrase('page_title', [], 'Správa licencí organizací'); // Lokalizovaný titulek stránky
 
 		// Ochrana před nepovolaným přístupem (povoleno pro Sysadmin 'S' a Developer 'D')
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role v relaci
-		if (!in_array($active_role, ['S', 'D'], true)) {
+		if ($this->access_denied || !in_array($active_role, ['S', 'D'], true)) {
 			$this->access_denied = true;                                     // Zamezení přístupu pro nižší role
-			return;
+			return;                                                          // Ukončení inicializace při zamítnutí
 		}
 
 		$this->update_guid = getinput('update_guid', 'raw') ?: null;         // Načtení identifikátoru záznamu
 
-		// Manuální mapování proměnných pro OsirisLib formovací vrstvu
-		pageitem('builtin_code', 'Kód licence (zkratka)', 'Kód', 'Unikátní identifikátor licence', 'text', 'varchar', '200px', 0, 0, 80);
-		pageitem('caption', 'Název organizace', 'Název organizace', 'Plný název nové organizace', 'text', 'varchar', '100%', 0, 0, 200);
-		pageitem('login_domain', 'Login doména', 'Doména', 'Doména pro SSO (např. firma.cz)', 'text', 'varchar', '100%', 0, 0, 200);
-		pageitem('licence_level', 'Úroveň licence', 'Úroveň', 'Zvolte požadovanou úroveň licence z číselníku', 'select', 'int', '200px', 0, 0, 0);
-		pageitem('licence_state', 'Stav licence', 'Stav', 'Životní cyklus licence', 'select', 'varchar', '220px', 0, 0, 0);
-		pageitem('is_developer', 'Vývojářská licence', 'Developer', 'Povolit vývojářský režim', 'checkbox', 'bit', '', 0, 0, 0);
-		pageitem('admin_login', 'Login admina', 'Admin login', 'Přihlašovací jméno správce', 'text', 'varchar', '100%', 0, 0, 100);
-		pageitem('admin_first_name', 'Jméno admina', 'Jméno', 'Křestní jméno správce', 'text', 'varchar', '100%', 0, 0, 100);
-		pageitem('admin_last_name', 'Příjmení admina', 'Příjmení', 'Příjmení správce', 'text', 'varchar', '100%', 0, 0, 100);
-		pageitem('admin_email', 'E-mail admina', 'E-mail', 'Kontaktní e-mail', 'text', 'varchar', '100%', 0, 0, 200);
+		// Manuální mapování proměnných pro OsirisLib formovací vrstvu s lokalizací
+		pageitem(
+			'builtin_code',
+			$this->phrase('lbl_builtin_code', [], 'Kód licence (zkratka)'),
+			$this->phrase('hdr_builtin_code', [], 'Kód'),
+			$this->phrase('tip_builtin_code', [], 'Unikátní identifikátor licence'),
+			'text', 'varchar', '200px', 0, 0, 80
+		);
+		pageitem(
+			'caption',
+			$this->phrase('lbl_caption', [], 'Název organizace'),
+			$this->phrase('hdr_caption', [], 'Název organizace'),
+			$this->phrase('tip_caption', [], 'Plný název nové organizace'),
+			'text', 'varchar', '100%', 0, 0, 200
+		);
+		pageitem(
+			'login_domain',
+			$this->phrase('lbl_login_domain', [], 'Login doména'),
+			$this->phrase('hdr_login_domain', [], 'Doména'),
+			$this->phrase('tip_login_domain', [], 'Doména pro SSO (např. firma.cz)'),
+			'text', 'varchar', '100%', 0, 0, 200
+		);
+		pageitem(
+			'licence_level',
+			$this->phrase('lbl_licence_level', [], 'Úroveň licence'),
+			$this->phrase('hdr_licence_level', [], 'Úroveň'),
+			$this->phrase('tip_licence_level', [], 'Zvolte požadovanou úroveň licence z číselníku'),
+			'select', 'int', '200px', 0, 0, 0
+		);
+		pageitem(
+			'licence_state',
+			$this->phrase('lbl_licence_state', [], 'Stav licence'),
+			$this->phrase('hdr_licence_state', [], 'Stav'),
+			$this->phrase('tip_licence_state', [], 'Životní cyklus licence'),
+			'select', 'varchar', '220px', 0, 0, 0
+		);
+		pageitem(
+			'is_developer',
+			$this->phrase('lbl_is_developer', [], 'Vývojářská licence'),
+			$this->phrase('hdr_is_developer', [], 'Developer'),
+			$this->phrase('tip_is_developer', [], 'Povolit vývojářský režim'),
+			'checkbox', 'bit', '', 0, 0, 0
+		);
+		pageitem(
+			'admin_login',
+			$this->phrase('lbl_admin_login', [], 'Login admina'),
+			$this->phrase('hdr_admin_login', [], 'Admin login'),
+			$this->phrase('tip_admin_login', [], 'Přihlašovací jméno správce'),
+			'text', 'varchar', '100%', 0, 0, 100
+		);
+		pageitem(
+			'admin_first_name',
+			$this->phrase('lbl_admin_first_name', [], 'Jméno admina'),
+			$this->phrase('hdr_admin_first_name', [], 'Jméno'),
+			$this->phrase('tip_admin_first_name', [], 'Křestní jméno správce'),
+			'text', 'varchar', '100%', 0, 0, 100
+		);
+		pageitem(
+			'admin_last_name',
+			$this->phrase('lbl_admin_last_name', [], 'Příjmení admina'),
+			$this->phrase('hdr_admin_last_name', [], 'Příjmení'),
+			$this->phrase('tip_admin_last_name', [], 'Příjmení správce'),
+			'text', 'varchar', '100%', 0, 0, 100
+		);
+		pageitem(
+			'admin_email',
+			$this->phrase('lbl_admin_email', [], 'E-mail admina'),
+			$this->phrase('hdr_admin_email', [], 'E-mail'),
+			$this->phrase('tip_admin_email', [], 'Kontaktní e-mail'),
+			'text', 'varchar', '100%', 0, 0, 200
+		);
 
 		// Nastavení dynamických hodnot pro drop-down nabídky
 		$this->states_opt = [                                                // Stavy životního cyklu licence
-			'DRAFT'     => 'Koncept',
-			'APPROVED'  => 'Schváleno (spustí aktivaci)',
-			'PROCESSED' => 'Zpracováno (Aktivní)',
-			'REJECTED'  => 'Zamítnuto'
-		];
-		$this->levels_opt = sqlarray("SELECT licence_level, name FROM licence_level ORDER BY licence_level");
+			'DRAFT'     => $this->phrase('state_draft', [], 'Koncept'),      // Rozpracovaná licence
+			'APPROVED'  => $this->phrase('state_approved', [], 'Schváleno (spustí aktivaci)'), // Stav ke zpracování
+			'PROCESSED' => $this->phrase('state_processed', [], 'Zpracováno (Aktivní)'), // Zpracovaná aktivní licence
+			'REJECTED'  => $this->phrase('state_rejected', [], 'Zamítnuto')  // Zamítnutá žádost o licenci
+		];                                                                   // Konec definice stavů licence
+		$this->levels_opt = sqlarray("SELECT licence_level, name FROM licence_level ORDER BY licence_level"); // Načtení úrovní licencí
 	}
 
 	/**
@@ -70,7 +139,7 @@ class page_organization_licence extends abstract_page_master_detail {
 	 */
 	protected function process_save(): void {
 		if (!isset($_POST['button_save']) && !isset($_POST['btn_save'])) {
-			return;
+			return;                                                          // Bez odeslání formuláře neukládáme
 		}
 
 		global $dbsession;                                                   // Globální kontext relace
@@ -149,23 +218,34 @@ class page_organization_licence extends abstract_page_master_detail {
 	 * Vykreslení levého panelu (Master) se seznamem licencí.
 	 */
 	protected function render_master(): void {
+		$master_heading = htmlspecialchars($this->phrase('master_heading', [], 'Evidence organizací a licencí')); // Nadpis seznamu licencí
+		$search_placeholder = htmlspecialchars($this->phrase('placeholder_search', [], 'Hledat...')); // Placeholder vyhledávání
+		$th_org   = htmlspecialchars($this->phrase('th_organization', [], 'Organizace')); // Záhlaví sloupce organizace
+		$th_admin = htmlspecialchars($this->phrase('th_admin_login', [], 'Admin (Login)')); // Záhlaví sloupce loginu admina
+		$th_email = htmlspecialchars($this->phrase('th_email', [], 'E-mail')); // Záhlaví sloupce e-mailu
+		$th_state = htmlspecialchars($this->phrase('th_licence_state', [], 'Stav licence')); // Záhlaví sloupce stavu licence
+
+		$btn_new = new abstract_button('btn_new_licence', '+ Nová licence', 'page_organization_licence'); // Tlačítko nové licence
+		$btn_new->set_href('index.php?page=page_organization_licence&update_guid=NEW'); // Odkaz pro založení licence
+		$btn_new_html = $btn_new->render();                                  // Vykreslení HTML tlačítka
+
 		echo <<<HTML
 		<div class="md-master-header">
 			<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-				<h2 style="font-size: 16px; margin: 0; border: none; padding: 0;">Evidence organizací a licencí</h2>
-				<a href="index.php?page=page_organization_licence&update_guid=NEW" class="btn">+ Nová licence</a>
+				<h2 style="font-size: 16px; margin: 0; border: none; padding: 0;">{$master_heading}</h2>
+				{$btn_new_html}
 			</div>
-			<input type="text" id="master-filter" placeholder="Hledat..." style="width: 100%; padding: 6px; box-sizing: border-box;">
+			<input type="text" id="master-filter" placeholder="{$search_placeholder}" style="width: 100%; padding: 6px; box-sizing: border-box;">
 		</div>
 
 		<div class="md-master-content">
 			<table class="md-table">
 				<thead>
 					<tr>
-						<th>Organizace</th>
-						<th>Admin (Login)</th>
-						<th>E-mail</th>
-						<th>Stav licence</th>
+						<th>{$th_org}</th>
+						<th>{$th_admin}</th>
+						<th>{$th_email}</th>
+						<th>{$th_state}</th>
 					</tr>
 				</thead>
 				<tbody id="master-list">
@@ -217,18 +297,29 @@ HTML;
 	 */
 	protected function render_detail(): void {
 		if (!$this->update_guid) {
-			echo "<div class='msg-info'>Vyberte licenci ze seznamu vlevo nebo vytvořte novou.</div>";
-			return;
+			$msg_sel = htmlspecialchars($this->phrase('msg_select_or_create_licence', [], 'Vyberte licenci ze seznamu vlevo nebo vytvořte novou.'));
+			echo "<div class='msg-info'>{$msg_sel}</div>";
+			return;                                                          // Ukončení při nevybrané licenci
 		}
 
 		global $datarow;                                                     // Globální pole pro aktuální záznam
 		if ($this->update_guid === 'NEW') {
 			$datarow = [                                                     // Výchozí hodnoty pro novou licenci
-				'builtin_code' => '', 'caption' => '', 'login_domain' => '', 'licence_level' => 10,
-				'licence_state' => 'DRAFT', 'is_developer' => 0,
-				'admin_login' => '', 'admin_first_name' => '', 'admin_last_name' => '', 'admin_email' => '',
-				'date_created' => null, 'who_created_info' => null, 'date_modified' => null, 'who_modified_info' => null
-			];
+				'builtin_code'      => '',                                   // Prázdný kód licence
+				'caption'           => '',                                   // Prázdný název organizace
+				'login_domain'      => '',                                   // Prázdná SSO doména
+				'licence_level'     => 10,                                   // Výchozí úroveň licence Standard (10)
+				'licence_state'     => 'DRAFT',                              // Výchozí stav Koncept
+				'is_developer'      => 0,                                    // Výchozí stav bez vývojářské licence
+				'admin_login'       => '',                                   // Prázdný login administrátora
+				'admin_first_name'  => '',                                   // Prázdné jméno administrátora
+				'admin_last_name'   => '',                                   // Prázdné příjmení administrátora
+				'admin_email'       => '',                                   // Prázdný e-mail administrátora
+				'date_created'      => null,                                 // Datum vytvoření zatím neexistuje
+				'who_created_info'  => null,                                 // Autor vytvoření zatím neexistuje
+				'date_modified'     => null,                                 // Datum úpravy zatím neexistuje
+				'who_modified_info' => null                                  // Autor úpravy zatím neexistuje
+			];                                                               // Konec inicializace nové licence
 		} else {
 			$safe_uuid = guidliteral($this->update_guid);                    // SQL literál vybrané licence
 			$q = sqlrun("
@@ -242,21 +333,32 @@ HTML;
 			free_result($q);                                                 // Uvolnění výsledku dotazu
 
 			if (!$datarow) {
-				echo "<div class='msg-err'>Licence nebyla nalezena.</div>";
-				return;
+				$msg_nf = htmlspecialchars($this->phrase('msg_licence_not_found', [], 'Licence nebyla nalezena.'));
+				echo "<div class='msg-err'>{$msg_nf}</div>";
+				return;                                                      // Ukončení při nenalezeném záznamu
 			}
 		}
 
 		$hidden_guid = hidden_input('update_guid', $this->update_guid);      // Skryté pole s ID záznamu
+		$detail_heading = htmlspecialchars($this->phrase('detail_heading', [], 'Detail organizace a licencování')); // Nadpis detailu
+
+		$btn_discard = new abstract_button('btn_discard', 'Zahodit změny', 'abstract_button', '', 'btn-danger'); // Tlačítko zahození změn
+		$btn_discard->set_href('index.php?page=page_organization_licence')->set_onclick('isFormDirty = false;'); // Odkaz bez varování dirty
+
+		$btn_save = new abstract_button('btn_save', 'Uložit změny', 'abstract_button', '', 'btn-success'); // Tlačítko uložení
+		$btn_save->set_type('submit')->set_name_value('btn_save', '1');      // Nastavení submit atributů
+
+		$discard_html = $btn_discard->render();                              // Vykreslení tlačítka Zahodit
+		$save_html = $btn_save->render();                                    // Vykreslení tlačítka Uložit
 
 		echo <<<HTML
 		<form method="POST" action="index.php?page=page_organization_licence" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
 			{$hidden_guid}
 			<div class="md-detail-header">
-				<h2 style="margin: 0; border: none; padding: 0;">Detail organizace a licencování</h2>
+				<h2 style="margin: 0; border: none; padding: 0;">{$detail_heading}</h2>
 				<div style="display: flex; gap: 10px;">
-					<a href="index.php?page=page_organization_licence" class="btn btn-danger" onclick="isFormDirty = false;">Zahodit změny</a>
-					<button type="submit" name="button_save" value="1" class="btn btn-success">Uložit záznam</button>
+					{$discard_html}
+					{$save_html}
 				</div>
 			</div>
 

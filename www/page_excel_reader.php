@@ -1,18 +1,19 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-14 22:25
+ * Verze: 2026-10-16 08:25
  * Soubor: page_excel_reader.php
  * Třída: page_excel_reader
  * Účel: Uživatelské rozhraní pro nahrávání, validaci, náhled a import dat z XLSX.
  * Architektura: Potomek abstract_page.
  *
  * Vazby na okolí:
- * - Instancována dynamicky z index.php při požadavku ?page=excel_reader.
+ * - Instancována dynamicky z index.php při požadavku ?page=page_excel_reader.
  * - Dědí z třídy abstract_page (využívá $this->page_title, $this->access_denied,
- *   parent::render() a implementuje abstraktní metodu render_body()).
- * - Využívá globální proměnné $dbsession (kontrola active_role), $T_SUBMIT
- *   (popisek tlačítka) a $charset (kódování pro HTTP hlavičku distribuce).
+ *   $this->phrase(), parent::render() a implementuje abstraktní metodu render_body()).
+ * - Využívá komponentu abstract_button pro vykreslení odesílacího tlačítka.
+ * - Využívá globální proměnné $dbsession (kontrola active_role přes předka)
+ *   a $charset (kódování pro HTTP hlavičku distribuce).
  * - Využívá funkce regfile(), getinput(), charliteral() a sqlarray_simple()
  *   z knihovny OsirisLib.php.
  * - Instancuje a řídí třídu excel_reader (z excel_reader.php) a přistupuje
@@ -23,6 +24,10 @@
  *   výstupní dávku volající p_request_messages_start a p_xlsx_<package_code>.
  *
  * Změny:
+ * 2026-10-16 08:25 - Doplněno volání parent::__construct() a odstraněna duplicitní
+ *                    kontrola active_role (řeší centrálně abstract_page přes meta_object).
+ *                  - Zapojena komponenta abstract_button a lokalizace všech textů
+ *                    přes $this->phrase().
  * 2026-10-12 - Doplněna kontrola oprávnění v konstruktoru (přístup pouze pro S a D).
  *            - Kompletní refaktoring do objektové podoby (Single Responsibility).
  *            - Výpis dat a formulářů využívá nativní CSS třídy systému (md-table).
@@ -44,15 +49,9 @@ class page_excel_reader extends abstract_page {
 	protected bool $has_file = false;                   // Příznak úspěšného nahrání souboru z formuláře
 
 	public function __construct() {
-		global $dbsession;                              // Globální pole s kontextem přihlášeného uživatele
+		parent::__construct();                          // Inicializace správce frází a kontroly přístupu v předkovi
 		
-		$this->page_title = 'Import dat z Excelu - BCM Osiris'; // Nastavení titulku stránky
-		
-		// Ochrana stránky před neoprávněným spuštěním
-		$active_role = $dbsession['active_role'] ?? 'U'; // Zjištění aktivní role ze sezení
-		if (!in_array($active_role, ['S', 'D'], true)) {
-			$this->access_denied = true;                // Odepření přístupu pro běžné uživatele a orgadminy
-		}
+		$this->page_title = $this->phrase('page_title', [], 'Import dat z Excelu - BCM Osiris'); // Nastavení lokalizovaného titulku stránky
 	}
 
 	/**
@@ -60,9 +59,12 @@ class page_excel_reader extends abstract_page {
 	 * Je to klíčové pro režim Distribuce (D), který musí odeslat raw SQL.
 	 */
 	public function render(): void {
+		$this->init_phrases();                          // Pojistka inicializace správce frází
+		$this->check_system_role_access();              // Pojistka kontroly přístupu podle meta_object
+
 		if ($this->access_denied) {                     // Kontrola zamítnutí přístupu před zpracováním
 			parent::render();                           // Vykreslení chybové obrazovky z předka
-			return;
+			return;                                     // Ukončení zpracování při odepřeném přístupu
 		}
 
 		$tmpfile = regfile("file_xlsx");                // Získání cesty k dočasnému uploadovanému souboru
@@ -109,34 +111,48 @@ class page_excel_reader extends abstract_page {
 	 * Zobrazí formulář pro výběr souboru a režimu zpracování.
 	 */
 	protected function render_form(): void {
-		global $T_SUBMIT;                               // Globální fráze pro popisek odesílacího tlačítka
-		
-		$submit_text = $T_SUBMIT ?? 'Načíst a zpracovat'; // Výchozí český text tlačítka
-		$page_param = htmlspecialchars((string)getinput('page')); // Očištěný název stránky do URL formuláře
+		$raw_page = trim((string)getinput('page'));     // Načtení parametru stránky z požadavku
+		if ($raw_page === '') {                         // Pokud parametr nebyl zadán
+			$raw_page = 'page_excel_reader';            // Výchozí kanonický název stránky
+		}
+		$page_param = htmlspecialchars($raw_page);      // Očištěný název stránky do URL formuláře
+
+		$heading = htmlspecialchars($this->phrase('form_heading', [], 'Načtení dat z excelu pro účely distribuce a importu')); // Nadpis formuláře
+		$intro = htmlspecialchars($this->phrase('form_intro', [], 'Vyberte zdrojový soubor XLSX a zvolte požadovaný režim zpracování.')); // Úvodní instrukce
+		$lbl_file = htmlspecialchars($this->phrase('lbl_xlsx_file', [], 'Soubor XLSX:')); // Popisek pole souboru
+		$lbl_mode = htmlspecialchars($this->phrase('lbl_import_mode', [], 'Režim zpracování:')); // Popisek pole režimu
+		$opt_0 = htmlspecialchars($this->phrase('opt_mode_preview', [], 'Pouze zobrazit data')); // Volba náhledu dat
+		$opt_1 = htmlspecialchars($this->phrase('opt_mode_rollback', [], 'Kontrolní běh (Rollback)')); // Volba testovacího běhu
+		$opt_2 = htmlspecialchars($this->phrase('opt_mode_commit', [], 'Import se zápisem (Commit)')); // Volba ostrého importu
+		$opt_d = htmlspecialchars($this->phrase('opt_mode_dist', [], 'Distribuce (SQL skript)')); // Volba generování distribuce
+
+		$btn_submit = new abstract_button('btn_submit_excel', 'Načíst a zpracovat', 'page_excel_reader', '', 'btn-success'); // Tlačítko odeslání formuláře
+		$btn_submit->set_type('submit');                // Nastavení typu tlačítka na submit
+		$submit_html = $btn_submit->render();           // Vykreslení HTML kódu tlačítka
 
 		echo <<<HTML
-		<h1 class="page-heading">Načtení dat z excelu pro účely distribuce a importu</h1>
-		<p style="margin-bottom: 20px;">Vyberte zdrojový soubor XLSX a zvolte požadovaný režim zpracování.</p>
+		<h1 class="page-heading">{$heading}</h1>
+		<p style="margin-bottom: 20px;">{$intro}</p>
 
 		<form id="f" name="f" action="index.php?page={$page_param}" method="post" enctype="multipart/form-data" target="_blank">
 			<table class="md-table" style="width: auto; margin-bottom: 20px;">
 				<tr>
-					<td style="font-weight: bold; width: 150px; background-color: #f8fafc;">Soubor XLSX:</td>
+					<td style="font-weight: bold; width: 150px; background-color: #f8fafc;">{$lbl_file}</td>
 					<td><input type="file" name="file_xlsx" id="file_xlsx" accept=".xlsx" style="height:30px; width: 300px;" required></td>
 				</tr>
 				<tr>
-					<td style="font-weight: bold; background-color: #f8fafc;">Režim zpracování:</td>
+					<td style="font-weight: bold; background-color: #f8fafc;">{$lbl_mode}</td>
 					<td>
 						<select name="import_mode" id="import_mode" style="width: 300px; padding: 4px;">
-							<option value="0">Pouze zobrazit data</option>
-							<option value="1">Kontrolní běh (Rollback)</option>
-							<option value="2">Import se zápisem (Commit)</option>
-							<option value="D">Distribuce (SQL skript)</option>
+							<option value="0">{$opt_0}</option>
+							<option value="1">{$opt_1}</option>
+							<option value="2">{$opt_2}</option>
+							<option value="D">{$opt_d}</option>
 						</select>
 					</td>
 				</tr>
 			</table>
-			<button type="submit" class="btn btn-success">{$submit_text}</button>
+			{$submit_html}
 		</form>
 HTML;
 	}
@@ -160,21 +176,28 @@ HTML;
 			</style>
 HTML;
 
+			$msg_outside = htmlspecialchars($this->phrase('msg_data_outside_table', [], '(Data zasahují i mimo rozeznanou tabulku)')); // Text varování mimo tabulku
+
 			foreach ($this->reader->data as $tn => $table) {
 				if (!$table) {                          // Přeskočení prázdné definice tabulky
-					continue;
+					continue;                           // Pokračování na další záložku
 				}
 				
 				$col_count = $table['column_count'];    // Počet sloupců aktuální záložky
 				$row_count = $table['row_count'];       // Počet datových řádků aktuální záložky
-				$mimo_text = !empty($table['mimo']) ? "<span style='color: #dc2626; margin-left: 10px;'>(Data zasahují i mimo rozeznanou tabulku)</span>" : ""; // Varování při datech mimo tabulku
+				$mimo_text = !empty($table['mimo']) ? "<span style='color: #dc2626; margin-left: 10px;'>{$msg_outside}</span>" : ""; // Varování při datech mimo tabulku
 				
 				$is_mandatory_table = $this->reader->is_mandatory_table($tn); // Zjištění, zda je záložka povinná
 				$header_bg = $is_mandatory_table ? "background-color: #e2e8f0; color: #0f172a;" : "background-color: #fef08a; color: #854d0e;"; // Styl záhlaví tabulky
+				$sheet_header = htmlspecialchars($this->phrase(
+					'sheet_header_info',                // Kód fráze záhlaví záložky
+					['sheet' => $tn, 'rows' => $row_count, 'cols' => $col_count], // Proměnné pro interpolaci
+					'Záložka: {' . chr(36) . 'sheet} [{' . chr(36) . 'rows} řádků, {' . chr(36) . 'cols} sloupců]' // Výchozí šablona záhlaví
+				));
 				
 				echo "<table class='md-table' style='margin-bottom: 30px;'>";
 				echo "<thead>";
-				echo "<tr><th colspan='{$col_count}' style='font-size: 14px; {$header_bg}'>Záložka: {$tn} [{$row_count} řádků, {$col_count} sloupců] {$mimo_text}</th></tr>";
+				echo "<tr><th colspan='{$col_count}' style='font-size: 14px; {$header_bg}'>{$sheet_header} {$mimo_text}</th></tr>";
 				echo "<tr>";
 				
 				foreach ($table['column_list'] as $colname) {
@@ -189,8 +212,13 @@ HTML;
 				$num = 0;                               // Počitadlo vypsaných řádků v tabulce
 				foreach ($table['rows'] as $rn => $rv) {
 					if ($num >= $max_display_rows) {    // Omezení výpisu při překročení limitu řádků
-						echo "<tr><td colspan='{$col_count}' style='text-align:center; font-style:italic; background-color:#f8fafc; color: #64748b;'>... Zobrazeno pouze prvních {$max_display_rows} z celkových {$row_count} řádků ...</td></tr>";
-						break;
+						$trunc_msg = htmlspecialchars($this->phrase(
+							'msg_rows_truncated',       // Kód fráze omezení řádků
+							['max' => $max_display_rows, 'total' => $row_count], // Proměnné pro interpolaci
+							'... Zobrazeno pouze prvních {' . chr(36) . 'max} z celkových {' . chr(36) . 'total} řádků ...' // Výchozí text
+						));
+						echo "<tr><td colspan='{$col_count}' style='text-align:center; font-style:italic; background-color:#f8fafc; color: #64748b;'>{$trunc_msg}</td></tr>";
+						break;                          // Ukončení výpisu řádků záložky
 					}
 					
 					echo "<tr>";
@@ -218,11 +246,13 @@ HTML;
 
 		// Fallback pro případ, že distribuce není možná
 		if (!$this->reader->package_ready || !$pc) {    // Ověření připravenosti balíčku a existence třídy
-			$this->reader->rqm->add_message("Balíček není připraven pro distribuci", 3);
-			$this->reader->rqm->add_message("Režim byl automaticky přepnut na zobrazení dat", 2);
+			$err_not_ready = $this->phrase('err_pkg_not_ready', [], 'Balíček není připraven pro distribuci'); // Chybová zpráva balíčku
+			$warn_switched = $this->phrase('warn_mode_switched', [], 'Režim byl automaticky přepnut na zobrazení dat'); // Varování o přepnutí režimu
+			$this->reader->rqm->add_message($err_not_ready, 3); // Zápis chyby do fronty zpráv
+			$this->reader->rqm->add_message($warn_switched, 2); // Zápis varování do fronty zpráv
 			$this->import_mode = '0';                   // Nouzové přepnutí do režimu náhledu
 			parent::render();                           // Vykreslíme chybové hlášky standardní cestou
-			return;
+			return;                                     // Ukončení distribuční metody
 		}
 
 		// Nastavení hlaviček pro okamžité stažení textového souboru

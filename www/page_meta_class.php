@@ -53,7 +53,7 @@ class page_meta_class extends abstract_page_master_detail {
 	}
 
 	protected function render_detail_header_buttons(string $update_guid): string {
-		if ($update_guid === '' \vert{}\vert{}$update_guid === 'NEW') {                 // U nového záznamu sloupce ještě nejsou
+		if ($update_guid === '' OR $update_guid === 'NEW') {                 // U nového záznamu sloupce ještě nejsou
 			return '';                                                       // Nevykreslujeme tlačítko sloupců
 		}
 
