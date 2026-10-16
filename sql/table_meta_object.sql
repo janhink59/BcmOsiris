@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-15 23:55
+ * Verze: 2026-10-17 00:50
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
@@ -23,6 +23,8 @@
  *          - 2026-10-15 23:55: Zaregistrována stránka page_meta_phrase a u stránek metadat
  *            (page_meta_class, page_meta_column, page_meta_phrase) nastavena system_role = 'U'
  *            pro umožnění překladů všem rolím (funkční atributy chrání entity_manager pro 'D').
+ *          - 2026-10-17 00:50: Doplněny sloupce draft_author a approval_note pro schvalovací
+ *            cyklus (SSC) a zaregistrována univerzální schvalovací stránka page_approval.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -41,11 +43,13 @@ BEGIN
 		uuid uuid NOT NULL,
 		object_owner uuid NOT NULL DEFAULT 0x00,           -- UUID tenanta (organizace). 0x00 pro systémové záznamy.
 		original uuid NOT NULL DEFAULT 0x00,               -- Logický identifikátor záznamu napříč verzemi a tenant overridy.
-		record_type varchar(1) NOT NULL DEFAULT 'A',       -- 'A' = aktuálně schválený, 'L' = jazyková verze, 'H' = historie (audit).
-		approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stavy schvalování v rámci SSC ('D', 'W', 'S', 'A', 'R', 'C', 'I').
+		record_type varchar(1) NOT NULL DEFAULT 'A',       -- 'A' = aktuálně schválený, 'L' = jazyková verze, 'D' = koncept, 'H' = historie.
+		approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stavy schvalování v rámci SSC ('A' = schválený, 'D' = rozpracovaný, 'F' = ke schválení, 'R' = vrácený).
+		draft_author uuid NOT NULL DEFAULT 0x00,           -- Autor konceptu (user_account.original) pro record_type = 'D'.
+		approval_note varchar(max) NOT NULL DEFAULT '',    -- Poznámka schvalovatele (důvod odmítnutí / vrácení).
 		inactive bit NOT NULL DEFAULT 0,                   -- Příznak deaktivace (používá se např. u systémových záznamů místo fyzického smazání).
 		removed bit NOT NULL DEFAULT 0,                    -- Příznak odstranění.
-		language varchar(2) NOT NULL DEFAULT 'cs',         -- Jazyková mutace (využito pro record_type = 'L').
+		language varchar(2) NOT NULL DEFAULT 'cs',         -- Jazyková mutace (využito pro record_type = 'L' a 'D').
 		valid_from date NOT NULL DEFAULT '1970-01-01',     -- Platnost od.
 		valid_to date NULL,                                -- Platnost do.
 		is_template bit NOT NULL DEFAULT 0,                -- Určuje, zda záznam slouží jako šablona.
@@ -95,6 +99,8 @@ GO
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'meta_object', 'system_role', 'varchar(1) NOT NULL DEFAULT ''S''';
 EXEC p_create_missing_column 'meta_object', 'editor_note', 'varchar(max) NULL';
+EXEC p_create_missing_column 'meta_object', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'meta_object', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 GO
 
 -- -----------------------------------------------------------------------------
@@ -150,6 +156,7 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_meta_class', 'Logické třídy (Objekty)', 'Správa logických entit, jejich vlastností a překladů', 'U'),
 ('page_meta_column', 'Sloupce metadat', 'Správa definic sloupců, formulářových prvků a překladů', 'U'),
 ('page_meta_phrase', 'Textové fráze a překlady', 'Správa textových frází, tlačítek a jazykových mutací', 'U'),
+('page_approval', 'Schvalování změn', 'Přehled, porovnání a schvalování navržených záznamů napříč třídami', 'U'),
 ('page_organization_licence', 'Správa licencí organizací', 'Evidence a aktivace licencí pro jednotlivé tenanty', 'S'),
 ('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
 ('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace a aplikační role', 'U'),

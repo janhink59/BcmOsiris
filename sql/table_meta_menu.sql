@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-16 00:08
+ * Verze: 2026-10-17 00:50
  * Soubor: table_meta_menu.sql
  * Tabulka: meta_menu
  * Popis:   Uchovává strukturu uživatelského menu s vazbou na fyzické stránky.
@@ -14,6 +14,8 @@
  *          - 2026-10-16: Přidána položka meta_phrase (Textové fráze a překlady)
  *            a upravena system_role pro složku administrace a metadatové stránky
  *            na 'U', aby všichni uživatelé měli přístup k pořizování překladů.
+ *          - 2026-10-17 00:50: Doplněny sloupce draft_author a approval_note pro SSC
+ *            a přidána položka menu approval (Schvalování změn) směřující na page_approval.
  * ============================================================================= */
 
 IF OBJECT_ID('meta_menu') IS NULL
@@ -22,8 +24,10 @@ CREATE TABLE meta_menu(
 	uuid uuid NOT NULL,
 	object_owner uuid NOT NULL DEFAULT 0x00,           -- Vlastník záznamu (0x00 pro systémové menu)
 	original uuid NOT NULL DEFAULT 0x00,               -- Logický identifikátor
-	record_type varchar(1) NOT NULL DEFAULT 'A',       -- Stav verze (A, L, H)
-	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stav schválení
+	record_type varchar(1) NOT NULL DEFAULT 'A',       -- Stav verze (A, L, D, H)
+	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stav schválení (A, D, F, R)
+	draft_author uuid NOT NULL DEFAULT 0x00,           -- Autor konceptu (user_account.original)
+	approval_note varchar(max) NOT NULL DEFAULT '',    -- Poznámka schvalovatele
 	inactive bit NOT NULL DEFAULT 0,
 	removed bit NOT NULL DEFAULT 0,
 	language varchar(2) NOT NULL DEFAULT 'cs',
@@ -72,6 +76,10 @@ CREATE TABLE meta_menu(
 );
 GO
 
+EXEC p_create_missing_column 'meta_menu', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'meta_menu', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+GO
+
 -- -----------------------------------------------------------------------------
 -- Indexy pro zajištění RAC architektury
 -- -----------------------------------------------------------------------------
@@ -101,6 +109,7 @@ DECLARE @tgt_main uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P',
 DECLARE @tgt_meta_class uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_class');
 DECLARE @tgt_meta_column uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_column');
 DECLARE @tgt_meta_phrase uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_phrase');
+DECLARE @tgt_approval uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_approval');
 DECLARE @tgt_org_licence uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_organization_licence');
 DECLARE @tgt_org_users uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_org_users');
 DECLARE @tgt_excel_reader uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_excel_reader');
@@ -111,6 +120,7 @@ DECLARE @mnu_admin uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'admi
 DECLARE @mnu_meta_class uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_class', '');
 DECLARE @mnu_meta_column uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_column', '');
 DECLARE @mnu_meta_phrase uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_phrase', '');
+DECLARE @mnu_approval uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'approval', '');
 DECLARE @mnu_org_licence uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'organization_licence', '');
 DECLARE @mnu_org_users uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'org_users', '');
 DECLARE @mnu_excel_reader uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'excel_reader', '');
@@ -127,9 +137,10 @@ INSERT INTO @init_menu VALUES
 (@mnu_meta_class, @mnu_admin, '01', 'meta_class', 'Logické třídy (Objekty)', @tgt_meta_class, 'U', ''),
 (@mnu_meta_column, @mnu_admin, '02', 'meta_column', 'Sloupce metadat', @tgt_meta_column, 'U', ''),
 (@mnu_meta_phrase, @mnu_admin, '03', 'meta_phrase', 'Textové fráze a překlady', @tgt_meta_phrase, 'U', ''),
-(@mnu_org_licence, @mnu_admin, '04', 'organization_licence', 'Správa licencí organizací', @tgt_org_licence, 'S', ''),
-(@mnu_org_users, @mnu_admin, '05', 'org_users', 'Uživatelé organizace', @tgt_org_users, 'A', ''),
-(@mnu_excel_reader, @mnu_admin, '06', 'excel_reader', 'Import dat z Excelu', @tgt_excel_reader, 'S', '');
+(@mnu_approval, @mnu_admin, '04', 'approval', 'Schvalování změn', @tgt_approval, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'),
+(@mnu_org_licence, @mnu_admin, '05', 'organization_licence', 'Správa licencí organizací', @tgt_org_licence, 'S', ''),
+(@mnu_org_users, @mnu_admin, '06', 'org_users', 'Uživatelé organizace', @tgt_org_users, 'A', ''),
+(@mnu_excel_reader, @mnu_admin, '07', 'excel_reader', 'Import dat z Excelu', @tgt_excel_reader, 'S', '');
 
 -- 4. Idempotentní INSERT pomocí NOT EXISTS
 INSERT INTO meta_menu (

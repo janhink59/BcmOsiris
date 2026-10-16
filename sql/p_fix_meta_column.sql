@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-16 07:40
+ * Verze: 2026-10-17 00:50
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -29,6 +29,9 @@ GO
  * - 2026-10-16: Doplněno automatické nastavení vazby referenced_class pro
  *   sloupce parent_class, ancestor_class, referenced_class, storage_object
  *   a ancestor v globálním slovníku pro automatické generování <select> prvků.
+ * - 2026-10-17 00:50: Doplněno automatické idempotentní vytvoření sloupců
+ *   draft_author, approval_note a import_origin + unikátního indexu uq_*_draft
+ *   pro record_type = 'D' nad všemi RAC tabulkami a skrytí technických SSC sloupců.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -38,6 +41,46 @@ BEGIN
 
 	-- Explicitní definice vlastníka pro zajištění stejného datového typu jako má T-SQL hash
 	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+
+	-- -------------------------------------------------------------------------
+	-- PŘÍPRAVA RAC/SSC STRUKTUR: Zajištění sloupců a indexů pro koncepty ('D')
+	-- -------------------------------------------------------------------------
+	DECLARE @rac_tab VARCHAR(128);
+	DECLARE @idx_name VARCHAR(200);
+
+	DECLARE cur_rac CURSOR LOCAL FAST_FORWARD FOR
+		SELECT c_uuid.tabname
+		FROM v_syscolumns c_uuid
+		JOIN v_syscolumns c_owner ON c_owner.tabname = c_uuid.tabname AND c_owner.colname = 'object_owner'
+		JOIN v_syscolumns c_orig ON c_orig.tabname = c_uuid.tabname AND c_orig.colname = 'original'
+		JOIN v_syscolumns c_rectype ON c_rectype.tabname = c_uuid.tabname AND c_rectype.colname = 'record_type'
+		JOIN v_syscolumns c_lang ON c_lang.tabname = c_uuid.tabname AND c_lang.colname = 'language'
+		WHERE c_uuid.colname = 'uuid'
+		  AND c_uuid.object_type = 'U'
+		  AND c_uuid.tabname NOT LIKE '%$';
+
+	OPEN cur_rac;
+	FETCH NEXT FROM cur_rac INTO @rac_tab;
+
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+		EXEC p_create_missing_column @rac_tab, 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+		EXEC p_create_missing_column @rac_tab, 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+		EXEC p_create_missing_column @rac_tab, 'import_origin', 'varchar(255) NULL';
+
+		SET @idx_name = 'uq_' + @rac_tab + '_draft';
+		EXEC sp_create_index
+			@tname = @rac_tab,
+			@iname = @idx_name,
+			@colnames = 'original, object_owner, language, draft_author',
+			@uni = 'UNIQUE',
+			@options = 'WHERE record_type = ''D'' AND removed = 0';
+
+		FETCH NEXT FROM cur_rac INTO @rac_tab;
+	END
+
+	CLOSE cur_rac;
+	DEALLOCATE cur_rac;
 
 	-- -------------------------------------------------------------------------
 	-- CLEANUP: Odstranění vadných dat z předchozích běhů
@@ -394,6 +437,18 @@ BEGIN
 			'shortname', 'description', 'description_text', 'helptext', 'help_text',
 			'caption_forward', 'caption_backward', 'note'
 		)
+
+	-- Skrytí čistě technických RAC a SSC sloupců z automaticky generovaných formulářů
+	UPDATE meta_column
+	SET hidden = 1
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name IN (
+		'uuid', 'object_owner', 'original', 'record_type', 'approval_status',
+		'draft_author', 'approval_note', 'import_origin', 'removed',
+		'date_created', 'who_created', 'date_modified', 'who_modified'
+	  );
 
 	-- -------------------------------------------------------------------------
 	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class V GLOBÁLNÍM SLOVNÍKU

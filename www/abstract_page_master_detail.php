@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-16 10:15
+ * Verze: 2026-10-17 01:05
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -50,6 +50,11 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-17 01:05 - Integrace schvalovacího cyklu (SSC): podpora tlačítek pro uložení
+ *                    konceptu ('D'), postoupení ke schválení ('F'), přímé uložení ('A')
+ *                    a smazání konceptu bez zápisu do historie.
+ *                  - Vizuální odlišení konceptů v levém panelu a zobrazení stavu
+ *                    a poznámky schvalovatele (approval_note) v detailním panelu.
  * 2026-10-16 10:15 - Nahrazení symbolických operátorů || a && slovními OR a AND (Anti-LaTeX).
  * 2026-10-16 09:45 - Oprava chyby spojeného řádku u inicializace $btn_discard v render_detail()
  *                    doplněním diakritiky do inline komentářů (Anti-LaTeX ochrana).
@@ -158,11 +163,11 @@ abstract class abstract_page_master_detail extends abstract_page {
 	}
 
 	/**
-	 * Zajišťuje zpracování POST dat z formuláře a následný redirect.
+	 * Zajišťuje zpracování POST dat z formuláře (včetně SSC stavů a mazání konceptu) a následný redirect.
 	 */
 	protected function process_save(): void {
-		if ($this->is_readonly OR $this->em === null OR !isset($_POST['btn_save'])) { // Kontrola podmínek uložení
-			return;                                                          // V readonly režimu nebo bez btn_save neukládáme
+		if ($this->is_readonly OR $this->em === null) {                      // Kontrola readonly režimu a správce entit
+			return;                                                          // V readonly režimu nebo bez správce neukládáme
 		}
 
 		$update_guid = trim((string)getinput('update_guid'));                // Identifikátor upravovaného záznamu
@@ -170,19 +175,41 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;                                                          // Bez vybraného záznamu ani NEW neukládáme
 		}
 
-		$save_guid = ($update_guid === 'NEW') ? '' : $update_guid;           // Pro nový záznam předáme prázdný řetězec
-		
-		$this->em->save_post_data($save_guid);                               // Autonomní uložení dat přes entity_manager
-		
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název aktuální stránky
 		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL
 
-		// Zamezení uvíznutí na prázdném formuláři po uložení nového záznamu
-		if ($update_guid === 'NEW') {                                        // Přesměrování po založení nového záznamu
-			autoredirect("index.php?page={$page_param}{$url_suffix}");       // Přesměrování na výchozí seznam
+		// 1. Odstranění rozpracovaného nebo vráceného konceptu bez náhrady
+		if (isset($_POST['btn_delete_draft'])) {                             // Detekce stisku tlačítka Smazat koncept
+			if ($update_guid !== 'NEW') {                                    // Pouze pro již uložený záznam
+				$this->em->delete_draft($update_guid);                       // Fyzické smazání konceptu z databáze
+			}
+			autoredirect("index.php?page={$page_param}{$url_suffix}");       // Návrat na výchozí seznam po smazání konceptu
+			return;                                                          // Ukončení zpracování
+		}
+
+		// 2. Určení cílového stavu zápisu podle stisknutého tlačítka ('A', 'D', 'F')
+		$target_status = '';                                                 // Výchozí prázdný cílový stav
+		if (isset($_POST['btn_save'])) {                                     // Přímé uložení jako schválené
+			$target_status = 'A';                                            // Stav Schváleno
+		} elseif (isset($_POST['btn_save_draft'])) {                         // Uložení jako rozpracovaný koncept
+			$target_status = 'D';                                            // Stav Koncept
+		} elseif (isset($_POST['btn_forward_approval'])) {                   // Postoupení ke schválení
+			$target_status = 'F';                                            // Stav Postoupeno ke schválení
+		}
+
+		if ($target_status === '') {                                         // Pokud nebylo stisknuto žádné ukládací tlačítko
+			return;                                                          // Ukončení bez uložení
+		}
+
+		$save_guid = ($update_guid === 'NEW') ? '' : $update_guid;           // Pro nový záznam předáme prázdný řetězec
+		
+		$saved_orig = $this->em->save_post_data($save_guid, $target_status); // Autonomní uložení dat s cílovým stavem SSC
+		
+		// Přesměrování po uložení (PRG vzor čistí POST kontext pro bezpečný refresh F5)
+		if ($saved_orig !== '' AND $saved_orig !== 'NEW') {                  // Pokud máme platný originál uloženého záznamu
+			autoredirect("index.php?page={$page_param}{$url_suffix}&update_guid=" . urlencode($saved_orig)); // Přesměrování na uložený záznam
 		} else {
-			// Autoredirect čistí POST kontext pro bezpečný refresh (F5)
-			autoredirect("index.php?page={$page_param}{$url_suffix}&update_guid=" . urlencode($update_guid)); // Přesměrování na detail
+			autoredirect("index.php?page={$page_param}{$url_suffix}");       // Fallback na výchozí seznam
 		}
 	}
 
@@ -248,6 +275,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 				padding-bottom: 10px;
 				margin-bottom: 20px;
 				gap: 10px;
+				flex-wrap: wrap;
 			}
 			/* Dynamicky scrollovatelná oblast formuláře (Detail) */
 			.md-detail-content {
@@ -297,6 +325,19 @@ abstract class abstract_page_master_detail extends abstract_page {
 				background-color: #f9f9f9 !important;
 				color: #999 !important;
 			}
+			/* Štítky schvalovacího cyklu (SSC) v seznamu */
+			.ssc-badge {
+				display: inline-block;
+				font-size: 10px;
+				font-weight: bold;
+				padding: 1px 5px;
+				border-radius: 3px;
+				margin-left: 6px;
+				vertical-align: middle;
+			}
+			.ssc-badge-d { background-color: #fef3c7; color: #92400e; border: 1px solid #f59e0b; }
+			.ssc-badge-f { background-color: #dbeafe; color: #1e40af; border: 1px solid #3b82f6; }
+			.ssc-badge-r { background-color: #fee2e2; color: #991b1b; border: 1px solid #ef4444; }
 		</style>
 
 		<div class="md-master" id="md-master-container">
@@ -395,6 +436,10 @@ HTML;
 		$safe_caption_plural = htmlspecialchars($caption_plural);            // Ošetřený nadpis seznamu
 		$search_placeholder = htmlspecialchars($this->phrase('placeholder_search', [], 'Hledat...')); // Placeholder vyhledávání
 
+		$badge_txt_d = htmlspecialchars($this->phrase('badge_draft', [], 'Koncept')); // Štítek rozpracovaného konceptu
+		$badge_txt_f = htmlspecialchars($this->phrase('badge_forwarded', [], 'Ke schválení')); // Štítek postoupeného návrhu
+		$badge_txt_r = htmlspecialchars($this->phrase('badge_rejected', [], 'Vráceno')); // Štítek vráceného návrhu
+
 		// Obálka fixní hlavičky levého panelu
 		echo <<<HTML
 		<div class="md-master-header">
@@ -438,13 +483,29 @@ HTML;
 			$rowClass = ($uuid === $update_guid) ? 'md-row-active' : '';     // Třída pro aktivní řádek
 			$rowIdAttr = ($uuid === $update_guid) ? 'id="active-row"' : '';  // Atribut id pro aktivní řádek
 
+			$rec_type = (string)($row['record_type'] ?? 'A');                // Typ záznamu ('A' nebo 'D')
+			$app_status = (string)($row['approval_status'] ?? 'A');          // Stav schválení ('A', 'D', 'F', 'R')
+			$ssc_badge = '';                                                 // Vizuální štítek pro koncepty v seznamu
+			if ($rec_type === 'D') {                                         // Pokud je řádek neuzavřeným konceptem
+				if ($app_status === 'F') {                                   // Návrh postoupený ke schválení
+					$ssc_badge = "<span class=\"ssc-badge ssc-badge-f\">{$badge_txt_f}</span>"; // Modrý štítek
+				} elseif ($app_status === 'R') {                             // Návrh vrácený schvalovatelem
+					$ssc_badge = "<span class=\"ssc-badge ssc-badge-r\">{$badge_txt_r}</span>"; // Červený štítek
+				} else {
+					$ssc_badge = "<span class=\"ssc-badge ssc-badge-d\">{$badge_txt_d}</span>"; // Žlutý štítek konceptu
+				}
+			}
+
 			$row_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}"); // Cílová URL řádku
 			echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">\n"; // Otevření řádku
 			
 			// Vykreslení konkrétních buněk (bez ohledu na to, v jakém pořadí přišly z DB)
+			$first_col = true;                                               // Příznak prvního sloupce pro vložení štítku
 			foreach ($list_columns as $col => $header) {                     // Výpis hodnot buněk aktuálního řádku
 				$val = htmlspecialchars((string)($row[$col] ?? ''));         // Hodnota buňky v seznamu
-				echo "\t\t\t\t\t\t\t<td>{$val}</td>\n";                      // Vykreslení buňky tabulky
+				$badge_out = $first_col ? $ssc_badge : '';                   // Štítek připojíme k první buňce řádku
+				$first_col = false;                                          // Další sloupce již štítek nedostanou
+				echo "\t\t\t\t\t\t\t<td>{$val}{$badge_out}</td>\n";          // Vykreslení buňky tabulky
 			}
 			echo "\t\t\t\t\t\t</tr>\n";                                      // Uzavření řádku tabulky
 		}
@@ -491,6 +552,38 @@ HTML;
 	}
 
 	/**
+	 * Vykreslí informační nebo varovný pruh o stavu schvalovacího cyklu (SSC),
+	 * pokud je aktuálně načtený záznam v režimu konceptu (`record_type = 'D'`).
+	 */
+	protected function render_ssc_status_banner(): void {
+		global $datarow;                                                     // Aktuálně načtený řádek detailu
+		$rec_type = (string)($datarow['record_type'] ?? 'A');                // Typ záznamu ('A' nebo 'D')
+		if ($rec_type !== 'D') {                                             // Pokud jde o běžný schválený záznam
+			return;                                                          // Pruh nevykreslujeme
+		}
+
+		$app_status = (string)($datarow['approval_status'] ?? 'D');          // Stav konceptu ('D', 'F', 'R')
+		$app_note = trim((string)($datarow['approval_note'] ?? ''));         // Poznámka schvalovatele
+
+		if ($app_status === 'R') {                                           // Vrácený / odmítnutý návrh
+			$msg_rej = htmlspecialchars($this->phrase('msg_ssc_status_rejected', [], 'Tento návrh byl vrácen / odmítnut schvalovatelem. Můžete jej upravit a znovu postoupit, nebo smazat.')); // Hláška vrácení
+			$note_html = '';                                                 // Volitelný výpis důvodu vrácení
+			if ($app_note !== '') {                                          // Pokud schvalovatel uvedl důvod
+				$lbl_reason = htmlspecialchars($this->phrase('lbl_rejection_reason', [], 'Důvod vrácení:')); // Popisek důvodu
+				$safe_note = nl2br(htmlspecialchars($app_note));             // Ošetřený text poznámky
+				$note_html = "<div style=\"margin-top: 6px; font-weight: normal; color: #7f1d1d;\"><strong>{$lbl_reason}</strong> {$safe_note}</div>"; // HTML důvodu
+			}
+			echo "<div class=\"msg-err\" style=\"margin-bottom: 15px;\">{$msg_rej}{$note_html}</div>\n"; // Výpis červeného boxu
+		} elseif ($app_status === 'F') {                                     // Návrh postoupený ke schválení
+			$msg_fwd = htmlspecialchars($this->phrase('msg_ssc_status_forwarded', [], 'Tento záznam je postoupen ke schválení. Do doby schválení jej můžete dále upravit nebo stáhnout zpět do konceptu.')); // Hláška postoupení
+			echo "<div class=\"msg-info\" style=\"margin-bottom: 15px;\">{$msg_fwd}</div>\n"; // Výpis modrého boxu
+		} else {
+			$msg_drf = htmlspecialchars($this->phrase('msg_ssc_status_draft', [], 'Pracujete s rozpracovaným konceptem, který je viditelný pouze pro vás.')); // Hláška konceptu
+			echo "<div class=\"msg-info\" style=\"margin-bottom: 15px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e;\">{$msg_drf}</div>\n"; // Výpis žlutého boxu
+		}
+	}
+
+	/**
 	 * Generuje strukturu formuláře na pravé straně s využitím metadat ($form_groups).
 	 */
 	protected function render_detail(): void {
@@ -515,10 +608,13 @@ HTML;
 				$type = $meta['input_type'] ?? 'text';                       // Typ vstupního prvku
 				$datarow[$colname] = ($type === 'checkbox') ? '0' : '';      // Výchozí hodnota pole
 			}
+			$datarow['record_type'] = 'A';                                   // Výchozí stav před prvním uložením
+			$datarow['approval_status'] = 'A';                               // Výchozí schválený stav
+			$datarow['approval_note'] = '';                                  // Prázdná poznámka schvalování
 			$datarow['object_is_mine'] = 1;                                  // Nový záznam patří vždy uživateli
 			$is_mine = true;                                                 // Příznak vlastnictví záznamu
 		} else {
-			// Načtení dat přes T-SQL (včetně překladových mechanismů pro stringy)
+			// Načtení dat přes T-SQL (včetně překladových mechanismů pro stringy a vlastních konceptů)
 			$sql = $this->em->build_select_query("m.original = " . guidliteral($update_guid)); // Dotaz na detail záznamu
 			$q = sqlrun($sql);                                               // Spuštění dotazu pro detail
 			
@@ -546,16 +642,47 @@ HTML;
 		$header_html = $this->get_detail_header();                           // Nadpis detailního panelu
 		$extra_buttons = $this->render_detail_header_buttons($update_guid);  // Doplňková tlačítka potomka
 
-		// Sestavení tlačítek Uložit a Zahodit změny přes abstract_button (pokud není panel readonly)
+		// Sestavení tlačítek schvalovacího cyklu (SSC) přes abstract_button (pokud není panel readonly)
 		$buttons_html = $extra_buttons;                                      // Výchozí sada tlačítek hlavičky
 		if (!$this->is_readonly) {                                           // Pokud je povolená běžná editace záznamu
+			$btn_parts = [];                                                 // Pole tlačítek v hlavičce detailu
+
 			$btn_discard = new abstract_button('btn_discard', 'Zahodit změny', 'abstract_button', '', 'btn-danger'); // Tlačítko zahození změn
 			$btn_discard->set_href($discard_url)->set_onclick('isFormDirty = false;'); // Přechod bez varování dirty stavu
+			$btn_parts[] = $btn_discard->render();                           // Přidání tlačítka Zahodit změny
 
-			$btn_save = new abstract_button('btn_save', 'Uložit změny', 'abstract_button', '', 'btn-success'); // Tlačítko uložení formuláře
-			$btn_save->set_type('submit')->set_name_value('btn_save', '1');  // Nastavení submit atributů
+			if ($extra_buttons !== '') {                                     // Pokud potomek definoval vlastní tlačítka
+				$btn_parts[] = $extra_buttons;                               // Zařazení doplňkových tlačítek potomka
+			}
 
-			$buttons_html = $btn_discard->render() . "\n\t\t\t\t\t" . $extra_buttons . "\n\t\t\t\t\t" . $btn_save->render(); // Spojení tlačítek hlavičky
+			// Tlačítko pro trvalé smazání rozpracovaného nebo vráceného konceptu ('D')
+			$is_draft_row = ($update_guid !== 'NEW' AND ((string)($datarow['record_type'] ?? 'A') === 'D')); // Zda jde o uložený koncept
+			if ($is_draft_row) {                                             // Pokud má uživatel uložený koncept
+				$confirm_del = $this->phrase('confirm_delete_draft', [], 'Opravdu chcete tento koncept bez náhrady odstranit?'); // Dotaz před smazáním
+				$btn_del_draft = new abstract_button('btn_delete_draft', 'Smazat koncept', 'abstract_button', '', 'btn-danger'); // Tlačítko smazání konceptu
+				$btn_del_draft->set_type('submit')                           // Nastavení typu submit
+					->set_name_value('btn_delete_draft', '1')                // Jméno a hodnota pro process_save()
+					->set_onclick('isFormDirty = false;')                    // Vypnutí varování před opuštěním
+					->set_confirm($confirm_del);                             // Potvrzovací dialog
+				$btn_parts[] = $btn_del_draft->render();                     // Přidání tlačítka Smazat koncept
+			}
+
+			// Tlačítko pro uložení rozpracovaného konceptu ('D')
+			$btn_draft = new abstract_button('btn_save_draft', 'Uložit koncept', 'abstract_button', '', 'btn-secondary'); // Tlačítko konceptu
+			$btn_draft->set_type('submit')->set_name_value('btn_save_draft', '1'); // Submit pro stav 'D'
+			$btn_parts[] = $btn_draft->render();                             // Přidání tlačítka Uložit koncept
+
+			// Tlačítko pro postoupení záznamu ke schválení ('F')
+			$btn_forward = new abstract_button('btn_forward_approval', 'Předat ke schválení', 'abstract_button'); // Tlačítko postoupení
+			$btn_forward->set_type('submit')->set_name_value('btn_forward_approval', '1'); // Submit pro stav 'F'
+			$btn_parts[] = $btn_forward->render();                           // Přidání tlačítka Předat ke schválení
+
+			// Tlačítko pro přímé uložení schváleného záznamu ('A')
+			$btn_save = new abstract_button('btn_save', 'Uložit změny', 'abstract_button', '', 'btn-success'); // Tlačítko přímého uložení
+			$btn_save->set_type('submit')->set_name_value('btn_save', '1');  // Nastavení submit atributů pro stav 'A'
+			$btn_parts[] = $btn_save->render();                              // Přidání tlačítka Uložit změny
+
+			$buttons_html = implode("\n\t\t\t\t\t", $btn_parts);             // Spojení všech tlačítek hlavičky
 		}
 
 		echo <<<HTML
@@ -563,10 +690,10 @@ HTML;
 		<form method="post" action="{$form_action}" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
 			<input type="hidden" name="update_guid" value="{$safe_update_guid}">{$hidden_inputs}
 			
-			<!-- Fixní hlavička (Zahodit / Doplňková tlačítka / Uložit) -->
+			<!-- Fixní hlavička (Zahodit / Doplňková tlačítka / Koncept / Ke schválení / Uložit) -->
 			<div class="md-detail-header">
 				<h2 style="margin: 0; border: none; padding: 0;">{$header_html}</h2>
-				<div style="display: flex; gap: 10px; align-items: center;">
+				<div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
 					{$buttons_html}
 				</div>
 			</div>
@@ -574,6 +701,11 @@ HTML;
 			<!-- Scrollovatelná obálka formulářů -->
 			<div class="md-detail-content">
 HTML;
+
+		// Vykreslení informačního pruhu schvalovacího cyklu (u stavů D, F, R)
+		if ($update_guid !== 'NEW') {                                        // Pouze u existujícího záznamu v DB
+			$this->render_ssc_status_banner();                               // Zobrazení pruhu stavu konceptu
+		}
 
 		// Volání hooku pro custom notifikace (např. upozornění na dědičnost)
 		$this->render_detail_top();                                          // Vykreslení horní části detailu
@@ -627,7 +759,7 @@ HTML;
 				$trans_html = !empty($meta['translate']) ? "<br><small style=\"color: #2563eb; font-size: 10px;\" title=\"{$lbl_tr_title}\">{$lbl_tr_badge}</small>" : ''; // Štítek překladu
 				
 				// Generování konkrétního tagu (<input>, <select>, <textarea>) dle metadat
-				$input_html = $this->em->render_dynamic_input($colname, (string)$datarow[$colname], $is_mine, $this->is_readonly); // HTML vstupního prvku
+				$input_html = $this->em->render_dynamic_input($colname, (string)($datarow[$colname] ?? ''), $is_mine, $this->is_readonly); // HTML vstupního prvku
 				
 				echo <<<HTML
 					<tr>
