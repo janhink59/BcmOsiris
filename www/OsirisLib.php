@@ -117,7 +117,7 @@ function sqlrun($cmd) {
 // NEXT_RESULT: Odstíní platformově toto volání
 function next_result($res=null, $force=true) {
 	global $dbquery;
-	if(!$res) $res=$dbquery;
+	if($res===null) $res=$dbquery;
 	if($res===false) return false;
 	
 	return sqlsrv_next_result($res);
@@ -1165,7 +1165,7 @@ function sqlarray2($p=null,$continue=0){
 
 function sqlarray3($p=null){
 	global $dbquery;
-	if(!$p) $p=$dbquery;
+	if($p===null) $p=$dbquery;
 	$continue=$i=0;
 	if(is_resource($p) or is_object($p)) {$res=$p; $continue=1;} else $res=sqlrun($p);
 	$r=array();
@@ -1183,7 +1183,7 @@ function sqlarray3($p=null){
 // SQLARRAY_SIMPLE: Funkce přečte result set a připraví z řádků prosté pole
 function sqlarray_simple($p=null){
 	global $dbquery;
-	if(!$p) $p=$dbquery;
+	if($p===null) $p=$dbquery;
 	$continue=$i=0;
 	if(is_resource($p) or is_object($p)) {
 		$res=$p; $continue=1;
@@ -1200,7 +1200,7 @@ function sqlarray_simple($p=null){
 // FETCH_DATAROW: fetchne řádek s daty a zapíše hodnoty do proměnné $pageitems
 function fetch_datarow($rs=null){
 	global $datarow, $pageitem_array, $htmldatarow, $dbquery;
-	if(!$rs) $rs=$dbquery;
+	if($rs===null) $rs=$dbquery;
 	if($datarow=fetch($rs)) {
 		$htmldatarow=htmlspec($datarow);
 		foreach($datarow as $name => $value){
