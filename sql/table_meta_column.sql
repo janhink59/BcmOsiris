@@ -1,14 +1,18 @@
 /* =============================================================================
  * Soubor: table_meta_column.sql
- * Verze: 2026-10-08
+ * Verze: 2026-10-18 17:15
  * Tabulka: meta_column
  * Popis:   Uchovává metadata sloupců/proměnných v databázi a aplikacích.
  * Vazby:   Podklad pro entity_manager. Definuje vlastnosti formulářů a 
  *          rozšíření základních definic globálního slovníku (meta_class.original).
  *          Odkazuje na meta_codetable a meta_class pro datové <select> prvky.
+ *          Plněno automaticky procedurou p_fix_meta_column a importem p_xlsx_meta_object.
  * Změny:   - Přesnější okomentování sémantiky vazeb (parent_class, ancestor, referenced_class).
  *          - Přejmenováno parent_object na parent_class (vazba na logickou třídu).
  *          - Přidán import_origin pro evidenci importů (Měkký audit).
+ *          - 2026-10-18 17:15: Přidán sloupec editor_note pro kontext AI překladů,
+ *            sloupce draft_author a approval_note pro SSC a unikátní indexy
+ *            uq_meta_column_active a uq_meta_column_language.
  * ============================================================================= */
 
 -- Idempotentní odstranění tabulky, pokud obsahuje starou vazbu na fyzický objekt
@@ -28,6 +32,8 @@ CREATE TABLE meta_column(
 	original uuid NOT NULL DEFAULT 0x00,
 	record_type varchar(1) NOT NULL DEFAULT 'A',
 	approval_status varchar(1) NOT NULL DEFAULT 'A',
+	draft_author uuid NOT NULL DEFAULT 0x00,                               -- Autor konceptu (user_account.original)
+	approval_note varchar(max) NOT NULL DEFAULT '',                        -- Poznámka schvalovatele / důvod vrácení
 	inactive bit NOT NULL DEFAULT 0,
 	removed bit NOT NULL DEFAULT 0,
 	language varchar(2) NOT NULL DEFAULT 'cs',
@@ -63,6 +69,7 @@ CREATE TABLE meta_column(
 	header varchar(200) NULL,
 	helptext varchar(max) NULL,
 	placeholder varchar(200) NULL,
+	editor_note varchar(max) NULL,                                         -- Sémantický kontext pro překladatele a AI (nepřekládá se)
 	input_type varchar(20) NULL,
 	input_width varchar(50) NULL,
 	input_rows int NULL,
@@ -78,7 +85,7 @@ CREATE TABLE meta_column(
 	hidden bit NULL,
 	customizable bit NULL,
 	
-	ancestor uuid NULL,                                                    -- METADATOVÁ DĚDIČNOST: Ukazuje na meta_column.original (obvykle v sys_global_columns). Pokud je zdení hodnota NULL, převezme se z tohoto předka.
+	ancestor uuid NULL,                                                    -- METADATOVÁ DĚDIČNOST: Ukazuje na meta_column.original (obvykle v sys_global_columns). Pokud je zde hodnota NULL, převezme se z tohoto předka.
 	
 	-- Odkazy pro dynamické <select> prvky v entity_manager
 	referenced_codetable varchar(80) NOT NULL DEFAULT '',                  -- DATOVÁ VAZBA: Název číselníku z meta_codetable, odkud se mají načítat hodnoty pro rozevírací seznamy.
@@ -92,4 +99,32 @@ CREATE TABLE meta_column(
 
 	CONSTRAINT pk_meta_columns PRIMARY KEY (uuid)
 );
+GO
+
+-- -----------------------------------------------------------------------------
+-- Zajištění chybějících sloupců pro existující databáze
+-- -----------------------------------------------------------------------------
+EXEC p_create_missing_column 'meta_column', 'import_origin', 'varchar(255) NULL';
+EXEC p_create_missing_column 'meta_column', 'editor_note', 'varchar(max) NULL';
+EXEC p_create_missing_column 'meta_column', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'meta_column', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC architektury
+-- -----------------------------------------------------------------------------
+EXEC sp_create_index 
+	@tname = 'meta_column', 
+	@iname = 'uq_meta_column_active', 
+	@colnames = 'original, object_owner', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+EXEC sp_create_index 
+	@tname = 'meta_column', 
+	@iname = 'uq_meta_column_language', 
+	@colnames = 'original, object_owner, language', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''L'' AND removed = 0';
 GO

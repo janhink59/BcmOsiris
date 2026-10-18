@@ -1,15 +1,18 @@
 /* =============================================================================
  * Soubor: table_meta_class.sql
- * Verze: 2026-10-07 11:18
+ * Verze: 2026-10-18 17:15
  * Tabulka: meta_class
  * Popis:   Logické třídy (entity) systému. Slouží jako nadstavba nad 
  *          fyzickými objekty (meta_object). Definuje konkrétní třídy 
  *          v rámci vzoru Single Table Inheritance (STI) a jejich chování.
  * Vazby:   - storage_object (UUID) ukazuje na meta_object (fyzická tabulka).
  *          - ancestor_class (UUID) ukazuje na jinou meta_class (dědičnost logiky i sloupců).
+ *          - Plněno automaticky procedurou p_fix_meta_column a importem p_xlsx_meta_object.
  * Změny:   - Přejmenováno parent_object na storage_object.
  *          - Textové vlastnosti změněny na NULLable pro podporu dědičnosti.
  *          - Přidán sloupec import_origin pro evidenci původu záznamu z importu (Měkký audit).
+ *          - 2026-10-18 17:15: Přidán sloupec editor_note pro sémantický kontext AI překladů
+ *            a sloupce draft_author a approval_note pro schvalovací cyklus (SSC).
  * ============================================================================= */
 
 if not exists (select * from v_syscolumns where tabname='meta_class' and colname='storage_object')
@@ -23,8 +26,10 @@ CREATE TABLE meta_class(
 	uuid uuid NOT NULL,
 	object_owner uuid NOT NULL DEFAULT 0x00,           -- Vlastník záznamu (0x00 pro systémové třídy)
 	original uuid NOT NULL DEFAULT 0x00,               -- Logický identifikátor třídy napříč overridy
-	record_type varchar(1) NOT NULL DEFAULT 'A',       -- Stav verze (A, L, H)
-	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stav schválení
+	record_type varchar(1) NOT NULL DEFAULT 'A',       -- Stav verze (A, L, D, H)
+	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stav schválení (A, D, F, R)
+	draft_author uuid NOT NULL DEFAULT 0x00,           -- Autor konceptu (user_account.original)
+	approval_note varchar(max) NOT NULL DEFAULT '',    -- Poznámka schvalovatele / důvod vrácení
 	inactive bit NOT NULL DEFAULT 0,
 	removed bit NOT NULL DEFAULT 0,
 	language varchar(2) NOT NULL DEFAULT 'cs',
@@ -54,6 +59,7 @@ CREATE TABLE meta_class(
 	caption_plural varchar(200) NULL,
 	description varchar(max) NULL,
 	helptext varchar(max) NULL,
+	editor_note varchar(max) NULL,                     -- Sémantický kontext pro překladatele a AI (nepřekládá se)
 	
 	-- Uživatelské rozhraní
 	iconname varchar(250) NULL,                        -- Název ikony pro navigaci/seznamy
@@ -76,6 +82,9 @@ GO
 -- Zajištění chybějících sloupců pro existující databáze (změnový příkaz)
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'meta_class', 'import_origin', 'varchar(255) NULL';
+EXEC p_create_missing_column 'meta_class', 'editor_note', 'varchar(max) NULL';
+EXEC p_create_missing_column 'meta_class', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'meta_class', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 GO
 
 -- -----------------------------------------------------------------------------

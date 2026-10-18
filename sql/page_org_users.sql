@@ -3,10 +3,17 @@ IF OBJECT_ID('page_org_users') IS NOT NULL
 GO
 
 /* =============================================================================
+ * Verze: 2026-10-18 12:55
+ * Soubor: page_org_users.sql
  * Procedura: page_org_users
- * Účel: Načítá seznam uživatelů tenanta a detaily pro formulář v Master-Detail.
- * Architektura: Nezávislá na parametrech, kontext organizace čerpá z dbsession.
- * Nyní vrací auditní sloupce přímo přeložené pomocí f_get_user_info.
+ * Účel: Načítá seznam uživatelů tenanta (včetně žádostí o přístup a pozvánek 'D')
+ *       a oddělené detaily osobního účtu (user_account) a oprávnění v organizaci
+ *       (user_organization_access) pro Master-Detail obrazovku page_org_users.php.
+ * Architektura: Nezávislá na parametrech organizace, kontext čerpá z dbsession.
+ * Změny:
+ * - 2026-10-18 12:55: Doplněno načítání konceptů ('D') v seznamu i detailu,
+ *   doplněny všechny osobní sloupce z user_account, oprávnění right_translate
+ *   a globální příznaky účtu pro oddělené zobrazení ve formuláři.
  * ============================================================================= */
 CREATE PROCEDURE dbo.page_org_users
 	@subpage VARCHAR(50),
@@ -34,44 +41,97 @@ BEGIN
 		RETURN;
 	END
 
-	-- 2. Zpracování pro levý panel (Master - Seznam uživatelů)
+	-- 2. Zpracování pro levý panel (Master - Seznam uživatelů, žádostí a pozvánek)
 	IF @subpage = 'list'
 	BEGIN
+		-- Pokud má uživatel historický odebraný přístup (A, removed=1) a současně novou žádost/pozvánku (D, removed=0),
+		-- vybereme pro zobrazení v seznamu prioritně aktivní řádek (removed ASC, record_type D před A při removed=1).
+		;WITH ranked_access AS (
+			SELECT
+				ou.*,
+				ROW_NUMBER() OVER (
+					PARTITION BY ou.user_account_uuid
+					ORDER BY ou.removed ASC, CASE WHEN ou.record_type = 'A' THEN 0 ELSE 1 END ASC, ou.date_modified DESC
+				) AS rn
+			FROM dbo.user_organization_access ou
+			WHERE ou.organization_uuid = @current_org
+			  AND ou.record_type IN ('A', 'D')
+			  AND (
+				(ou.record_type = 'A' AND (ou.removed = 0 OR @show_removed = 1))
+				OR (ou.record_type = 'D' AND ou.removed = 0)
+			  )
+		)
 		SELECT 
 			u.original AS user_uuid,
+			u.login_name,
 			u.first_name,
 			u.last_name,
 			u.email,
+			u.inactive,
+			ou.record_type,
+			ou.approval_status,
+			ou.draft_author,
+			ou.approval_note,
 			ou.is_orgadmin,
-			ou.removed AS remove_access
-		FROM dbo.user_account u
-		INNER JOIN dbo.user_organization_access ou ON u.original = ou.user_account_uuid
-		WHERE ou.organization_uuid = @current_org
-		  AND u.record_type = 'A' AND ou.record_type = 'A'
-		  AND (ou.removed = 0 OR @show_removed = 1)
-		ORDER BY u.last_name, u.first_name;
+			ou.right_translate,
+			ou.removed AS access_removed,
+			CASE WHEN ou.record_type = 'D' AND ou.draft_author = u.original THEN 1 ELSE 0 END AS is_user_request
+		FROM ranked_access ou
+		INNER JOIN dbo.user_account u ON u.original = ou.user_account_uuid
+		WHERE ou.rn = 1
+		  AND u.record_type = 'A'
+		  AND u.removed = 0
+		ORDER BY
+			CASE WHEN ou.record_type = 'D' AND ou.approval_status = 'F' THEN 0 ELSE 1 END ASC,
+			ou.removed ASC,
+			u.last_name ASC,
+			u.first_name ASC;
 	END
 
 	-- 3. Zpracování pro pravý panel (Detail pro editaci formuláře)
 	ELSE IF @subpage = 'detail'
 	BEGIN
-		SELECT 
+		SELECT TOP 1
+			-- Osobní a kontaktní údaje globálního účtu (user_account)
+			u.original AS user_uuid,
 			u.login_name,
+			u.user_title_before,
 			u.first_name,
 			u.last_name,
+			u.user_title_after,
 			u.email,
-			ou.is_orgadmin,
-			ou.removed AS remove_access,
+			u.phone,
+			u.mobile,
+			u.department_name,
+			u.job_title,
+			u.note,
+			-- Globální systémové příznaky účtu (user_account)
+			u.is_system_admin,
+			u.is_developer,
+			u.allow_local_login,
 			u.inactive AS deactivate_global,
+			-- Oprávnění a stav schvalování v aktuální organizaci (user_organization_access)
+			ou.record_type,
+			ou.approval_status,
+			ou.draft_author,
+			ou.approval_note,
+			ou.is_orgadmin,
+			ou.right_translate,
+			ou.removed AS remove_access,
+			CASE WHEN ou.record_type = 'D' AND ou.draft_author = u.original THEN 1 ELSE 0 END AS is_user_request,
+			-- Auditní stopa
 			u.date_created,
 			dbo.f_get_user_info(u.who_created) AS who_created_info,
-			u.date_modified,
-			dbo.f_get_user_info(u.who_modified) AS who_modified_info
+			CASE WHEN ou.date_modified > u.date_modified THEN ou.date_modified ELSE u.date_modified END AS date_modified,
+			dbo.f_get_user_info(CASE WHEN ou.date_modified > u.date_modified THEN ou.who_modified ELSE u.who_modified END) AS who_modified_info
 		FROM dbo.user_account u
 		INNER JOIN dbo.user_organization_access ou ON u.original = ou.user_account_uuid
 		WHERE u.original = @update_guid 
 		  AND ou.organization_uuid = @current_org
-		  AND u.record_type = 'A' AND ou.record_type = 'A';
+		  AND u.record_type = 'A'
+		  AND u.removed = 0
+		  AND ou.record_type IN ('A', 'D')
+		ORDER BY ou.removed ASC, CASE WHEN ou.record_type = 'A' THEN 0 ELSE 1 END ASC, ou.date_modified DESC;
 	END
 END
 GO

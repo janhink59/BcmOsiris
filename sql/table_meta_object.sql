@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-17 00:50
+ * Verze: 2026-10-18 12:35
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
@@ -25,6 +25,8 @@
  *            pro umožnění překladů všem rolím (funkční atributy chrání entity_manager pro 'D').
  *          - 2026-10-17 00:50: Doplněny sloupce draft_author a approval_note pro schvalovací
  *            cyklus (SSC) a zaregistrována univerzální schvalovací stránka page_approval.
+ *          - 2026-10-18 12:35: Doplněny unikátní indexy uq_meta_object_active a
+ *            uq_meta_object_language a symetrické 'L' záznamy pro výchozí stránky.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -104,6 +106,25 @@ EXEC p_create_missing_column 'meta_object', 'approval_note', 'varchar(max) NOT N
 GO
 
 -- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC architektury
+-- -----------------------------------------------------------------------------
+EXEC sp_create_index 
+	@tname = 'meta_object', 
+	@iname = 'uq_meta_object_active', 
+	@colnames = 'original, object_owner', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+EXEC sp_create_index 
+	@tname = 'meta_object', 
+	@iname = 'uq_meta_object_language', 
+	@colnames = 'original, object_owner, language', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''L'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
 -- Vyčištění zastaralých systémových záznamů (fráze 'G' a stránky bez prefixu 'page_')
 -- -----------------------------------------------------------------------------
 DELETE FROM meta_object
@@ -121,26 +142,10 @@ WHERE object_owner = 0x00
 GO
 
 /* =============================================================================
- * REGISTRACE STRÁNKY EXCEL READER DO METADAT
- * Účel: Zajišťuje, aby nová stránka pro import byla viditelná v dynamickém menu.
+ * REGISTRACE STRÁNKY EXCEL READER A SYSTÉMOVÝCH OBJEKTŮ DO METADAT
+ * Účel: Zajišťuje, aby všechny systémové stránky a UI třídy měly v meta_object
+ *       jak hlavní 'A' záznam, tak symetrický 'L' záznam.
  * ============================================================================= */
-DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
-DECLARE @orig_guid uniqueidentifier = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_excel_reader');
-
-IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @orig_guid AND object_owner = 0x00 AND record_type = 'A')
-BEGIN
-	INSERT INTO meta_object (
-		uuid, object_owner, original, record_type, approval_status,
-		object_type, builtin_code, system_role, caption, description, module
-	) VALUES (
-		@orig_guid, 0x00, @orig_guid, 'A', 'A',
-		'P', 'page_excel_reader', 'S', 'Import dat z Excelu', 'Nástroj pro hromadný import datových struktur', ''
-	);
-	PRINT 'Stránka page_excel_reader byla zaregistrována do meta_object.';
-END
-GO
-
--- Registrace fyzických stránek a bázových UI tříd do metadat (nutné pro bezpečnostní validaci menu a frází)
 DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 
 DECLARE @pages TABLE (builtin_code varchar(80), caption varchar(200), description varchar(max), system_role varchar(1));
@@ -159,29 +164,48 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_approval', 'Schvalování změn', 'Přehled, porovnání a schvalování navržených záznamů napříč třídami', 'U'),
 ('page_organization_licence', 'Správa licencí organizací', 'Evidence a aktivace licencí pro jednotlivé tenanty', 'S'),
 ('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
-('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace a aplikační role', 'U'),
+('page_excel_reader', 'Import dat z Excelu', 'Nástroj pro hromadný import a export datových struktur', 'S'),
+('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace, aplikační role a žádosti o přístup', 'U'),
 ('page_login', 'Přihlášení do systému', 'Přihlašovací obrazovka s podporou lokální autentizace a SSO', 'U'),
 ('page_password_reset', 'Obnova hesla', 'Stránka pro vyžádání a nastavení nového hesla pomocí tokenu', 'U'),
 ('page_google_callback', 'Google SSO Callback', 'Koncový bod pro ověření identity přes Google OAuth', 'U'),
 ('page_logout', 'Odhlášení ze systému', 'Ukončení relace a zneplatnění přihlašovacích tokenů', 'U');
 
+-- 1. Idempotentní vložení hlavních 'A' záznamů
 INSERT INTO meta_object (
-	uuid, object_owner, original, record_type, approval_status,
+	uuid, object_owner, original, record_type, approval_status, [language],
 	object_type, builtin_code, system_role, caption, description, module
 )
 SELECT 
 	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
 	@sys_owner,
 	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
-	'A', 'A', 'P', p.builtin_code, p.system_role, p.caption, p.description, ''
+	'A', 'A', 'cs', 'P', p.builtin_code, p.system_role, p.caption, p.description, ''
 FROM @pages p
 WHERE NOT EXISTS (
 	SELECT 1 FROM meta_object mo 
 	WHERE mo.original = dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code)
-	  AND mo.record_type = 'A' AND mo.object_owner = @sys_owner
+	  AND mo.record_type = 'A' AND mo.object_owner = @sys_owner AND mo.removed = 0
 );
 
--- Idempotentní sjednocení system_role u stávajících systémových záznamů
+-- 2. Idempotentní vložení symetrických 'L' záznamů pro výchozí jazyk ('cs')
+INSERT INTO meta_object (
+	uuid, object_owner, original, record_type, approval_status, [language],
+	object_type, builtin_code, system_role, caption, description, module
+)
+SELECT 
+	NEWID(),
+	@sys_owner,
+	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
+	'L', 'A', 'cs', 'P', p.builtin_code, p.system_role, p.caption, p.description, ''
+FROM @pages p
+WHERE NOT EXISTS (
+	SELECT 1 FROM meta_object mo 
+	WHERE mo.original = dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code)
+	  AND mo.record_type = 'L' AND mo.[language] = 'cs' AND mo.object_owner = @sys_owner AND mo.removed = 0
+);
+
+-- 3. Idempotentní sjednocení system_role u stávajících systémových záznamů
 UPDATE mo
 SET mo.system_role = p.system_role
 FROM meta_object mo

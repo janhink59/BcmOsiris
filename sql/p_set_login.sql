@@ -2,6 +2,8 @@ EXECUTE dropni 'p_set_login', 'P'
 GO
 
 /* =============================================================================
+ * Verze: 2026-10-18 12:35
+ * Soubor: p_set_login.sql
  * Procedura: p_set_login
  * Účel: Založení uživatelské relace a inicializace kontextu (tenant, práva).
  *
@@ -10,6 +12,12 @@ GO
  * - Ukládá instanci přihlášení do audit_login_session a předává login_session_uuid 
  *   do aplikační relace (wwwsession -> dbsession).
  * - Pracuje s exkluzivními rolemi (U=User, A=Admin, S=Sysadmin, D=Developer).
+ *
+ * Změny:
+ * - 2026-10-18 12:35: Rozšířeno vyhodnocení @change_context_allowed tak, aby měl
+ *   uživatel v horní liště přístup na stránku page_change_user_context i tehdy,
+ *   pokud má čekající žádost/pozvánku (record_type = 'D') nebo v systému existuje
+ *   další klientská organizace, do které může požádat o přístup.
  * ============================================================================= */
 CREATE PROCEDURE p_set_login
 	@user_uuid uniqueidentifier,
@@ -157,8 +165,14 @@ BEGIN
 		END
 		ELSE
 		BEGIN
-			-- Běžní uživatelé, pokud jsou ve více firmách, nebo mají v jedné firmě na výběr z role Admin / User
-			IF @org_count > 1 OR EXISTS (SELECT 1 FROM v_user_organization_access WHERE user_account_uuid = @user_uuid AND is_orgadmin = 1)
+			-- Běžní uživatelé mohou na stránku změny kontextu, pokud:
+			-- a) jsou ve více firmách nebo mají roli Admin,
+			-- b) mají rozpracovanou / čekající žádost či pozvánku v user_organization_access (record_type = 'D'),
+			-- c) v systému existuje jiná aktivní klientská organizace, do které mohou požádat o přístup.
+			IF @org_count > 1 
+				OR EXISTS (SELECT 1 FROM v_user_organization_access WHERE user_account_uuid = @user_uuid AND is_orgadmin = 1)
+				OR EXISTS (SELECT 1 FROM user_organization_access WHERE user_account_uuid = @user_uuid AND record_type = 'D' AND removed = 0)
+				OR EXISTS (SELECT 1 FROM organization WHERE original <> 0x00 AND original <> @organization AND record_type = 'A' AND removed = 0 AND inactive = 0 AND login_disabled = 0)
 			BEGIN
 				SET @change_context_allowed = 1;
 			END

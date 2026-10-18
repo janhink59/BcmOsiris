@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-17 01:05
+ * Verze: 2026-10-18 18:15
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -13,7 +13,7 @@
  * - Zpracování POST dat a PRG vzor (Post-Redirect-Get) volá globální funkci 
  *   `autoredirect()` z `OsirisLib.php`.
  * - Bezpečné načítání parametrů z URL zajišťuje funkce `getinput()`.
- * - Databázové dotazy se odesílají pomocí `sqlrun()` a `fetch()`.
+ * - Databázové dotazy se načítají do pole pomocí `sqlarray_simple()` a `sqlfirstrow()`.
  * - Generování UI prvků, SQL dotazů a zápis je plně delegován na instanci
  *   `entity_manager`, kterou tato třída inicializuje v metodě `render()`.
  * - Vykreslování akčních tlačítek využívá komponentu `abstract_button`
@@ -50,6 +50,9 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-18 18:15 - Převedení čtení dat v render_master() na sqlarray_simple()
+ *                    a v render_detail() na sqlfirstrow(), aby vnořené dotazy
+ *                    nikdy neuvolnily globální $dbquery v OsirisLib.php.
  * 2026-10-17 01:05 - Integrace schvalovacího cyklu (SSC): podpora tlačítek pro uložení
  *                    konceptu ('D'), postoupení ke schválení ('F'), přímé uložení ('A')
  *                    a smazání konceptu bez zápisu do historie.
@@ -471,46 +474,46 @@ HTML;
 				<tbody id="master-list">
 HTML;
 
-		// Spuštění T-SQL dotazu (s automatickým tříděním z entity_manageru)
+		// Spuštění T-SQL dotazu a okamžité načtení celého result-setu do pole
 		$sql = $this->em->build_select_query($this->master_where);           // Sestavení SELECT dotazu
-		$q = sqlrun($sql);                                                   // Spuštění dotazu pro seznam
+		$rows = sqlarray_simple($sql);                                       // Načtení všech řádků do pole v paměti
 		
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název stránky do URL
 		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL
 
-		while ($row = fetch($q)) {                                           // Načítání jednotlivých řádků seznamu
-			$uuid = (string)$row['original'];                                // Originální UUID řádku
-			$rowClass = ($uuid === $update_guid) ? 'md-row-active' : '';     // Třída pro aktivní řádek
-			$rowIdAttr = ($uuid === $update_guid) ? 'id="active-row"' : '';  // Atribut id pro aktivní řádek
+		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
+			foreach ($rows as $row) {                                        // Průchod jednotlivými řádky seznamu
+				$uuid = (string)$row['original'];                            // Originální UUID řádku
+				$rowClass = ($uuid === $update_guid) ? 'md-row-active' : ''; // Třída pro aktivní řádek
+				$rowIdAttr = ($uuid === $update_guid) ? 'id="active-row"' : ''; // Atribut id pro aktivní řádek
 
-			$rec_type = (string)($row['record_type'] ?? 'A');                // Typ záznamu ('A' nebo 'D')
-			$app_status = (string)($row['approval_status'] ?? 'A');          // Stav schválení ('A', 'D', 'F', 'R')
-			$ssc_badge = '';                                                 // Vizuální štítek pro koncepty v seznamu
-			if ($rec_type === 'D') {                                         // Pokud je řádek neuzavřeným konceptem
-				if ($app_status === 'F') {                                   // Návrh postoupený ke schválení
-					$ssc_badge = "<span class=\"ssc-badge ssc-badge-f\">{$badge_txt_f}</span>"; // Modrý štítek
-				} elseif ($app_status === 'R') {                             // Návrh vrácený schvalovatelem
-					$ssc_badge = "<span class=\"ssc-badge ssc-badge-r\">{$badge_txt_r}</span>"; // Červený štítek
-				} else {
-					$ssc_badge = "<span class=\"ssc-badge ssc-badge-d\">{$badge_txt_d}</span>"; // Žlutý štítek konceptu
+				$rec_type = (string)($row['record_type'] ?? 'A');            // Typ záznamu ('A' nebo 'D')
+				$app_status = (string)($row['approval_status'] ?? 'A');      // Stav schválení ('A', 'D', 'F', 'R')
+				$ssc_badge = '';                                             // Vizuální štítek pro koncepty v seznamu
+				if ($rec_type === 'D') {                                     // Pokud je řádek neuzavřeným konceptem
+					if ($app_status === 'F') {                               // Návrh postoupený ke schválení
+						$ssc_badge = "<span class=\"ssc-badge ssc-badge-f\">{$badge_txt_f}</span>"; // Modrý štítek
+					} elseif ($app_status === 'R') {                         // Návrh vrácený schvalovatelem
+						$ssc_badge = "<span class=\"ssc-badge ssc-badge-r\">{$badge_txt_r}</span>"; // Červený štítek
+					} else {
+						$ssc_badge = "<span class=\"ssc-badge ssc-badge-d\">{$badge_txt_d}</span>"; // Žlutý štítek konceptu
+					}
 				}
-			}
 
-			$row_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}"); // Cílová URL řádku
-			echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">\n"; // Otevření řádku
-			
-			// Vykreslení konkrétních buněk (bez ohledu na to, v jakém pořadí přišly z DB)
-			$first_col = true;                                               // Příznak prvního sloupce pro vložení štítku
-			foreach ($list_columns as $col => $header) {                     // Výpis hodnot buněk aktuálního řádku
-				$val = htmlspecialchars((string)($row[$col] ?? ''));         // Hodnota buňky v seznamu
-				$badge_out = $first_col ? $ssc_badge : '';                   // Štítek připojíme k první buňce řádku
-				$first_col = false;                                          // Další sloupce již štítek nedostanou
-				echo "\t\t\t\t\t\t\t<td>{$val}{$badge_out}</td>\n";          // Vykreslení buňky tabulky
+				$row_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}"); // Cílová URL řádku
+				echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">\n"; // Otevření řádku
+				
+				// Vykreslení konkrétních buněk (bez ohledu na to, v jakém pořadí přišly z DB)
+				$first_col = true;                                           // Příznak prvního sloupce pro vložení štítku
+				foreach ($list_columns as $col => $header) {                 // Výpis hodnot buněk aktuálního řádku
+					$val = htmlspecialchars((string)($row[$col] ?? ''));     // Hodnota buňky v seznamu
+					$badge_out = $first_col ? $ssc_badge : '';               // Štítek připojíme k první buňce řádku
+					$first_col = false;                                      // Další sloupce již štítek nedostanou
+					echo "\t\t\t\t\t\t\t<td>{$val}{$badge_out}</td>\n";      // Vykreslení buňky tabulky
+				}
+				echo "\t\t\t\t\t\t</tr>\n";                                  // Uzavření řádku tabulky
 			}
-			echo "\t\t\t\t\t\t</tr>\n";                                      // Uzavření řádku tabulky
 		}
-		
-		free_result($q);                                                     // Uvolnění paměti pro bezpečný chod serveru
 
 		echo <<<HTML
 				</tbody>
@@ -614,14 +617,11 @@ HTML;
 			$datarow['object_is_mine'] = 1;                                  // Nový záznam patří vždy uživateli
 			$is_mine = true;                                                 // Příznak vlastnictví záznamu
 		} else {
-			// Načtení dat přes T-SQL (včetně překladových mechanismů pro stringy a vlastních konceptů)
+			// Načtení dat přes T-SQL přímo do pole pomocí sqlfirstrow()
 			$sql = $this->em->build_select_query("m.original = " . guidliteral($update_guid)); // Dotaz na detail záznamu
-			$q = sqlrun($sql);                                               // Spuštění dotazu pro detail
+			$datarow = sqlfirstrow($sql);                                    // Načtení řádku detailu a uzavření statementu
 			
-			$datarow = fetch($q);                                            // Načtení dat detailu
-			free_result($q);                                                 // Nutné pro zamezení memory leaků
-			
-			if (!$datarow) {                                                 // Kontrola existence načteného záznamu
+			if (empty($datarow)) {                                           // Kontrola existence načteného záznamu
 				$msg_nf = htmlspecialchars($this->phrase('msg_record_not_found', [], 'Záznam nebyl nalezen.')); // Chybová hláška
 				echo "<div class='msg-err'>{$msg_nf}</div>";                 // Výpis chyby
 				return;                                                      // Ukončení při nenalezení záznamu

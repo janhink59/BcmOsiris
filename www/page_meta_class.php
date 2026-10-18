@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-16 00:12
+ * Verze: 2026-10-18 17:15
  * Soubor: page_meta_class.php
  * Účel: Editace metadat logických tříd (STI architektura).
  * Nahrazuje původní page_meta_object.php.
@@ -14,6 +14,7 @@
  *   do podřízené stránky `page_meta_column`.
  * 
  * Změny:
+ * 2026-10-18 17:15 - Doplněn sloupec editor_note do prezentační sekce formuláře.
  * 2026-10-16 00:12 - Odstraněna duplicitní metoda render_detail() a ruční kontrola role.
  *                  - Formulář převeden na $this->form_groups, zapojen abstract_button
  *                    a phrase_manager přes $this->phrase().
@@ -40,7 +41,7 @@ class page_meta_class extends abstract_page_master_detail {
 		$grp_tech =$this->phrase('grp_technical', [], 'Dědičnost, vzhled a ochrana třídy'); // Nadpis technické sekce
 
 		$this->form_groups = [                                               // Rozdělení polí do sekcí formuláře
-			$grp_pres => ['caption', 'caption_plural', 'description', 'helptext'], // Překládané popisky třídy
+			$grp_pres => ['caption', 'caption_plural', 'description', 'helptext', 'editor_note'], // Překládané popisky třídy a AI kontext
 			$grp_tech => ['class_name', 'ancestor_class', 'sort_code', 'iconname', 'is_final', 'is_protected', 'inactive'] // Technické atributy pro roli 'D'
 		];                                                                   // Konec definice skupin formuláře
 	}
@@ -52,14 +53,14 @@ class page_meta_class extends abstract_page_master_detail {
 		return "{$lbl}: <span style=\"font-family: monospace; color: #555;\">{$code}</span>"; // Výsledný HTML nadpis detailu
 	}
 
-	protected function render_detail_header_buttons(string $update_guid): string {
+	protected function render_detail_header_buttons(string $update_guid): string { // Vykreslení tlačítka správy sloupců
 		if ($update_guid === '' OR $update_guid === 'NEW') {                 // U nového záznamu sloupce ještě nejsou
 			return '';                                                       // Nevykreslujeme tlačítko sloupců
 		}
 
 		// Zjištění počtu sloupců evidovaných u této logické třídy
 		$col_count = 0;                                                      // Výchozí počet sloupců třídy
-		$q_cnt = sqlrun("SELECT COUNT(DISTINCT original) AS cnt FROM meta_column WHERE parent_class = " . guidliteral($update_guid) . " AND record_type = 'A' AND removed = 0");
+		$q_cnt = sqlrun("SELECT COUNT(DISTINCT original) AS cnt FROM meta_column WHERE parent_class = " . guidliteral($update_guid) . " AND record_type = 'A' AND removed = 0"); // Dotaz na počet sloupců
 		if ($r_cnt = fetch($q_cnt)) {                                        // Načtení výsledku dotazu
 			$col_count = (int)$r_cnt['cnt'];                                 // Uložení počtu sloupců
 		}

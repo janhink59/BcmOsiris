@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-17 01:40
+ * Verze: 2026-10-18 18:15
  * Soubor: page_approval.php
  * Třída: page_approval
  * Účel: Univerzální schvalovací obrazovka (SSC) pro porovnání původních
@@ -19,8 +19,16 @@
  * - Načítá pouze návrhy ve stavu `approval_status = 'F'` (`record_type = 'D'`),
  *   které patří aktuální organizaci (`dbsession.organization`) a mají stejnou
  *   jazykovou verzi jako přihlášený schvalovatel (`dbsession.language`).
+ * - Tabulka `user_organization_access` je z obecného schvalování vyčleněna,
+ *   protože podléhá oboustrannému souhlasu (žádost uživatele vs. pozvánka orgadmina)
+ *   ve specializovaných modulech `page_org_users` a `page_change_user_context`.
  *
  * Změny:
+ * 2026-10-18 18:15 - Převedení všech dotazů z sqlrun/fetch na sqlarray_simple()
+ *                    a sqlfirstrow() kvůli globálnímu $dbquery v OsirisLib.php.
+ * 2026-10-18 12:55 - Vyčlenění tabulky `user_organization_access` z obecného
+ *                    schvalovacího seznamu (zabraňuje tomu, aby orgadmin schválil
+ *                    vlastní pozvánku bez souhlasu zvaného uživatele).
  * 2026-10-17 01:40 - Nastavení `$this->class_name = $this->target_class` v konstruktoru,
  *                    aby se `$this->em` inicializoval v předkovi před odesláním HTML hlaviček.
  *                  - Doplněna metoda `format_comparison_value()` pro čitelný překlad
@@ -54,7 +62,7 @@ class page_approval extends abstract_page_master_detail {
 		$this->target_class = trim((string)getinput('target_class'));        // Načtení třídy vybraného návrhu
 		$this->draft_uuid = trim((string)getinput('draft_uuid'));            // Načtení UUID vybraného návrhu
 
-		if ($this->target_class !== '') {                                    // Pokud je vybrána konkrétní třída návrhu
+		if ($this->target_class !== '' AND $this->target_class !== 'user_organization_access') { // Ochrana proti přímému volání
 			$this->class_name = $this->target_class;                         // Předání třídy předkovi pro včasnou inicializaci $this->em
 		}
 	}
@@ -63,7 +71,7 @@ class page_approval extends abstract_page_master_detail {
 	 * Zpracuje schválení nebo odmítnutí vybraného návrhu (PRG vzor).
 	 */
 	protected function process_save(): void {
-		if ($this->target_class === '' OR $this->draft_uuid === '' OR $this->em === null) { // Kontrola cílové třídy a správce
+		if ($this->target_class === '' OR $this->target_class === 'user_organization_access' OR $this->draft_uuid === '' OR $this->em === null) { // Kontrola cílové třídy
 			return;                                                          // Bez kompletní identifikace neprovádíme akci
 		}
 
@@ -101,7 +109,8 @@ class page_approval extends abstract_page_master_detail {
 		$items = [];                                                         // Seznam nalezených návrhů ke schválení
 
 		// 1. Zjištění všech logických tříd, jejichž fyzická tabulka má sloupec draft_author
-		$q_cls = sqlrun("
+		//    (vynecháme user_organization_access, která má vlastní obousměrné schvalování v page_org_users / page_change_user_context)
+		$raw_cls = sqlarray_simple("
 			SELECT mc.class_name, mc.caption, mo.builtin_code AS table_name
 			FROM meta_class mc
 			JOIN meta_object mo ON mo.original = mc.storage_object AND mo.object_type = 'T' AND mo.record_type = 'A' AND mo.removed = 0
@@ -109,22 +118,24 @@ class page_approval extends abstract_page_master_detail {
 			WHERE mc.object_owner = 0x00
 			  AND mc.record_type = 'A'
 			  AND mc.removed = 0
-			  AND mc.class_name <> 'sys_global_columns'
+			  AND mc.class_name NOT IN ('sys_global_columns', 'user_organization_access')
+			  AND mo.builtin_code <> 'user_organization_access'
 			ORDER BY mc.class_name
-		");                                                                  // Dotaz na logické třídy podporující SSC
+		");                                                                  // Načtení všech logických tříd do pole
 
 		$class_rows = [];                                                    // Pomocné pole načtených tříd
-		while ($r_cls = fetch($q_cls)) {                                     // Průchod nalezenými třídami
-			$c_name = (string)$r_cls['class_name'];                          // Technický název třídy
-			$c_cap = (string)$r_cls['caption'] !== '' ? (string)$r_cls['caption'] : $c_name; // Popisek třídy
-			$classes[$c_name] = $c_cap;                                      // Uložení do mapy tříd
-			$class_rows[] = [                                                // Uložení definice pro dotazování návrhů
-				'class_name' => $c_name,                                     // Název logické třídy
-				'caption'    => $c_cap,                                      // Zobrazovaný název třídy
-				'table_name' => (string)$r_cls['table_name']                 // Fyzická tabulka v DB
-			];                                                               // Konec položky třídy
+		if (is_array($raw_cls)) {                                            // Kontrola platného pole tříd
+			foreach ($raw_cls as $r_cls) {                                   // Průchod nalezenými třídami
+				$c_name = (string)$r_cls['class_name'];                      // Technický název třídy
+				$c_cap = (string)$r_cls['caption'] !== '' ? (string)$r_cls['caption'] : $c_name; // Popisek třídy
+				$classes[$c_name] = $c_cap;                                  // Uložení do mapy tříd
+				$class_rows[] = [                                            // Uložení definice pro dotazování návrhů
+					'class_name' => $c_name,                                 // Název logické třídy
+					'caption'    => $c_cap,                                  // Zobrazovaný název třídy
+					'table_name' => (string)$r_cls['table_name']             // Fyzická tabulka v DB
+				];                                                           // Konec položky třídy
+			}
 		}
-		free_result($q_cls);                                                 // Uvolnění výsledku tříd
 
 		// 2. Načtení čekajících návrhů ('F') v jednotlivých tabulkách
 		foreach ($class_rows as $cr) {                                       // Průchod třídami
@@ -134,7 +145,7 @@ class page_approval extends abstract_page_master_detail {
 			}
 
 			$tab = $cr['table_name'];                                        // Fyzická tabulka třídy
-			$q_cnt = sqlrun("
+			$r_cnt = sqlfirstrow("
 				SELECT COUNT(1) AS cnt
 				FROM [{$tab}]
 				WHERE record_type = 'D'
@@ -143,15 +154,13 @@ class page_approval extends abstract_page_master_detail {
 				  AND object_owner = {$org_sql}
 				  AND [language] = {$lang_sql}
 			");                                                              // Rychlý dotaz na počet čekajících návrhů
-			$r_cnt = fetch($q_cnt);                                          // Načtení počtu návrhů
-			free_result($q_cnt);                                             // Uvolnění dotazu počtu
 
-			if (!$r_cnt OR (int)$r_cnt['cnt'] === 0) {                       // Pokud v tabulce žádné návrhy nečekají
+			if (empty($r_cnt) OR (int)$r_cnt['cnt'] === 0) {                 // Pokud v tabulce žádné návrhy nečekají
 				continue;                                                    // Přechod na další třídu
 			}
 
-			// Tabulka obsahuje návrhy -> načteme je včetně informací o autorovi a počtu souběžných návrhů
-			$q_dr = sqlrun("
+			// Tabulka obsahuje návrhy -> načteme je do pole přes sqlarray_simple()
+			$dr_list = sqlarray_simple("
 				SELECT
 					d.*,
 					dbo.f_get_user_info(d.who_modified) AS author_info,
@@ -172,33 +181,34 @@ class page_approval extends abstract_page_master_detail {
 				  AND d.object_owner = {$org_sql}
 				  AND d.[language] = {$lang_sql}
 				ORDER BY d.original, d.date_modified DESC
-			");                                                              // Dotaz na čekající návrhy v tabulce
+			");                                                              // Načtení čekajících návrhů v tabulce do pole
 
-			while ($dr = fetch($q_dr)) {                                     // Průchod nalezenými návrhy
-				// Určení čitelného označení záznamu z nejvhodnějšího sloupce
-				$rec_label = '';                                             // Označení záznamu v seznamu
-				foreach (['caption', 'builtin_code', 'class_name', 'column_name', 'login_name', 'value_code'] as $cand) { // Kandidáti popisku
-					if (!empty($dr[$cand])) {                                // Pokud je kandidátní sloupec neprázdný
-						$rec_label = (string)$dr[$cand];                     // Použití hodnoty jako popisku
-						break;                                               // Ukončení hledání popisku
+			if (is_array($dr_list)) {                                        // Kontrola platného pole návrhů
+				foreach ($dr_list as $dr) {                                  // Průchod nalezenými návrhy
+					// Určení čitelného označení záznamu z nejvhodnějšího sloupce
+					$rec_label = '';                                         // Označení záznamu v seznamu
+					foreach (['caption', 'builtin_code', 'class_name', 'column_name', 'login_name', 'value_code'] as $cand) { // Kandidáti popisku
+						if (!empty($dr[$cand])) {                            // Pokud je kandidátní sloupec neprázdný
+							$rec_label = (string)$dr[$cand];                 // Použití hodnoty jako popisku
+							break;                                           // Ukončení hledání popisku
+						}
 					}
-				}
-				if ($rec_label === '') {                                     // Fallback pokud nebyl nalezen textový sloupec
-					$rec_label = (string)$dr['original'];                    // Použití UUID originálu
-				}
+					if ($rec_label === '') {                                 // Fallback pokud nebyl nalezen textový sloupec
+						$rec_label = (string)$dr['original'];                // Použití UUID originálu
+					}
 
-				$items[] = [                                                 // Přidání návrhu do výsledného pole
-					'class_name'      => $c_name,                            // Název logické třídy
-					'class_caption'   => $cr['caption'],                     // Popisek logické třídy
-					'draft_uuid'      => (string)$dr['uuid'],                // Primární klíč návrhu
-					'original'        => (string)$dr['original'],            // Originální UUID záznamu
-					'record_label'    => $rec_label,                         // Zobrazovaný název záznamu
-					'author_info'     => (string)($dr['author_info'] ?: $dr['import_origin']), // Autor nebo původ importu
-					'date_modified'   => (string)$dr['date_modified'],       // Datum postoupení ke schválení
-					'competing_count' => (int)$dr['competing_count']         // Počet návrhů pro stejný original
-				];                                                           // Konec položky návrhu
+					$items[] = [                                             // Přidání návrhu do výsledného pole
+						'class_name'      => $c_name,                        // Název logické třídy
+						'class_caption'   => $cr['caption'],                 // Popisek logické třídy
+						'draft_uuid'      => (string)$dr['uuid'],            // Primární klíč návrhu
+						'original'        => (string)$dr['original'],        // Originální UUID záznamu
+						'record_label'    => $rec_label,                     // Zobrazovaný název záznamu
+						'author_info'     => (string)($dr['author_info'] ?: $dr['import_origin']), // Autor nebo původ importu
+						'date_modified'   => (string)$dr['date_modified'],   // Datum postoupení ke schválení
+						'competing_count' => (int)$dr['competing_count']     // Počet návrhů pro stejný original
+					];                                                       // Konec položky návrhu
+				}
 			}
-			free_result($q_dr);                                              // Uvolnění dotazu návrhů
 		}
 
 		return ['classes' => $classes, 'items' => $items];                   // Vrácení tříd a nalezených návrhů
@@ -224,10 +234,8 @@ class page_approval extends abstract_page_master_detail {
 		if (!empty($meta['referenced_codetable'])) {                         // Překlad kódu z číselníku meta_codetable
 			$safe_ct = charliteral((string)$meta['referenced_codetable']);   // SQL literál názvu číselníku
 			$safe_val = charliteral($raw_val);                               // SQL literál hodnoty číselníku
-			$q_ct = sqlrun("SELECT TOP 1 caption FROM meta_codetable WHERE codetable_name = {$safe_ct} AND value_code = {$safe_val} AND record_type = 'A' AND removed = 0"); // Dotaz na popisek číselníku
-			$r_ct = fetch($q_ct);                                            // Načtení popisku z číselníku
-			free_result($q_ct);                                              // Uvolnění dotazu číselníku
-			if ($r_ct AND (string)$r_ct['caption'] !== '') {                 // Pokud byl nalezen popisek v číselníku
+			$r_ct = sqlfirstrow("SELECT TOP 1 caption FROM meta_codetable WHERE codetable_name = {$safe_ct} AND value_code = {$safe_val} AND record_type = 'A' AND removed = 0"); // Dotaz na popisek číselníku
+			if (!empty($r_ct) AND (string)$r_ct['caption'] !== '') {         // Pokud byl nalezen popisek v číselníku
 				return (string)$r_ct['caption'] . " [{$raw_val}]";           // Výpis popisku i kódu
 			}
 		}
@@ -235,21 +243,17 @@ class page_approval extends abstract_page_master_detail {
 		if (!empty($meta['referenced_class']) AND is_guid($raw_val)) {       // Překlad relačního odkazu referenced_class
 			$ref_cls_sql = guidliteral((string)$meta['referenced_class']);   // SQL literál odkazované třídy
 			$target_sql = guidliteral($raw_val);                             // SQL literál cílového záznamu
-			$q_rc = sqlrun("
+			$r_rc = sqlfirstrow("
 				SELECT mo.builtin_code AS ref_table
 				FROM meta_class mc
 				JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
 				WHERE mc.original = {$ref_cls_sql} AND mc.object_owner = 0x00 AND mc.record_type = 'A' AND mc.removed = 0
 			");                                                              // Zjištění cílové fyzické tabulky
-			$r_rc = fetch($q_rc);                                            // Načtení cílové tabulky
-			free_result($q_rc);                                              // Uvolnění dotazu
 
-			if ($r_rc AND !empty($r_rc['ref_table'])) {                      // Pokud cílová tabulka existuje
+			if (!empty($r_rc) AND !empty($r_rc['ref_table'])) {              // Pokud cílová tabulka existuje
 				$ref_tab = (string)$r_rc['ref_table'];                       // Název odkazované tabulky
-				$q_row = sqlrun("SELECT TOP 1 * FROM [{$ref_tab}] WHERE original = {$target_sql} AND record_type = 'A' AND removed = 0 ORDER BY object_owner DESC"); // Načtení cílového řádku
-				$t_row = fetch($q_row);                                      // Data cílového řádku
-				free_result($q_row);                                         // Uvolnění dotazu cílového řádku
-				if ($t_row) {                                                // Sestavení čitelného popisku cílového záznamu
+				$t_row = sqlfirstrow("SELECT TOP 1 * FROM [{$ref_tab}] WHERE original = {$target_sql} AND record_type = 'A' AND removed = 0 ORDER BY object_owner DESC"); // Načtení cílového řádku
+				if (!empty($t_row)) {                                        // Sestavení čitelného popisku cílového záznamu
 					foreach (['class_name', 'builtin_code', 'column_name', 'caption'] as $c_col) { // Hledání vhodného sloupce
 						if (!empty($t_row[$c_col])) {                        // Pokud sloupec obsahuje hodnotu
 							$cap = (string)($t_row['caption'] ?? '');        // Případný český popisek
@@ -379,14 +383,14 @@ HTML;
 	 * a ovládacími prvky pro schválení nebo vrácení návrhu.
 	 */
 	protected function render_detail(): void {
-		if ($this->target_class === '' OR $this->draft_uuid === '' OR$this->em === null) { // Pokud není vybrán žádný návrh
+		if ($this->target_class === '' OR $this->draft_uuid === '' OR $this->em === null) { // Pokud není vybrán žádný návrh
 			$msg_sel = htmlspecialchars($this->phrase('msg_select_proposal_from_left', [], 'Vyberte návrh ke schválení z levého panelu.')); // Výzva
 			echo "<div class='msg-info'>{$msg_sel}</div>";                   // Výpis výzvy
 			return;                                                          // Ukončení vykreslování detailu
 		}
 
-		$em =$this->em;                                                     // Použití již inicializovaného správce entit z předka
-		$table =$em->get_storage_table();                                   // Zjištění fyzické tabulky třídy
+		$em = $this->em;                                                     // Použití již inicializovaného správce entit z předka
+		$table = $em->get_storage_table();                                   // Zjištění fyzické tabulky třídy
 		if ($table === '') {                                                 // Kontrola platnosti třídy
 			$msg_err = htmlspecialchars($this->phrase('msg_invalid_target_class', [], 'Cílová logická třída nebyla nalezena.')); // Chybová hláška
 			echo "<div class='msg-err'>{$msg_err}</div>";                    // Výpis chyby
@@ -394,17 +398,15 @@ HTML;
 		}
 
 		$draft_uuid_sql = guidliteral($this->draft_uuid);                    // SQL literál UUID návrhu
-		$q_dr = sqlrun("
+		$draft_row = sqlfirstrow("
 			SELECT d.*, dbo.f_get_user_info(d.who_modified) AS author_info
 			FROM [{$table}] d
 			WHERE d.uuid = {$draft_uuid_sql}
 			  AND d.record_type = 'D'
 			  AND d.removed = 0
-		");                                                                  // Dotaz na vybraný návrh
-		$draft_row = fetch($q_dr);                                           // Načtení řádku návrhu
-		free_result($q_dr);                                                  // Uvolnění výsledku dotazu
+		");                                                                  // Načtení vybraného návrhu přes sqlfirstrow()
 
-		if (!$draft_row) {                                                   // Pokud návrh v DB již neexistuje
+		if (empty($draft_row)) {                                             // Pokud návrh v DB již neexistuje
 			$msg_nf = htmlspecialchars($this->phrase('msg_proposal_not_found', [], 'Návrh nebyl nalezen nebo již byl zpracován.')); // Hláška
 			echo "<div class='msg-err'>{$msg_nf}</div>";                     // Výpis chyby
 			return;                                                          // Ukončení
@@ -417,15 +419,12 @@ HTML;
 
 		// Načtení současného schváleného stavu ('A'/'L') se zapnutým $ignore_drafts = true
 		$sql_approved = $em->build_select_query("m.original = {$orig_sql}", '', true); // Dotaz na schválený stav
-		$q_app = sqlrun($sql_approved);                                      // Spuštění dotazu schváleného stavu
-		$approved_row = fetch($q_app);                                       // Načtení schválených hodnot
-		free_result($q_app);                                                 // Uvolnění dotazu
+		$approved_row = sqlfirstrow($sql_approved);                          // Načtení schválených hodnot přes sqlfirstrow()
 
 		$is_new_record = empty($approved_row);                               // Zda jde o návrh zcela nového záznamu
 
 		// Zjištění souběžných návrhů jiných uživatelů pro stejný (original, object_owner, language)
-		$competing_list = [];                                                // Pole souběžných návrhů k témuž záznamu
-		$q_comp = sqlrun("
+		$competing_list = sqlarray_simple("
 			SELECT uuid, date_modified, dbo.f_get_user_info(who_modified) AS author_info
 			FROM [{$table}]
 			WHERE original = {$orig_sql}
@@ -436,11 +435,7 @@ HTML;
 			  AND removed = 0
 			  AND uuid <> {$draft_uuid_sql}
 			ORDER BY date_modified DESC
-		");                                                                  // Dotaz na souběžné návrhy
-		while ($c_row = fetch($q_comp)) {                                    // Průchod souběžnými návrhy
-			$competing_list[] =$c_row;                                      // Přidání souběžného návrhu do seznamu
-		}
-		free_result($q_comp);                                                // Uvolnění dotazu souběžných návrhů
+		");                                                                  // Načtení souběžných návrhů do pole
 
 		$filter_suffix = ($this->filter_class !== '' AND $this->filter_class !== '__ALL__') ? '&filter_class=' . urlencode($this->filter_class) : ''; // Přívažek filtru
 		$form_action = htmlspecialchars("index.php?page=page_approval{$filter_suffix}&target_class=" . urlencode($this->target_class) . "&draft_uuid=" . urlencode($this->draft_uuid)); // URL formuláře
@@ -456,8 +451,8 @@ HTML;
 		$btn_approve = new abstract_button('btn_approve_draft', 'Schválit návrh', 'page_approval', '', 'btn-success'); // Tlačítko schválení
 		$btn_approve->set_type('submit')->set_name_value('btn_approve_draft', '1'); // Submit atributy schválení
 
-		$reject_html =$btn_reject->render();                                // HTML tlačítka Odmítnout
-		$approve_html =$btn_approve->render();                              // HTML tlačítka Schválit
+		$reject_html = $btn_reject->render();                                // HTML tlačítka Odmítnout
+		$approve_html = $btn_approve->render();                              // HTML tlačítka Schválit
 
 		echo <<<HTML
 		<form method="post" action="{$form_action}" style="display: flex; flex-direction: column; flex: 1; overflow: hidden;">
@@ -477,12 +472,12 @@ HTML;
 HTML;
 
 		// Informační box o typu návrhu (Nový záznam vs. Úprava existujícího) a autorovi
-		$type_badge =$is_new_record
+		$type_badge = $is_new_record
 			? htmlspecialchars($this->phrase('lbl_proposal_new_record', [], 'Návrh nového záznamu (INSERT)'))
 			: htmlspecialchars($this->phrase('lbl_proposal_update_record', [], 'Návrh úpravy existujícího záznamu (UPDATE)')); // Text typu změny
 		$lbl_author = htmlspecialchars($this->phrase('lbl_proposal_author', [], 'Autor návrhu:')); // Popisek autora
 		$lbl_date   = htmlspecialchars($this->phrase('lbl_proposal_date', [], 'Datum předání:')); // Popisek data
-		$safe_author = htmlspecialchars((string)($draft_row['author_info'] ?:$draft_row['import_origin'])); // Jméno autora
+		$safe_author = htmlspecialchars((string)($draft_row['author_info'] ?: $draft_row['import_origin'])); // Jméno autora
 		$safe_date   = htmlspecialchars(date_format4((string)$draft_row['date_modified'], 16)); // Datum předání
 
 		echo <<<HTML
@@ -494,11 +489,11 @@ HTML;
 				</div>
 HTML;
 
-		// Upozornění na souběžné návrhy jiných autorů k témuž záznamu
-		if (!empty($competing_list)) {                                       // Pokud existují další souběžné návrhy
+		// Upozornění na souběžné návrhhy jiných autorů k témuž záznamu
+		if (is_array($competing_list) AND !empty($competing_list)) {         // Pokud existují další souběžné návrhy
 			$warn_comp = htmlspecialchars($this->phrase('msg_competing_proposals_warning', [], 'Upozornění: K tomuto záznamu existují i další souběžné návrhy. Schválením tohoto návrhu budou ostatní souběžné návrhy automaticky odmítnuty:')); // Varování
 			echo "<div class=\"msg-err\" style=\"margin-bottom: 15px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e;\"><div>{$warn_comp}</div><ul style=\"margin: 6px 0 0 20px; padding: 0; font-weight: normal; font-size: 12px;\">"; // Začátek seznamu
-			foreach ($competing_list as$comp) {                             // Výpis odkazů na souběžné návrhy
+			foreach ($competing_list as $comp) {                             // Výpis odkazů na souběžné návrhy
 				$c_uuid = (string)$comp['uuid'];                             // UUID souběžného návrhu
 				$c_url = htmlspecialchars("index.php?page=page_approval{$filter_suffix}&target_class=" . urlencode($this->target_class) . "&draft_uuid=" . urlencode($c_uuid)); // Odkaz
 				$c_auth = htmlspecialchars((string)$comp['author_info']);    // Autor souběžného návrhu
@@ -532,26 +527,26 @@ HTML;
 			'date_created', 'who_created', 'date_modified', 'who_modified'
 		];                                                                   // Konec seznamu technických sloupců
 
-		foreach ($em->get_columns() as $colname =>$meta) {                  // Průchod všemi sloupci logické třídy
+		foreach ($em->get_columns() as $colname => $meta) {                  // Průchod všemi sloupci logické třídy
 			if (in_array($colname, $meta_skip, true) OR !empty($meta['hidden'])) { // Přeskočení skrytých a technických polí
 				continue;                                                    // Pokračování na další sloupec
 			}
 
-			$label = htmlspecialchars((string)($meta['label'] ?: $meta['caption'] ?:$colname)); // Popisek pole
-			$old_val =$is_new_record ? '' : (string)($approved_row[$colname] ?? ''); // Původní schválená hodnota
+			$label = htmlspecialchars((string)($meta['label'] ?: $meta['caption'] ?: $colname)); // Popisek pole
+			$old_val = $is_new_record ? '' : (string)($approved_row[$colname] ?? ''); // Původní schválená hodnota
 
 			// Pokud je v konceptu hodnota NULL (kvůli dědění ze systémového originálu), zobrazíme výslednou efektivní hodnotu
 			$raw_draft_val = $draft_row[$colname] ?? null;                   // Surová hodnota v řádku konceptu
 			$new_val = ($raw_draft_val === null AND !$is_new_record) ? $old_val : (string)$raw_draft_val; // Efektivní nová hodnota
 
-			$is_changed = ($is_new_record ? ($new_val !== '') : ($old_val !==$new_val)); // Zjištění, zda došlo ke změně hodnoty
-			$row_style =$is_changed ? ' style="background-color: #f0fdf4;"' : ''; // Zelené podbarvení změněného řádku
-			$new_style =$is_changed ? ' style="font-weight: bold; color: #166534;"' : ''; // Zvýraznění nové hodnoty
+			$is_changed = ($is_new_record ? ($new_val !== '') : ($old_val !== $new_val)); // Zjištění, zda došlo ke změně hodnoty
+			$row_style = $is_changed ? ' style="background-color: #f0fdf4;"' : ''; // Zelené podbarvení změněného řádku
+			$new_style = $is_changed ? ' style="font-weight: bold; color: #166534;"' : ''; // Zvýraznění nové hodnoty
 
-			$disp_old =$this->format_comparison_value($meta,$old_val);     // Čitelná původní hodnota
-			$disp_new =$this->format_comparison_value($meta,$new_val);     // Čitelná navrhovaná hodnota
+			$disp_old = $this->format_comparison_value($meta, $old_val);     // Čitelná původní hodnota
+			$disp_new = $this->format_comparison_value($meta, $new_val);     // Čitelná navrhovaná hodnota
 
-			$safe_old =$is_new_record ? "<span style=\"color: #94a3b8; font-style: italic;\">{$txt_none}</span>" : nl2br(htmlspecialchars($disp_old)); // HTML staré hodnoty
+			$safe_old = $is_new_record ? "<span style=\"color: #94a3b8; font-style: italic;\">{$txt_none}</span>" : nl2br(htmlspecialchars($disp_old)); // HTML staré hodnoty
 			$safe_new = nl2br(htmlspecialchars($disp_new));                  // HTML navrhované hodnoty
 
 			echo <<<HTML

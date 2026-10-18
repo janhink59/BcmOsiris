@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-16 09:55
+ * Verze: 2026-10-18 17:15
  * Soubor: page_meta_column.php
  * Účel: Detailní editace metadat konkrétního sloupce (tenant override nebo překlad).
  *       Funguje jako podřízená stránka editoru logických tříd (page_meta_class)
@@ -13,6 +13,8 @@
  *   a `$this->phrase()` pro lokalizaci všech nadpisů, sekcí a upozornění.
  *
  * Změny:
+ * 2026-10-18 17:15 - Doplněn sloupec editor_note do prezentační sekce formuláře
+ *                    a nahrazen operátor && za AND (Anti-LaTeX).
  * 2026-10-16 09:55 - Oprava spojených řádků u definice sekce $grp_beh a u plnění
  *                    proměnné $options_html (doplněna diakritika do inline komentářů).
  * 2026-10-16 00:15 - Zapojení abstract_button a phrase_manager ($this->phrase).
@@ -37,18 +39,18 @@ class page_meta_column extends abstract_page_master_detail {
 		parent::__construct();                                               // Inicializace frází a kontroly přístupu
 
 		$this->class_name = 'meta_column';                                   // Logická třída pro entity_manager
-		$this->page_title = $this->phrase('page_title', [], 'Správa metadat sloupce'); // Výchozí titulek stránky
+		$this->page_title =$this->phrase('page_title', [], 'Správa metadat sloupce'); // Výchozí titulek stránky
 
 		if ($this->access_denied) {                                          // Pokud předek zamítl přístup
 			return;                                                          // Neprovádíme dotazy do databáze
 		}
 
-		$grp_pres = $this->phrase('grp_presentation', [], 'Základní prezentační údaje'); // Sekce textů
-		$grp_ui   = $this->phrase('grp_ui_props', [], 'Formulářové vlastnosti a vazby (UI)'); // Sekce UI vlastností
-		$grp_beh  = $this->phrase('grp_behavior', [], 'Behaviorální příznaky a ochrana'); // Sekce příznaků
+		$grp_pres =$this->phrase('grp_presentation', [], 'Základní prezentační údaje'); // Sekce textů
+		$grp_ui   =$this->phrase('grp_ui_props', [], 'Formulářové vlastnosti a vazby (UI)'); // Sekce UI vlastností
+		$grp_beh  =$this->phrase('grp_behavior', [], 'Behaviorální příznaky a ochrana'); // Sekce příznaků
 
 		$this->form_groups = [                                               // Rozdělení polí do sekcí formuláře
-			$grp_pres => ['caption', 'caption_plural', 'description', 'label', 'header', 'placeholder', 'helptext'], // Překládané texty
+			$grp_pres => ['caption', 'caption_plural', 'description', 'label', 'header', 'placeholder', 'helptext', 'editor_note'], // Překládané texty a AI kontext
 			$grp_ui   => ['input_type', 'input_width', 'max_length', 'input_rows', 'sort_code', 'list_order', 'referenced_codetable', 'referenced_class', 'css_class'], // Vlastnosti formulářového prvku
 			$grp_beh  => ['translate', 'history', 'is_mandatory', 'is_html', 'hidden', 'is_url', 'show_empty', 'is_computed', 'customizable', 'is_final', 'is_protected'] // Příznaky chování a ochrany
 		];                                                                   // Konec definice skupin formuláře
@@ -60,7 +62,7 @@ class page_meta_column extends abstract_page_master_detail {
 			$q_def = sqlrun("SELECT TOP 1 original FROM meta_class WHERE class_name = 'sys_global_columns' AND object_owner = 0x00 AND record_type = 'A' AND removed = 0"); // Dotaz na výchozí třídu
 			if ($r_def = fetch($q_def)) {                                    // Načtení výchozí třídy
 				$this->parent_class = (string)$r_def['original'];            // Výchozí UUID pro sys_global_columns
-				$_GET['parent_class'] = $this->parent_class;                 // Zápis do GET pro propagaci kontextu
+				$_GET['parent_class'] =$this->parent_class;                 // Zápis do GET pro propagaci kontextu
 			}
 			free_result($q_def);                                             // Uvolnění výsledku dotazu
 		}
@@ -74,7 +76,7 @@ class page_meta_column extends abstract_page_master_detail {
 			
 			if ($row = fetch($q)) {                                          // Načtení dat nadřízené třídy
 				$this->parent_name = (string)$row['caption'] !== '' ? (string)$row['caption'] : (string)$row['class_name']; // Určení názvu třídy
-				$this->page_title = $this->phrase('page_title_class', ['class' => $this->parent_name], 'Sloupce: {' . chr(36) . 'class}'); // Aktualizace titulku stránky
+				$this->page_title = $this->phrase('page_title_class', ['class' =>$this->parent_name], 'Sloupce: {' . chr(36) . 'class}'); // Aktualizace titulku stránky
 			}
 			free_result($q);                                                 // Uvolnění výsledku dotazu
 		}
@@ -125,8 +127,8 @@ class page_meta_column extends abstract_page_master_detail {
 			$c_uuid = (string)$cls['original'];                              // UUID logické třídy
 			$c_code = htmlspecialchars((string)$cls['class_name']);          // Kód logické třídy
 			$c_cap = htmlspecialchars((string)$cls['caption']);              // Popisek logické třídy
-			$sel = (strcasecmp($c_uuid, $this->parent_class) === 0) ? 'selected' : ''; // Označení aktivní třídy
-			$label = ($c_cap !== '' && $c_cap !== $c_code) ? "{$c_code} ({$c_cap})" : $c_code; // Text položky v roletce tříd
+			$sel = (strcasecmp($c_uuid,$this->parent_class) === 0) ? 'selected' : ''; // Označení aktivní třídy
+			$label = ($c_cap !== '' AND$c_cap !== $c_code) ? "{$c_code} ({$c_cap})" : $c_code; // Text položky v roletce tříd
 			$options_html .= "<option value=\"{$c_uuid}\" {$sel}>{$label}</option>"; // Přidání volby do seznamu
 		}
 		free_result($q_cls);                                                 // Uvolnění výsledku dotazu

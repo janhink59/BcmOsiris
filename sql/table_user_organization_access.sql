@@ -1,11 +1,17 @@
 /* =============================================================================
+ * Verze: 2026-10-18 12:35
+ * Soubor: table_user_organization_access.sql
  * Tabulka: user_organization_access
  * Popis:	Vazební tabulka definující přístup globálních uživatelů 
- *			do konkrétních organizací (tenantů).
- * Vlastník: Záznam (object_owner) by měl patřit cílové organizaci, 
+ *			do konkrétních organizací (tenantů) včetně obousměrného
+ *			schvalovacího cyklu (žádost uživatele / pozvánka orgadmina).
+ * Vlastník: Záznam (object_owner) patří cílové organizaci, 
  *			která přístup uživateli uděluje.
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
- * Změny:	Nahrazení last_orgadmin za last_role pro sjednocení kontextů.
+ * Změny:	- Nahrazení last_orgadmin za last_role pro sjednocení kontextů.
+ *			- 2026-10-18: Doplněny sloupce draft_author, approval_note a import_origin
+ *			  pro podporu konceptů ('D') při žádosti uživatele o přístup do další
+ *			  organizace nebo při pozvání existujícího uživatele orgadminem.
  * ============================================================================= */
 
 IF OBJECT_ID('user_organization_access') IS NULL
@@ -19,6 +25,8 @@ BEGIN
 		original uuid NOT NULL DEFAULT 0x00,
 		record_type varchar(1) NOT NULL DEFAULT 'A',
 		approval_status varchar(1) NOT NULL DEFAULT 'A',
+		draft_author uuid NOT NULL DEFAULT 0x00, -- Autor žádosti nebo pozvánky (user_account.original)
+		approval_note varchar(max) NOT NULL DEFAULT '', -- Poznámka žadatele nebo důvod zamítnutí
 		inactive bit NOT NULL DEFAULT 0,
 		removed bit NOT NULL DEFAULT 0,
 		language varchar(2) NOT NULL DEFAULT 'cs',
@@ -26,6 +34,7 @@ BEGIN
 		valid_to date NULL,
 		is_template bit NOT NULL DEFAULT 0,
 		template uuid NULL,
+		import_origin varchar(255) NULL,
 
 		-- -------------------------------------------------------------------------
 		-- Auditní stopy
@@ -68,6 +77,9 @@ GO
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'user_organization_access', 'last_role', 'varchar(1) NOT NULL DEFAULT ''U''';
 EXEC p_create_missing_column 'user_organization_access', 'right_translate', 'bit NOT NULL DEFAULT 0';
+EXEC p_create_missing_column 'user_organization_access', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'user_organization_access', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'user_organization_access', 'import_origin', 'varchar(255) NULL';
 GO
 
 -- Migrace stávajícího sloupce last_orgadmin na novou sémantiku last_role a jeho odstranění
@@ -80,7 +92,7 @@ END
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajištění RAC architektury
+-- Indexy pro zajištění RAC a SSC architektury
 -- -----------------------------------------------------------------------------
 
 -- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál.
@@ -90,6 +102,15 @@ EXEC sp_create_index
 	@colnames = 'original, object_owner', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- Zajištění unikátnosti konceptu (Draft) pro kombinaci originál, vlastník, jazyk a autor konceptu.
+EXEC sp_create_index 
+	@tname = 'user_organization_access', 
+	@iname = 'uq_user_organization_access_draft', 
+	@colnames = 'original, object_owner, language, draft_author', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''D'' AND removed = 0';
 GO
 
 -- -----------------------------------------------------------------------------
