@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-17 01:40
+ * Verze: 2026-10-19 23:40
  * Soubor: language_manager.php
  * Třída: language_manager
  * Účel: Izolovaná služba pro správu aktuálního jazyka, generování UI prvku
@@ -14,6 +14,8 @@
  *   z knihovny `OsirisLib.php`.
  * 
  * Změny:
+ * 2026-10-19 23:40 - Čtení tabulky [language] v load_languages() převedeno ze
+ *                    sqlrun/fetch na sqlarray_simple() (ochrana globálního $dbquery).
  * 2026-10-17 01:40 - Doplněna statická keš `$cached_languages` zabraňující opakovaným
  *                    SQL dotazům při vícenásobné inicializaci během jednoho requestu.
  *                  - V `save_cookie()` doplněna kontrola `!headers_sent()` a porovnání
@@ -51,13 +53,14 @@ class language_manager {
 			return;                                                          // Ukončení bez opakovaného dotazu do DB
 		}
 
-		$q = sqlrun("SELECT [language], caption, fallback_language, sort_code, is_default, svg_icon FROM [language] ORDER BY sort_code"); // Dotaz na jazyky
-		while ($row = fetch($q)) {                                           // Průchod načtenými řádky jazyků
-			$this->languages[$row['language']] = $row;                       // Uložení jazyka pod jeho dvoupísmenný kód
+		$rows = sqlarray_simple("SELECT [language], caption, fallback_language, sort_code, is_default, svg_icon FROM [language] ORDER BY sort_code"); // Načtení jazyků do pole
+		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
+			foreach ($rows as$row) {                                        // Průchod načtenými řádky jazyků v paměti
+				$this->languages[(string)$row['language']] =$row;           // Uložení jazyka pod jeho dvoupísmenný kód
+			}
 		}
-		free_result($q);                                                     // Uvolnění výsledku databázového dotazu
 
-		self::$cached_languages = $this->languages;                          // Uložení načtených jazyků do statické keše
+		self::$cached_languages =$this->languages;                          // Uložení načtených jazyků do statické keše
 	}
 
 	/**
@@ -68,7 +71,7 @@ class language_manager {
 
 		// 1. Explicitní požadavek z UI (přepnutí)
 		if ($requested_lang !== null AND isset($this->languages[$requested_lang])) { // Kontrola platnosti požadovaného jazyka
-			$this->current_lang = $requested_lang;                           // Nastavení nově zvoleného jazyka
+			$this->current_lang =$requested_lang;                           // Nastavení nově zvoleného jazyka
 			$this->save_cookie();                                            // Uložení volby do cookie prohlížeče
 			return;                                                          // Ukončení vyhodnocování
 		}
@@ -87,7 +90,7 @@ class language_manager {
 		}
 
 		// 4. Fallback na výchozí jazyk systému (z databáze)
-		foreach ($this->languages as $code => $lang) {                       // Hledání výchozího jazyka v číselníku
+		foreach ($this->languages as $code =>$lang) {                       // Hledání výchozího jazyka v číselníku
 			if (!empty($lang['is_default'])) {                               // Pokud má jazyk příznak is_default
 				$this->current_lang = (string)$code;                         // Nastavení výchozího jazyka systému
 				$this->save_cookie();                                        // Uložíme i výchozí, ať je pro příště zapsán
@@ -105,17 +108,17 @@ class language_manager {
 	 */
 	private function build_fallback_chain(): void {
 		$chain = [];                                                         // Pole pro sestavení posloupnosti jazyků
-		$current = $this->current_lang;                                      // Výchozím bodem je aktuální jazyk relace
+		$current =$this->current_lang;                                      // Výchozím bodem je aktuální jazyk relace
 
-		while ($current !== null AND $current !== '') {                      // Průchod řetězcem fallback jazyků
-			if (in_array($current, $chain, true)) {                          // Kontrola duplicity v řetězci
+		while ($current !== null AND$current !== '') {                      // Průchod řetězcem fallback jazyků
+			if (in_array($current,$chain, true)) {                          // Kontrola duplicity v řetězci
 				break;                                                       // Pojistka proti zacyklení (např. cs -> sk a sk -> cs)
 			}
-			$chain[] = $current;                                             // Zařazení jazyka do fallback řetězce
+			$chain[] =$current;                                             // Zařazení jazyka do fallback řetězce
 			$current = $this->languages[$current]['fallback_language'] ?? null; // Posun na nadřazený fallback jazyk
 		}
 
-		$this->fallback_chain = $chain;                                      // Uložení hotového řetězce jazyků
+		$this->fallback_chain =$chain;                                      // Uložení hotového řetězce jazyků
 	}
 
 	/**
@@ -123,15 +126,15 @@ class language_manager {
 	 */
 	private function save_cookie(): void {
 		$existing_cookie = (string)($_COOKIE['bcm_language'] ?? '');         // Aktuální hodnota cookie v requestu
-		if ($existing_cookie === $this->current_lang) {                      // Pokud prohlížeč již tuto hodnotu má
+		if ($existing_cookie ===$this->current_lang) {                      // Pokud prohlížeč již tuto hodnotu má
 			return;                                                          // Neodesíláme zbytečně duplicitní hlavičku Set-Cookie
 		}
 
-		$_COOKIE['bcm_language'] = $this->current_lang;                      // Aktualizace v paměti pro další instance v requestu
+		$_COOKIE['bcm_language'] =$this->current_lang;                      // Aktualizace v paměti pro další instance v requestu
 
 		if (!headers_sent()) {                                               // Bezpečná kontrola, zda lze ještě modifikovat HTTP hlavičky
 			$expires = time() + (365 * 24 * 60 * 60);                        // Platnost cookie na 1 rok
-			set_secure_cookie('bcm_language', $this->current_lang, $expires, 'Lax'); // Odeslání cookie prohlížeči
+			set_secure_cookie('bcm_language', $this->current_lang,$expires, 'Lax'); // Odeslání cookie prohlížeči
 		}
 	}
 
@@ -155,7 +158,7 @@ class language_manager {
 	 */
 	public function render_language_selector(string $return_url = ''): string { // Vykreslení přepínače jazyků
 		$current = $this->languages[$this->current_lang];                    // Data aktuálně vybraného jazyka
-		$current_svg = $current['svg_icon'];                                 // SVG ikona vlaječky aktuálního jazyka
+		$current_svg =$current['svg_icon'];                                 // SVG ikona vlaječky aktuálního jazyka
 		$current_caption = htmlspecialchars((string)$current['caption']);    // Ošetřený název aktuálního jazyka
 
 		$html = <<<HTML
@@ -177,16 +180,16 @@ class language_manager {
 	<div class="bcm-lang-menu">
 HTML;
 
-		foreach ($this->languages as $code => $lang) {                       // Vykreslení položek v rozbalovacím menu
+		foreach ($this->languages as $code =>$lang) {                       // Vykreslení položek v rozbalovacím menu
 			$caption = htmlspecialchars((string)$lang['caption']);           // Ošetřený název jazyka v roletce
-			$svg = $lang['svg_icon'];                                        // SVG vlaječka jazyka
+			$svg =$lang['svg_icon'];                                        // SVG vlaječka jazyka
 			
 			// Dynamické sestavení parametru pro přepnutí (set_lang)
 			$safe_url = htmlspecialchars($return_url);                       // Ošetřená návratová URL adresa
 			$delim = strpos($return_url, '?') === false ? '?' : '&';         // Volba oddělovače parametrů v URL
 			$link = "{$safe_url}{$delim}set_lang={$code}";                   // Cílový odkaz pro změnu jazyka
 
-			if ($code === $this->current_lang) {                             // Zvýraznění právě aktivního jazyka
+			if ($code ===$this->current_lang) {                             // Zvýraznění právě aktivního jazyka
 				$html .= "\t\t<div class=\"bcm-lang-item\" style=\"background-color: #e6f7ff; font-weight: bold; cursor: default;\">{$svg} {$caption}</div>\n"; // Aktivní položka
 			} else {
 				$html .= "\t\t<a href=\"{$link}\" class=\"bcm-lang-item\">{$svg} {$caption}</a>\n"; // Odkaz na přepnutí jazyka

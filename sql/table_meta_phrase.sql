@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-15 10:25
+ * Verze: 2026-10-19 23:40
  * Soubor: table_meta_phrase.sql
  * Tabulka: meta_phrase
  * Popis:   Uchovává textové fráze, popisky tlačítek, chybová hlášení a šablony
@@ -15,6 +15,10 @@
  * - Plněno vývojářským importem z Excelu (p_xlsx_meta_object) a případně
  *   automatickým záchytem chybějících frází za běhu aplikace.
  * - Pro editaci v administraci využívá standardní entity_manager('meta_phrase').
+ *
+ * Změny:
+ * - 2026-10-19 23:40: Doplněny sloupce draft_author a approval_note přímo do
+ *   CREATE TABLE, změnových příkazů p_create_missing_column a index uq_meta_phrase_draft.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze tabulky (pokud ještě neobsahuje sloupec svg_icon)
@@ -34,11 +38,13 @@ BEGIN
 		uuid uuid NOT NULL,                                                -- Primární klíč záznamu
 		object_owner uuid NOT NULL DEFAULT 0x00,                           -- Vlastník záznamu (0x00 = systémová fráze)
 		original uuid NOT NULL DEFAULT 0x00,                               -- Deterministický logický identifikátor fráze
-		record_type varchar(1) NOT NULL DEFAULT 'A',                       -- Typ záznamu ('A' = aktivní, 'L' = překlad, 'H' = historie)
-		approval_status varchar(1) NOT NULL DEFAULT 'A',                   -- Stav schválení v rámci SSC
+		record_type varchar(1) NOT NULL DEFAULT 'A',                       -- Typ záznamu ('A' = aktivní, 'L' = překlad, 'D' = koncept, 'H' = historie)
+		approval_status varchar(1) NOT NULL DEFAULT 'A',                   -- Stav schválení v rámci SSC ('A', 'D', 'F', 'R')
+		draft_author uuid NOT NULL DEFAULT 0x00,                           -- Autor konceptu (user_account.original)
+		approval_note varchar(max) NOT NULL DEFAULT '',                    -- Poznámka schvalovatele / důvod vrácení
 		inactive bit NOT NULL DEFAULT 0,                                   -- Příznak deaktivace záznamu
 		removed bit NOT NULL DEFAULT 0,                                    -- Příznak smazání záznamu
-		language varchar(2) NOT NULL DEFAULT 'cs',                         -- Jazyk záznamu (pro 'A' výchozí, pro 'L' cílový)
+		language varchar(2) NOT NULL DEFAULT 'cs',                         -- Jazyk záznamu (pro 'A' výchozí, pro 'L' a 'D' cílový)
 		valid_from date NOT NULL DEFAULT '1970-01-01',                     -- Datum počátku platnosti
 		valid_to date NULL,                                                -- Datum konce platnosti
 		is_template bit NOT NULL DEFAULT 0,                                -- Příznak šablony
@@ -86,7 +92,15 @@ END
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajištění RAC architektury a rychlého načítání frází podle třídy
+-- Zajištění chybějících sloupců pro existující databáze
+-- -----------------------------------------------------------------------------
+EXEC p_create_missing_column 'meta_phrase', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'meta_phrase', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'meta_phrase', 'import_origin', 'varchar(255) NULL';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC a SSC architektury a rychlého načítání frází podle třídy
 -- -----------------------------------------------------------------------------
 
 -- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál
@@ -105,6 +119,15 @@ EXEC sp_create_index
 	@colnames = 'original, object_owner, language', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''L'' AND removed = 0';
+GO
+
+-- Zajištění unikátnosti konceptu (Draft) pro kombinaci originál, vlastník, jazyk a autor konceptu
+EXEC sp_create_index 
+	@tname = 'meta_phrase', 
+	@iname = 'uq_meta_phrase_draft', 
+	@colnames = 'original, object_owner, language, draft_author', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''D'' AND removed = 0';
 GO
 
 -- Optimalizační index pro okamžité načtení všech frází konkrétní PHP třídy (source_code)

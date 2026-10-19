@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-18 17:30
+ * Verze: 2026-10-19 23:40
  * Soubor: p_xlsx_meta_object.sql
  * Procedura: p_xlsx_meta_object
  * Účel: Hromadný import systémových stránek a tříd (page), textových frází (phrase),
@@ -35,6 +35,9 @@
  * - 2026-10-18 17:30: Doplněno zpracování záložek class (XLSX_class$ -> meta_class)
  *   a column (XLSX_column$ -> meta_column) s odstraněním stříšek <...>
  *   a automatickým ukládáním NULL při shodě s hodnotou předka.
+ * - 2026-10-19 23:40: Odstraněn fallback na primární jazyk při zápisu 'L' záznamů
+ *   druhého jazyka (@sec_lang) na záložkách page, phrase, menu, class a column,
+ *   aby prázdné sloupce *_l nebyly v DB přepisovány textem primárního jazyka.
  * ============================================================================= */
 
 EXECUTE dropni 'p_xlsx_meta_object', 'P'
@@ -230,6 +233,7 @@ BEGIN
 		);
 
 		-- 1.C) Jazykové 'L' záznamy pro druhý jazyk (@sec_lang), pokud je v CONTENT_INFO zadán
+		--      (Ukládá se čistě hodnota ze sloupců *_l bez přepisování primárním jazykem)
 		IF @sec_lang <> ''
 		BEGIN
 			UPDATE t
@@ -237,9 +241,9 @@ BEGIN
 				t.system_role = ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'),
 				t.module = ISNULL(s.module, ''),
 				t.inactive = ISNULL(TRY_CAST(s.inactive AS bit), 0),
-				t.caption = ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
-				t.description = ISNULL(NULLIF(s.description_l, ''), ISNULL(s.description, '')),
-				t.helptext = ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
+				t.caption = ISNULL(s.caption_l, ''),
+				t.description = ISNULL(s.description_l, ''),
+				t.helptext = ISNULL(s.helptext_l, ''),
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
@@ -262,9 +266,9 @@ BEGIN
 				NEWID(), @sys_owner, x.orig_uuid, 'L', 'A', @sec_lang,
 				ISNULL(TRY_CAST(s.inactive AS bit), 0), @import_origin,
 				'P', ISNULL(LTRIM(RTRIM(s.builtin_code)), ''), ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'), ISNULL(s.module, ''),
-				ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
-				ISNULL(NULLIF(s.description_l, ''), ISNULL(s.description, '')),
-				ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
+				ISNULL(s.caption_l, ''),
+				ISNULL(s.description_l, ''),
+				ISNULL(s.helptext_l, ''),
 				GETDATE(), @user_session, GETDATE(), @user_session
 			FROM XLSX_page$ s
 			CROSS APPLY (
@@ -434,6 +438,7 @@ BEGIN
 		);
 
 		-- 2.C) Jazykové 'L' záznamy v meta_phrase pro druhý jazyk (@sec_lang)
+		--      (Ukládá se čistě hodnota ze sloupců *_l bez přepisování primárním jazykem)
 		IF @sec_lang <> ''
 		BEGIN
 			UPDATE t
@@ -443,8 +448,8 @@ BEGIN
 				t.module = ISNULL(s.module, ''),
 				t.svg_icon = ISNULL(s.svg_icon, ''),
 				t.css_class = ISNULL(s.css_class, ''),
-				t.caption = ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
-				t.helptext = ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
+				t.caption = ISNULL(s.caption_l, ''),
+				t.helptext = ISNULL(s.helptext_l, ''),
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
@@ -470,8 +475,8 @@ BEGIN
 				@import_origin,
 				ISNULL(LTRIM(RTRIM(s.source_code)), ''), ISNULL(LTRIM(RTRIM(s.builtin_code)), ''), ISNULL(s.module, ''),
 				ISNULL(s.svg_icon, ''), ISNULL(s.css_class, ''),
-				ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
-				ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
+				ISNULL(s.caption_l, ''),
+				ISNULL(s.helptext_l, ''),
 				1, 1,
 				GETDATE(), @user_session, GETDATE(), @user_session
 			FROM XLSX_phrase$ s
@@ -724,6 +729,7 @@ BEGIN
 		);
 
 		-- 3.D) Jazykové 'L' záznamy v meta_menu pro druhý jazyk (@sec_lang)
+		--      (Ukládá se čistě hodnota ze sloupců *_l bez přepisování primárním jazykem)
 		IF @sec_lang <> ''
 		BEGIN
 			UPDATE t
@@ -738,9 +744,9 @@ BEGIN
 				t.permanent = ISNULL(TRY_CAST(s.permanent AS bit), 0),
 				t.svg_icon = ISNULL(s.svg_icon, ''),
 				t.css_class = ISNULL(s.css_class, ''),
-				t.caption = ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
-				t.description = ISNULL(NULLIF(s.description_l, ''), ISNULL(s.description, '')),
-				t.helptext = ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
+				t.caption = ISNULL(s.caption_l, ''),
+				t.description = ISNULL(s.description_l, ''),
+				t.helptext = ISNULL(s.helptext_l, ''),
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
@@ -780,9 +786,9 @@ BEGIN
 				@import_origin,
 				s.builtin_code, x.calc_parent_uuid, ISNULL(s.sort_code, ''),
 				x.calc_target_object, ISNULL(s.url_parameters, ''), ISNULL(s.target_url, ''), ISNULL(s.target_window, ''),
-				ISNULL(NULLIF(s.caption_l, ''), ISNULL(s.caption, '')),
-				ISNULL(NULLIF(s.description_l, ''), ISNULL(s.description, '')),
-				ISNULL(NULLIF(s.helptext_l, ''), ISNULL(s.helptext, '')),
+				ISNULL(s.caption_l, ''),
+				ISNULL(s.description_l, ''),
+				ISNULL(s.helptext_l, ''),
 				ISNULL(s.svg_icon, ''), ISNULL(s.css_class, ''), ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S'), ISNULL(TRY_CAST(s.permanent AS bit), 0),
 				1, 1,
 				GETDATE(), @user_session, GETDATE(), @user_session
@@ -1050,6 +1056,7 @@ BEGIN
 		  );
 
 		-- 4.C) Jazykové 'L' záznamy v meta_class pro druhý jazyk (@sec_lang)
+		--      (Ukládá se čistě hodnota ze sloupců *_l bez přepisování primárním jazykem)
 		IF @sec_lang <> ''
 		BEGIN
 			UPDATE t
@@ -1061,10 +1068,10 @@ BEGIN
 				t.is_final = a.is_final,
 				t.is_protected = a.is_protected,
 				t.inactive = a.inactive,
-				t.caption = NULLIF(ISNULL(NULLIF(s.caption_l, ''), ISNULL(a.caption, '')), ''),
-				t.caption_plural = NULLIF(ISNULL(NULLIF(s.caption_plural_l, ''), ISNULL(a.caption_plural, '')), ''),
-				t.description = NULLIF(ISNULL(NULLIF(s.description_l, ''), ISNULL(a.description, '')), ''),
-				t.helptext = NULLIF(ISNULL(NULLIF(s.helptext_l, ''), ISNULL(a.helptext, '')), ''),
+				t.caption = NULLIF(s.caption_l, ''),
+				t.caption_plural = NULLIF(s.caption_plural_l, ''),
+				t.description = NULLIF(s.description_l, ''),
+				t.helptext = NULLIF(s.helptext_l, ''),
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
@@ -1089,10 +1096,10 @@ BEGIN
 				a.inactive, @import_origin,
 				a.class_name, a.storage_object, a.ancestor_class, a.sort_code, a.iconname,
 				a.is_final, a.is_protected,
-				NULLIF(ISNULL(NULLIF(s.caption_l, ''), ISNULL(a.caption, '')), ''),
-				NULLIF(ISNULL(NULLIF(s.caption_plural_l, ''), ISNULL(a.caption_plural, '')), ''),
-				NULLIF(ISNULL(NULLIF(s.description_l, ''), ISNULL(a.description, '')), ''),
-				NULLIF(ISNULL(NULLIF(s.helptext_l, ''), ISNULL(a.helptext, '')), ''),
+				NULLIF(s.caption_l, ''),
+				NULLIF(s.caption_plural_l, ''),
+				NULLIF(s.description_l, ''),
+				NULLIF(s.helptext_l, ''),
 				GETDATE(), @user_session, GETDATE(), @user_session
 			FROM meta_class a
 			JOIN #clean_class s ON s.class_name = a.class_name
@@ -1495,6 +1502,7 @@ BEGIN
 		  );
 
 		-- 5.C) Jazykové 'L' záznamy v meta_column pro druhý jazyk (@sec_lang)
+		--      (Ukládá se čistě hodnota ze sloupců *_l bez přepisování primárním jazykem)
 		IF @sec_lang <> ''
 		BEGIN
 			UPDATE t
@@ -1502,13 +1510,13 @@ BEGIN
 				t.parent_order = a.parent_order,
 				t.sort_code = a.sort_code,
 				t.list_order = a.list_order,
-				t.caption = ISNULL(s.caption_l, a.caption),
-				t.caption_plural = ISNULL(s.caption_plural_l, a.caption_plural),
-				t.description = ISNULL(s.description_l, a.description),
-				t.label = ISNULL(s.label_l, a.label),
-				t.header = ISNULL(s.header_l, a.header),
-				t.helptext = ISNULL(s.helptext_l, a.helptext),
-				t.placeholder = ISNULL(s.placeholder_l, a.placeholder),
+				t.caption = s.caption_l,
+				t.caption_plural = s.caption_plural_l,
+				t.description = s.description_l,
+				t.label = s.label_l,
+				t.header = s.header_l,
+				t.helptext = s.helptext_l,
+				t.placeholder = s.placeholder_l,
 				t.input_type = a.input_type,
 				t.input_width = a.input_width,
 				t.input_rows = a.input_rows,
@@ -1557,13 +1565,13 @@ BEGIN
 				NEWID(), @sys_owner, a.original, 'L', 'A', @sec_lang,
 				a.inactive, @import_origin,
 				a.parent_class, a.parent_order, a.sort_code, a.column_name, a.list_order,
-				ISNULL(s.caption_l, a.caption),
-				ISNULL(s.caption_plural_l, a.caption_plural),
-				ISNULL(s.description_l, a.description),
-				ISNULL(s.label_l, a.label),
-				ISNULL(s.header_l, a.header),
-				ISNULL(s.helptext_l, a.helptext),
-				ISNULL(s.placeholder_l, a.placeholder),
+				s.caption_l,
+				s.caption_plural_l,
+				s.description_l,
+				s.label_l,
+				s.header_l,
+				s.helptext_l,
+				s.placeholder_l,
 				a.input_type, a.input_width, a.input_rows, a.max_length, a.css_class,
 				a.translate, a.history, a.is_html, a.is_mandatory, a.is_url, a.is_computed,
 				a.show_empty, a.hidden, a.customizable,
