@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 /**
  * =============================================================================
- * Verze: 2026-10-14 13:50
+ * Verze: 2026-10-19 14:45
  * Soubor: excel_reader.php
  * Třída: excel_reader
  *
  * Vazby na okolí:
  * - Volána z UI modulu page_excel_reader.php při zpracování nahraného XLSX souboru.
+ * - Načítá xlsx_abstract.php pro zajištění autoloadingu validačních tříd xlsx_*.
  * - Využívá globální proměnné pro znakovou sadu a logování SQL příkazů a funkce
  *   sqlrun(), sqlfirstrow(), charliteral(), intliteral(), guidliteral(),
  *   array_item(), array_item_ref() z knihovny OsirisLib.php.
@@ -29,6 +30,17 @@ declare(strict_types=1);
  * 4. Spuštění obslužné SQL procedury pro finální zpracování dat v databázi.
  *
  * Změny:
+ * 2026-10-19 14:45 - Doplněno require_once __DIR__ . '/xlsx_abstract.php' pro zajištění
+ *                    registrace autoloaderu balíčkových tříd xlsx_*.
+ *                  - Opravena detekce konce tabulky v get_data(): řádek s prázdnou
+ *                    první buňkou (např. builtin_code = '' na záložce page nebo
+ *                    source_code = '' u globálních frází na záložce phrase) již
+ *                    neukončí čtení tabulky, pokud druhý sloupec obsahuje hodnotu.
+ *                  - V prepare_package() zachován stav chyb z validace balíčku
+ *                    ($this->package_ready = ($this->rqm->get_severity() <= 2)).
+ *                  - V run_package() doplněna diagnostická hláška při nespuštění
+ *                    a přehlednější informace o výsledku Kontrolního běhu (Rollback).
+ *                  - Striktní aplikace Anti-LaTeX pravidel (OR/AND místo ||/&&).
  * 2026-10-12 - Přidána ochrana paměti omezující počet chybových zpráv na 500.
  *            - Striktní validace názvů tabulek a sloupců (pouze alfanumerické znaky a podtržítko),
  *              odstranění závislosti na hranatých závorkách [ ] při generování SQL.
@@ -42,8 +54,9 @@ declare(strict_types=1);
  *            - Rozdělení vícenásobných přiřazení na samostatné řádky s inline komentáři.
  */
 
-// Pro použití OpenSpout je nutný Composer autoloader
-require_once 'vendor/autoload.php';
+// Pro použití OpenSpout a balíčkových tříd xlsx_* načteme autoloadery
+require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/xlsx_abstract.php';
 
 use OpenSpout\Reader\XLSX\Reader;
 use OpenSpout\Common\Entity\Cell;
@@ -84,14 +97,14 @@ class excel_reader {
 	 */
 	private function log_message(string $msg, int $severity = 0): object {
 		$this->msg_count++;                     // Inkrementace počitadla vygenerovaných zpráv
-		if ($this->msg_count <= 500) {
-			return $this->rqm->add_message($msg, $severity);
-		} elseif ($this->msg_count === 501) {
-			return $this->rqm->add_message("Dosažen limit 500 zpráv. Další chybové zprávy byly potlačeny z důvodu úspory paměti.", 3);
+		if ($this->msg_count <= 500) {          // Pokud počet zpráv nepřekročil ochranný limit
+			return $this->rqm->add_message($msg, $severity); // Zápis standardní zprávy
+		} elseif ($this->msg_count === 501) {   // Při prvním překročení limitu
+			return $this->rqm->add_message("Dosažen limit 500 zpráv. Další chybové zprávy byly potlačeny z důvodu úspory paměti.", 3); // Zápis varování
 		}
 		
 		// Pro zprávy nad limit vracíme dummy referenci, aby nespadlo navázané volání ->setobject()
-		return $this->rqm;
+		return $this->rqm;                      // Vrácení instance request_message
 	}
 	
 	/**
@@ -115,7 +128,7 @@ class excel_reader {
 			return $this;                       // Pokud ano, krok přeskočíme
 		}
 		
-		sqlrun("execute p_drop_excel_tables");  // Odstranění starých staging tabulek v DB
+		sqlrun("execute p_drop_excel_tables @print_message=0"); // Odstranění starých staging tabulek v DB
 		$this->temptables_dropped = true;       // Označení, že úklid již proběhl
 		
 		return $this;                           // Vrácení instance pro řetězení metod
@@ -142,7 +155,7 @@ class excel_reader {
 			$name = iconv('utf-8', $charset, $name); // Převod názvu záložky do znakové sady systému
 			
 			// Ignorování chybně nebo bizarně pojmenovaných listů (např. se závorkami nebo mezerami)
-			if (preg_match('/[^a-zA-Z0-9_]/', $name)) {
+			if (preg_match('/[^a-zA-Z0-9_]/', (string)$name)) {
 				continue;                       // Záložku s nepovolenými znaky zcela přeskočíme
 			}
 			
@@ -171,13 +184,13 @@ class excel_reader {
 				// Fáze 1: Načtení hlavičky (názvy sloupců) z prvního nalezeného neprázdného řádku
 				if ($rowcount === 0) {
 					for ($col = 0; $col < $cellCount; $col++) {
-						$v = $this->formatCellValue($cells[$col] ?? null);
+						$v = $this->formatCellValue($cells[$col] ?? null); // Hodnota buňky v hlavičce
 						if ($v === '') {
 							break;              // Nalezen prázdný sloupec = konec hlavičky
 						}
 						
 						// Očištění názvu sloupce, aby nevyžadoval hranaté závorky v SQL
-						$safe_cn = preg_replace('/[^a-zA-Z0-9_]/', '', $v);
+						$safe_cn = (string)preg_replace('/[^a-zA-Z0-9_]/', '', $v);
 						if ($safe_cn === '') {
 							$safe_cn = 'col_' . $col; // Náhradní název sloupce při prázdném výsledku
 						}
@@ -203,7 +216,7 @@ class excel_reader {
 					}
 					
 					if (!$mimo) {               // Pokud jsme zatím nenarazili na data mimo tabulku
-						for ($col = 0; $col < $cellCount && $col < $colcount + 10; $col++) {
+						for ($col = 0; $col < $cellCount AND $col < $colcount + 10; $col++) {
 							if ($this->formatCellValue($cells[$col] ?? null) !== '') {
 								$mimo = 1;      // Nalezena hodnota pod ukončenou tabulkou
 								break;
@@ -214,16 +227,19 @@ class excel_reader {
 				}
 				
 				// Fáze 2: Čtení samotných datových řádků
-				$v_first = $this->formatCellValue($cells[0] ?? null); // Hodnota v prvním sloupci řádku
+				// Poznámka: První sloupec může být prázdný u bezejmenného kontejneru (builtin_code = '' na page)
+				// nebo u globálních frází (source_code = '' na phrase), kde je klíčem druhý sloupec!
+				$v_first = $this->formatCellValue($cells[0] ?? null);  // Hodnota v prvním sloupci řádku
+				$v_second = ($colcount > 1) ? $this->formatCellValue($cells[1] ?? null) : ''; // Hodnota ve druhém sloupci
 				
-				// Kontrola prvního sloupce - prázdná buňka znamená konec tabulky
-				if ($v_first === '') {
-					$in_table = false;          // Prázdný první sloupec ukončuje čtení dat tabulky
+				// Konec tabulky nastává, když je prázdný jak první, tak druhý klíčový sloupec
+				if ($v_first === '' AND $v_second === '') {
+					$in_table = false;          // Prázdné úvodní sloupce ukončují čtení dat tabulky
 					// Rovnou prozkoumáme zbytek aktuálního prázdného řádku, jestli tam někdo nepsal "mimo" tabulku
 					if (!$mimo) {
-						for ($j = 1; $j < $cellCount && $j < $colcount + 10; $j++) {
+						for ($j = 2; $j < $cellCount AND $j < $colcount + 10; $j++) {
 							if ($this->formatCellValue($cells[$j] ?? null) !== '') {
-								$mimo = 1;      // Nalezena hodnota v řádku s prázdným prvním sloupcem
+								$mimo = 1;      // Nalezena hodnota v řádku s prázdnými klíčovými sloupci
 								break;
 							}
 						}
@@ -240,8 +256,8 @@ class excel_reader {
 					$row[$cn] = $v;             // Zápis hodnoty do asociativního pole řádku
 
 					// Průběžná detekce "odpadu" vedle sloupců tabulky
-					if (!$mimo && $col === $colcount - 1 && $cellCount > $colcount) {
-						for ($j = $colcount; $j < $cellCount && $j < $colcount + 10; $j++) {
+					if (!$mimo AND $col === $colcount - 1 AND $cellCount > $colcount) {
+						for ($j = $colcount; $j < $cellCount AND $j < $colcount + 10; $j++) {
 							if ($this->formatCellValue($cells[$j] ?? null) !== '') {
 								$mimo = 1;      // Nalezena hodnota vpravo za posledním sloupcem hlavičky
 								break;
@@ -343,8 +359,8 @@ class excel_reader {
 		}
 		
 		// Nahrazení tvrdých mezer (NBSP, \xC2\xA0) klasickou mezerou, aby fungoval trim()
-		$v = str_replace("\xC2\xA0", ' ', $v);
-		$v = trim(iconv('utf-8', "$charset//TRANSLIT//IGNORE", $v));
+		$v = str_replace("\xC2\xA0", ' ', $v);  // Nahrazení nezlomitelných mezer
+		$v = trim((string)iconv('utf-8', "$charset//TRANSLIT//IGNORE", $v)); // Převod znakové sady a ořez mezer
 
 		if ($v == 'NULL') {
 			$v = '';                            // Textové 'NULL' z Excelu považujeme za prázdnou hodnotu
@@ -369,32 +385,32 @@ class excel_reader {
 	 * @return self Vrací instanci třídy pro řetězení.
 	 */
 	public function setDataType(string|array $colname, string $datatype = 'varchar', string $tabname = '', string $msgdetail = 'Kontrola přítomnosti povinných sloupců'): self {
-		if (is_string($colname) && strpos($colname, ',') !== false) {
+		if (is_string($colname) AND strpos($colname, ',') !== false) {
 			$colname = explode(',', $colname);  // Rozpad seznamu sloupců oddělených čárkou na pole
 		}
 		
 		// Podpora rekurze pro pole názvů sloupců
 		if (is_array($colname)) {
 			foreach ($colname as $cn) {
-				$this->setDataType(trim((string)$cn), $datatype, $tabname, $msgdetail);
+				$this->setDataType(trim((string)$cn), $datatype, $tabname, $msgdetail); // Rekurzivní nastavení pro sloupec
 			}
 			return $this;                       // Vrácení instance po zpracování celého pole sloupců
 		}
 		
 		// Kontrola, zda nechybí celá povinná tabulka (záložka)
-		if ($tabname && !array_key_exists($tabname, $this->data)) {
-			$this->log_message("Mandatory table is missing", 3)->setobject($tabname, $colname)->setdetail($msgdetail);
+		if ($tabname AND !array_key_exists($tabname, $this->data)) {
+			$this->log_message("Mandatory table is missing", 3)->setobject($tabname, $colname)->setdetail($msgdetail); // Zápis chyby chybějící záložky
 			return $this;                       // Tabulka v souboru neexistuje, ukončíme kontrolu
 		}
 		
 		foreach ($this->data as $tn => &$table) {
-			if ($tn == $tabname || $tabname == '') {
+			if ($tn == $tabname OR $tabname == '') {
 				
 				// Kontrola přítomnosti povinného sloupce
 				if ($tabname) {
 					$table['mandatory_column_list'][$colname] = $colname; // Zařazení mezi povinné sloupce
 					if (!in_array($colname, $table['column_list'])) {
-						$this->log_message("Mandatory column is missing", 3)->setobject($tn, $colname)->setdetail($msgdetail);
+						$this->log_message("Mandatory column is missing", 3)->setobject($tn, $colname)->setdetail($msgdetail); // Zápis chyby chybějícího sloupce
 					}
 				}
 				
@@ -409,7 +425,7 @@ class excel_reader {
 								case 'datetime':
 								case 'smalldatetime':
 									// Voláme naši interní metodu pro převod data
-									$row[$cn] = $this->excel_date_to_odbc($v);
+									$row[$cn] = $this->excel_date_to_odbc($v); // Převod data na ODBC formát
 									break;
 								case 'bit':
 									$row[$cn] = $v ? '1' : '0'; // Normalizace boolean hodnoty na 1/0
@@ -436,7 +452,7 @@ class excel_reader {
 	public function save_to_tables(string $prefix = 'XLSX_'): self {
 		global $logSqlCmdList, $sqlcmdlist;     // Globální proměnné pro logování SQL příkazů
 		
-		if ($this->rqm->get_severity() > 2 && $this->import_mode !== '0') {
+		if ($this->rqm->get_severity() > 2 AND $this->import_mode !== '0') {
 			return $this;                       // Při kritické chybě nezakládáme tabulky
 		}
 		
@@ -456,7 +472,7 @@ class excel_reader {
 				if ($ct == 'varchar') {
 					// Zdvojnásobení zjištěné délky jako prevence proti oříznutí multibyte (UTF-8) znaků
 					// a přidání rezervy 100 znaků pro bezpečné přesuny dat uvnitř SQL procedur
-					$len = ($table['column_lengths'][$cn] * 2) + 100;
+					$len = ($table['column_lengths'][$cn] * 2) + 100; // Výpočet délky sloupce s rezervou
 					
 					// Pojistka pro limity SQL Serveru a prázdné sloupce
 					if ($len > 8000) {
@@ -475,7 +491,7 @@ class excel_reader {
 				$lcn = strtolower($cn);         // Název sloupce převedený na malá písmena
 				if (array_key_exists($lcn, $unique_cols)) {
 					$cols = [];                 // Zrušení generování tabulky kvůli duplicitě
-					$this->log_message("Duplicita", 3)->setobject('Sloupec na záložce', "$tn.$cn");
+					$this->log_message("Duplicita", 3)->setobject('Sloupec na záložce', "$tn.$cn"); // Zápis chyby duplicity
 					break;
 				}
 				$unique_cols[$lcn] = $cn;       // Zaevidování unikátního názvu sloupce
@@ -483,7 +499,7 @@ class excel_reader {
 			
 			// Generování CREATE TABLE a masivní INSERT
 			if ($cols) {
-				$sql = "create table $dbt(" . implode(', ', $cols) . ")";
+				$sql = "create table $dbt(" . implode(', ', $cols) . ")"; // Sestavení příkazu CREATE TABLE
 				$sqlcmdlist .= "\n$sql";        // Zápis CREATE TABLE do historie příkazů
 				sqlrun($sql);                   // Spuštění CREATE TABLE
 				
@@ -507,7 +523,7 @@ class excel_reader {
 							}
 							$vals[] = $v;       // Přidání zformátované hodnoty do seznamu
 						}
-						sqlrun("insert into $dbt values(" . implode(", ", $vals) . ")");
+						sqlrun("insert into $dbt values(" . implode(", ", $vals) . ")"); // Vložení řádku do staging tabulky
 						$sqlcmdlist = "";       // Vyčištění historie příkazů pro úsporu paměti
 					}
 				}
@@ -547,12 +563,12 @@ class excel_reader {
 						where SPECIFIC_NAME=" . charliteral("p_xlsx_$package_code") . "
 							and ROUTINE_TYPE='PROCEDURE'
 							and ROUTINE_CATALOG=DB_NAME()
-							and ROUTINE_SCHEMA='dbo'");
+							and ROUTINE_SCHEMA='dbo'"); // Ověření existence uložené procedury v DB
 					
-					if ($a[0] == 1) {
-						$this->package_ready = true; // Třída i SQL procedura existují
+					if (!empty($a) AND (int)$a[0] === 1) {
+						$this->package_ready = ($this->rqm->get_severity() <= 2); // Připraveno pouze pokud nebyly kritické chyby
 					} else {
-						// Pouze INFO - neexistující procedura nesmí blokovat nahrání do stagingu
+						$this->package_ready = false; // Procedura neexistuje, balíček nelze spustit
 						$this->log_message("SQL procedura 'p_xlsx_$package_code' nebyla nalezena. Balíček nebude automaticky spuštěn.", 1);
 					}
 				} else {
@@ -571,30 +587,41 @@ class excel_reader {
 	 * @return void
 	 */
 	public function run_package(string $import_mode): void {
-		// Striktní kontrola povolených stavů pro spuštění na DB.
-		if (in_array($import_mode, ['1', '2'], true) && $this->package_ready && $this->rqm->get_severity() < 3) {
-			// Start transakce a reset logování zpráv v databázi
-			sqlrun("begin tran execute p_request_messages_start @reset=0");
+		if (!in_array($import_mode, ['1', '2'], true)) { // Kontrola, zda jde o databázový režim běhu
+			return;                             // V režimu '0' a 'D' se procedura nespouští
+		}
+
+		if (!$this->package_ready OR $this->rqm->get_severity() >= 3) { // Kontrola připravenosti a bezchybnosti balíčku
+			$this->log_message("Importní procedura nebyla spuštěna, protože balíček není připraven nebo obsahuje chyby.", 3);
+			return;                             // Ukončení bez spuštění SQL procedury
+		}
+
+		// Start transakce a vyčištění tabulky request_message v databázi pro aktuální SPID
+		sqlrun("begin tran execute p_request_messages_start @reset=1");
+		
+		$mode_desc = ($import_mode === '2') ? "Write and commit" : "Write then rollback"; // Popis zvoleného režimu
+		$this->log_message("Provádí se import")->setobject("Režim", $mode_desc); // Zápis informace o startu procedury
 			
-			$this->log_message("Provádí se import")->setobject("Režim", ($import_mode === '2') ? "Write and commit" : "Write then rollback");
-				
-			// Zavolání obslužné procedury s příslušným módem
-			sqlrun("execute p_xlsx_{$this->package_code} @import_mode=" . charliteral($import_mode));
-			
-			// Natažení chybových a informačních zpráv
-			$this->rqm->add_from_db();          // Převzetí zpráv z tabulky request_message
-			$this->log_message("Procedura provedena", 1);
-			
-			// Rozhodování o Commit / Rollback
-			if ($import_mode === '2' && $this->rqm->get_severity() < 3) {
-				sqlrun("commit");               // Potvrzení transakce při ostrém importu bez chyb
+		// Zavolání obslužné procedury s příslušným módem
+		sqlrun("execute p_xlsx_{$this->package_code} @import_mode=" . charliteral($import_mode));
+		
+		// Natažení chybových a informačních zpráv vygenerovaných SQL procedurou
+		$this->rqm->add_from_db();              // Převzetí zpráv z tabulky request_message
+		$this->log_message("Procedura provedena", 1); // Potvrzení dokončení běhu procedury
+		
+		// Rozhodování o Commit / Rollback
+		if ($import_mode === '2' AND $this->rqm->get_severity() < 3) {
+			sqlrun("commit");                   // Potvrzení transakce při ostrém importu bez chyb
+			$this->log_message("Transakce byla potvrzena (Commit)", 1); // Zpráva o úspěšném uložení
+		} else {
+			sqlrun("rollback");                 // Stornování transakce v testovacím režimu nebo při chybě
+			$nep = ($this->rqm->get_severity() >= 3); // Zjištění, zda příčinou byly kritické chyby
+			$sev = $nep ? 3 : 2;                // V testovacím režimu bez chyb použijeme závažnost 2 (modrá/varování)
+			$m = $this->log_message("Transakce byla stornována (Rollback)", $sev); // Zápis informace o rollbacku
+			if ($nep) {
+				$m->setdetail("Zjištěny nepropustné chyby"); // Detail při stornování kvůli chybě
 			} else {
-				sqlrun("rollback");             // Stornování transakce v testovacím režimu nebo při chybě
-				$nep = $this->rqm->get_severity() >= 3; // Zjištění, zda příčinou byly kritické chyby
-				$m = $this->log_message("Transakce byla stornována", 3);
-				if ($nep) {
-					$m->setdetail("Zjištěny nepropustné chyby");
-				}
+				$m->setdetail("Kontrolní běh proběhl bez chyb"); // Detail při úspěšném kontrolním běhu
 			}
 		}
 	}
@@ -606,8 +633,8 @@ class excel_reader {
 	 * @return bool Vrací TRUE pokud je tabulka povinná, jinak FALSE.
 	 */
 	public function is_mandatory_table(string $tn): bool {
-		if (is_object($c = $this->package_class)) {
-			return property_exists($c, 'mandatory_tables') && in_array($tn, $c->mandatory_tables);
+		if (is_object($c = $this->package_class)) { // Pokud existuje instance třídy balíčku
+			return (property_exists($c, 'mandatory_tables') AND in_array($tn, $c->mandatory_tables)); // Kontrola v poli povinných tabulek
 		}
 		return false;                           // Pokud třída balíčku neexistuje, tabulka není povinná
 	}
@@ -623,8 +650,8 @@ class excel_reader {
 	public function excel_date_to_odbc(string|int|float $dta): string {
 		// 1. Záchyt už hotových stringů (typický výstup z OpenSpout)
 		if (DateTime::createFromFormat('Y-m-d', (string)$dta) !== false
-			|| DateTime::createFromFormat('Y-m-d H:i', (string)$dta) !== false
-			|| DateTime::createFromFormat('Y-m-d H:i:s', (string)$dta) !== false
+			OR DateTime::createFromFormat('Y-m-d H:i', (string)$dta) !== false
+			OR DateTime::createFromFormat('Y-m-d H:i:s', (string)$dta) !== false
 		) {
 			return (string)$dta;                // Řetězec je již v platném SQL formátu
 		}

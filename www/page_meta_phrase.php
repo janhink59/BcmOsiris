@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-16 00:10
+ * Verze: 2026-10-19 14:45
  * Soubor: page_meta_phrase.php
  * Třída: page_meta_phrase
  * Účel: Správa a lokalizace systémových i klientských textových frází,
@@ -15,6 +15,12 @@
  *   zatímco překladové sloupce (`caption`, `helptext`) může překládat každý uživatel.
  * - Využívá `abstract_button` pro vykreslení tlačítka založení nové fráze (pouze pro 'D').
  * - V levém panelu nabízí filtrování podle zdrojového PHP objektu (`source_code` z `meta_object`).
+ *
+ * Změny:
+ * 2026-10-19 14:45 - Čtení seznamu zdrojových tříd v render_master_top() převedeno
+ *                    ze sqlrun/fetch na sqlarray_simple() (ochrana $dbquery).
+ *                  - Nahrazen operátor && za AND a opraveny mezery před znakem $.
+ * 2026-10-16 00:10 - První verze stránky pro správu tabulky meta_phrase.
  * =============================================================================
  */
 
@@ -86,22 +92,23 @@ class page_meta_phrase extends abstract_page_master_detail {
 		$options_html = "<option value=\"__ALL__\" {$sel_all}>{$lbl_all}</option>"; // První položka roletky
 		$options_html .= "<option value=\"__GLOBAL__\" {$sel_glob}>{$lbl_glob}</option>"; // Druhá položka roletky
 
-		$q_src = sqlrun("
+		$src_rows = sqlarray_simple("
 			SELECT builtin_code, caption
 			FROM meta_object
 			WHERE object_type = 'P' AND builtin_code <> '' AND object_owner = 0x00 AND record_type = 'A' AND removed = 0
 			ORDER BY builtin_code
-		");                                                                  // Dotaz na registrované PHP objekty
-		while ($r_src = fetch($q_src)) {                                     // Iterace přes nalezené třídy a stránky
-			$b_code = (string)$r_src['builtin_code'];                        // Technický název třídy
-			$b_cap = (string)$r_src['caption'];                              // Popisek třídy z metadat
-			$safe_code = htmlspecialchars($b_code);                          // Ošetřený kód třídy
-			$safe_cap = htmlspecialchars($b_cap);                            // Ošetřený popisek třídy
-			$sel = ($b_code ===$this->filter_source) ? 'selected' : '';     // Kontrola shody s aktivním filtrem
-			$label = ($safe_cap !== '' &&$safe_cap !== $safe_code) ? "{$safe_code} ({$safe_cap})" : $safe_code; // Text položky
-			$options_html .= "<option value=\"{$safe_code}\" {$sel}>{$label}</option>"; // Přidání položky do roletky
+		");                                                                  // Načtení registrovaných PHP objektů do pole
+		if (is_array($src_rows)) {                                           // Kontrola platného pole výsledků
+			foreach ($src_rows as$r_src) {                                  // Iterace přes nalezené třídy a stránky
+				$b_code = (string)$r_src['builtin_code'];                    // Technický název třídy
+				$b_cap = (string)$r_src['caption'];                          // Popisek třídy z metadat
+				$safe_code = htmlspecialchars($b_code);                      // Ošetřený kód třídy
+				$safe_cap = htmlspecialchars($b_cap);                        // Ošetřený popisek třídy
+				$sel = ($b_code ===$this->filter_source) ? 'selected' : ''; // Kontrola shody s aktivním filtrem
+				$label = ($safe_cap !== '' AND$safe_cap !== $safe_code) ? "{$safe_code} ({$safe_cap})" : $safe_code; // Text položky
+				$options_html .= "<option value=\"{$safe_code}\" {$sel}>{$label}</option>"; // Přidání položky do roletky
+			}
 		}
-		free_result($q_src);                                                 // Uvolnění výsledku dotazu
 
 		$lbl_filter = htmlspecialchars($this->phrase('lbl_filter_source', [], 'Zdrojová třída / stránka (source_code):')); // Popisek roletky
 

@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-14 22:30
+ * Verze: 2026-10-19 14:45
  * Soubor: xlsx_abstract.php
  * Třída: xlsx_abstract
  * Účel: Abstraktní předek pro všechny validační a konfigurační třídy
@@ -12,14 +12,17 @@
  *   v souboru xlsx_meta_object.php), které dynamicky instancuje excel_reader::prepare_package().
  * - Třída přijímá v konstruktoru instanci třídy excel_reader (z excel_reader.php)
  *   a asociativní pole prvního řádku řídicí záložky CONTENT_INFO.
+ * - Sdíleně využívá instanci $reader->rqm (třída request_message) pro zápis chybových
+ *   a stavových zpráv do jediné společné fronty.
  * - Volá metodu $reader->setDataType() pro vynucení přítomnosti povinných
  *   tabulek a sloupců a pro konverzi jejich datových typů.
- * - Využívá třídu request_message (z html_classes.php) pro zápis chybových
- *   a stavových zpráv.
  * - Využívá funkce sqlfirstrow() a charliteral() z knihovny OsirisLib.php
  *   pro validaci kódů jazyků (language, second_language) proti tabulce [language].
  *
  * Změny:
+ * 2026-10-19 14:45 - Sjednocena instance $this->rqm = $reader->rqm, aby se validační
+ *                    zprávy a závažnost chyb (get_severity) z xlsx_abstract a potomků
+ *                    ukládaly přímo do hlavního logu čteče excel_reader.
  * 2026-10-14 - Refaktoring do PHP 8.3 (strict_types, typované vlastnosti a metody).
  *            - Doplněna validace povinného sloupce language a volitelného
  *              second_language v CONTENT_INFO proti databázové tabulce language.
@@ -58,7 +61,7 @@ abstract class xlsx_abstract {
 	public array $parameters = [];                          // Doplňkové parametry balíčku
 	public bool $prepared = false;                          // Příznak dokončení přípravy balíčku
 	public array $content = [];                             // Surová data prvního řádku záložky CONTENT_INFO
-	public object $rqm;                                     // Instance request_message pro sběr validačních zpráv
+	public object $rqm;                                     // Reference na společnou instanci request_message
 
 	/**
 	 * Konstruktor provede základní validaci řídicí záložky CONTENT_INFO
@@ -68,7 +71,8 @@ abstract class xlsx_abstract {
 	 * @param array        $content_info První datový řádek ze záložky CONTENT_INFO.
 	 */
 	final public function __construct(excel_reader $reader, array $content_info) {
-		$this->rqm = new request_message();                 // Inicializace objektu pro logování zpráv
+		$this->reader = $reader;                            // Uložení reference na čteč Excelu
+		$this->rqm = $reader->rqm;                          // Napojení na společný objekt logování zpráv čteče
 		$this->content = $content_info;                     // Uložení řádku z CONTENT_INFO
 		$this->package_code = (string)($content_info['package_code'] ?? '');       // Kód importního balíčku
 		$this->language = (string)($content_info['language'] ?? '');               // Primární jazyk balíčku
@@ -76,7 +80,6 @@ abstract class xlsx_abstract {
 		$this->import_origin = (string)($content_info['import_origin'] ?? '');     // Volitelný původ importu
 		$this->description = (string)($content_info['description'] ?? '');         // Popis balíčku
 		$this->version_date = (string)($content_info['version_date'] ?? '');       // Datum verze balíčku
-		$this->reader = $reader;                            // Uložení reference na čteč Excelu
 		$this->mandatory_tables = [];                       // Vyčištění seznamu povinných tabulek
 		$this->parameters = [];                             // Vyčištění pole parametrů
 

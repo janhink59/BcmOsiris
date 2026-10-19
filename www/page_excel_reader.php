@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-18 17:30
+ * Verze: 2026-10-19 14:45
  * Soubor: page_excel_reader.php
  * Třída: page_excel_reader
  * Účel: Uživatelské rozhraní pro nahrávání, validaci, náhled a import dat z XLSX
@@ -11,13 +11,14 @@
  * Vazby na okolí:
  * - Instancována dynamicky z index.php při požadavku ?page=page_excel_reader.
  * - Dědí z třídy abstract_page (využívá $this->page_title, $this->access_denied,
- *   $this->phrase(), parent::render() a implementuje abstraktní metodu render_body()).
+ *   $this->full_width, $this->phrase(), parent::render() a implementuje render_body()).
  * - Využívá komponentu abstract_button pro vykreslení odesílacích tlačítek.
  * - Využívá globální proměnné $dbsession (kontrola active_role přes předka)
  *   a $charset (kódování pro HTTP hlavičku distribuce).
- * - Využívá funkce regfile(), getinput(), charliteral(), sqlrun(), fetch(),
- *   free_result() a sqlarray_simple() z knihovny OsirisLib.php.
- * - Instancuje a řídí třídu excel_reader (z excel_reader.php) pro čtení XLSX.
+ * - Využívá funkce regfile(), getinput(), charliteral() a sqlarray_simple()
+ *   z knihovny OsirisLib.php.
+ * - Instancuje a řídí třídu excel_reader (z excel_reader.php) a načítá
+ *   abstraktního předka balíčků xlsx_abstract (z xlsx_abstract.php).
  * - Pro zpětný export metadat (meta_object, meta_menu, meta_phrase, meta_class,
  *   meta_column) využívá knihovnu PhpOffice\PhpSpreadsheet. Zděděné hodnoty
  *   z předků (ancestor_class / sys_global_columns) uzavírá <do stříšek>.
@@ -26,6 +27,16 @@
  *   výstupní dávku volající p_request_messages_start a p_xlsx_<package_code>.
  *
  * Změny:
+ * 2026-10-19 14:45 - Doplněno chybějící načtení require_once pro excel_reader.php
+ *                    a xlsx_abstract.php (zprovoznění autoloaderu pro xlsx_meta_object,
+ *                    režimu Distribuce 'D' i Kontrolního běhu '1' a Importu '2').
+ *                  - Zapnut režim plné šířky okna ($this->full_width = true) při
+ *                    zobrazení výsledků a doplněno přehledné CSS stylování tabulek
+ *                    po vzoru původního systému (mřížka, žluté nepovinné sloupce
+ *                    a tabulky, střídání řádků, nl2br).
+ *                  - Všechna čtení result-setů převedena na sqlarray_simple().
+ *                  - Při volání p_export_to_sql doplněno SET NOCOUNT ON pro zamezení
+ *                    prázdných result-setů v ovladači sqlsrv.
  * 2026-10-18 17:30 - Rozšířen zpětný export meta_object.xlsx o záložky class
  *                    (meta_class) a column (meta_column) s mnemotechnickými
  *                    identifikátory a zobrazením zděděných hodnot <do stříšek>.
@@ -52,6 +63,8 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/vendor/autoload.php';
+require_once __DIR__ . '/excel_reader.php';
+require_once __DIR__ . '/xlsx_abstract.php';
 
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -94,9 +107,15 @@ class page_excel_reader extends abstract_page {
 
 		if ($tmpfile) {                                 // Pokud byl soubor úspěšně odeslán
 			$this->has_file = true;                     // Označení přítomnosti souboru pro vykreslení výsledků
+			$this->full_width = true;                   // Roztažení panelu na celou šířku okna pro přehledné tabulky
 			$this->import_mode = (string)getinput('import_mode'); // Načtení zvoleného režimu zpracování
 
 			$this->reader = new excel_reader($tmpfile); // Vytvoření instance čteče pro nahraný soubor
+
+			$orig_name = (string)($_FILES['file_xlsx']['name'] ?? basename((string)$tmpfile)); // Původní název souboru
+			$msg_proc = $this->phrase('msg_processing_data', [], 'Zpracování dat'); // Text úvodní zprávy zpracování
+			$lbl_infile = $this->phrase('lbl_input_file', [], 'Vstupní soubor'); // Popisek objektu vstupního souboru
+			$this->reader->rqm->add_message($msg_proc, 0)->setobject($lbl_infile, $orig_name); // Zápis hlavičky do logu
 			
 			// Provedení hlavní sady operací nad souborem
 			$this->reader->setImportMode($this->import_mode) // Nastavení režimu importu
@@ -153,24 +172,25 @@ class page_excel_reader extends abstract_page {
 		$btn_submit->set_type('submit');                // Nastavení typu tlačítka na submit
 		$submit_html = $btn_submit->render();           // Vykreslení HTML kódu tlačítka importu
 
-		// Příprava voleb jazyků z tabulky [language] pro exportní formulář
+		// Příprava voleb jazyků z tabulky [language] pro exportní formulář (načteno přes sqlarray_simple)
 		$lang_opts_primary = '';                        // HTML opce pro základní jazyk exportu
 		$lang_opts_second = '';                         // HTML opce pro druhý překladový jazyk exportu
 		$lbl_no_sec_lang = htmlspecialchars($this->phrase('opt_no_second_lang', [], '--- Bez druhého jazyka ---')); // Volba bez druhého jazyka
 		$lang_opts_second .= "<option value=\"\">{$lbl_no_sec_lang}</option>"; // Prázdná volba druhého jazyka
 
-		$q_langs = sqlrun("SELECT [language], caption FROM [language] ORDER BY sort_code"); // Dotaz na podporované jazyky
-		while ($l_row = fetch($q_langs)) {              // Průchod jazyky z databáze
-			$l_code = (string)$l_row['language'];       // Dvoupísmenný kód jazyka
-			$l_cap = (string)$l_row['caption'];         // Název jazyka
-			$safe_l_code = htmlspecialchars($l_code);   // Ošetřený kód jazyka
-			$safe_l_label = htmlspecialchars("{$l_code} - {$l_cap}"); // Ošetřený popisek v roletce
-			$sel_prim = ($l_code === 'cs') ? 'selected' : ''; // Výchozí primární jazyk je cs
-			$sel_sec = ($l_code === 'en') ? 'selected' : ''; // Výchozí druhý jazyk je en
-			$lang_opts_primary .= "<option value=\"{$safe_l_code}\" {$sel_prim}>{$safe_l_label}</option>"; // Volba primárního jazyka
-			$lang_opts_second .= "<option value=\"{$safe_l_code}\" {$sel_sec}>{$safe_l_label}</option>"; // Volba druhého jazyka
+		$lang_rows = sqlarray_simple("SELECT [language], caption FROM [language] ORDER BY sort_code"); // Načtení všech jazyků do pole
+		if (is_array($lang_rows)) {                     // Kontrola platného pole jazyků
+			foreach ($lang_rows as $l_row) {            // Průchod jazyky v paměti
+				$l_code = (string)$l_row['language'];   // Dvoupísmenný kód jazyka
+				$l_cap = (string)$l_row['caption'];     // Název jazyka
+				$safe_l_code = htmlspecialchars($l_code); // Ošetřený kód jazyka
+				$safe_l_label = htmlspecialchars("{$l_code} - {$l_cap}"); // Ošetřený popisek v roletce
+				$sel_prim = ($l_code === 'cs') ? 'selected' : ''; // Výchozí primární jazyk je cs
+				$sel_sec = ($l_code === 'en') ? 'selected' : '';  // Výchozí druhý jazyk je en
+				$lang_opts_primary .= "<option value=\"{$safe_l_code}\" {$sel_prim}>{$safe_l_label}</option>"; // Volba primárního jazyka
+				$lang_opts_second .= "<option value=\"{$safe_l_code}\" {$sel_sec}>{$safe_l_label}</option>";   // Volba druhého jazyka
+			}
 		}
-		free_result($q_langs);                          // Uvolnění výsledku dotazu jazyků
 
 		$exp_heading = htmlspecialchars($this->phrase('export_heading', [], 'Zpětný export systémových metadat do Excelu (XLSX)')); // Nadpis sekce exportu
 		$exp_intro = htmlspecialchars($this->phrase('export_intro', [], 'Vygeneruje aktuální soubor meta_object.xlsx přímo z databáze (záložky page, menu, phrase, class, column; zděděné hodnoty jsou uzavřeny <do stříšek>).')); // Popis exportu
@@ -185,11 +205,15 @@ class page_excel_reader extends abstract_page {
 		$export_html = $btn_export->render();           // Vykreslení tlačítka exportu
 
 		echo <<<HTML
+		<style>
+			.xlsx-form-table { border-collapse: collapse; margin-bottom: 20px; }
+			.xlsx-form-table td { border: 1px solid #cbd5e1; padding: 8px 12px; font-size: 13px; }
+		</style>
 		<h1 class="page-heading">{$heading}</h1>
 		<p style="margin-bottom: 20px;">{$intro}</p>
 
 		<form id="f" name="f" action="index.php?page={$page_param}" method="post" enctype="multipart/form-data" target="_blank" style="margin-bottom: 35px;">
-			<table class="md-table" style="width: auto; margin-bottom: 20px;">
+			<table class="xlsx-form-table">
 				<tr>
 					<td style="font-weight: bold; width: 220px; background-color: #f8fafc;">{$lbl_file}</td>
 					<td><input type="file" name="file_xlsx" id="file_xlsx" accept=".xlsx" style="height:30px; width: 320px;" required></td>
@@ -216,7 +240,7 @@ class page_excel_reader extends abstract_page {
 
 		<form id="f_export" name="f_export" action="index.php?page={$page_param}" method="post">
 			<input type="hidden" name="action" value="export_xlsx">
-			<table class="md-table" style="width: auto; margin-bottom: 20px;">
+			<table class="xlsx-form-table">
 				<tr>
 					<td style="font-weight: bold; width: 220px; background-color: #f8fafc;">{$lbl_pkg}</td>
 					<td>
@@ -353,7 +377,7 @@ HTML;
 		$sheetPage->getStyle('A1:K1')->getFont()->setBold(true); // Tučné záhlaví záložky page
 		$sheetPage->freezePane('A2');                   // Ukotvení prvního řádku záhlaví
 
-		$q_pages = sqlrun("
+		$pages_rows = sqlarray_simple("
 			SELECT
 				a.builtin_code,
 				a.system_role,
@@ -376,27 +400,28 @@ HTML;
 			  AND a.record_type = 'A'
 			  AND a.removed = 0
 			ORDER BY CASE WHEN a.builtin_code = '' THEN 0 WHEN a.builtin_code LIKE 'page_%' THEN 2 ELSE 1 END, a.builtin_code
-		");                                             // Dotaz na všechny registrované stránky a UI třídy
+		");                                             // Načtení všech registrovaných stránek a UI tříd do pole
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce page
-		while ($r = fetch($q_pages)) {                  // Průchod načtenými stránkami
-			$page_vals = [                              // Pole hodnot aktuálního řádku stránky
-				(string)$r['builtin_code'],             // Kód stránky
-				(string)$r['system_role'],              // Role stránky
-				(string)$r['module'],                   // Modul stránky
-				(int)$r['inactive'],                    // Příznak deaktivace
-				(string)$r['editor_note'],              // Kontext pro AI
-				(string)$r['caption'],                  // Název v primárním jazyce
-				(string)$r['description'],              // Popis v primárním jazyce
-				(string)$r['helptext'],                 // Nápověda v primárním jazyce
-				(string)$r['caption_l'],                // Název ve druhém jazyce
-				(string)$r['description_l'],            // Popis ve druhém jazyce
-				(string)$r['helptext_l']                // Nápověda ve druhém jazyce
-			];                                          // Konec pole hodnot stránky
-			$sheetPage->fromArray($page_vals, null, 'A' . $row_idx); // Zápis celého řádku do listu page
-			$row_idx++;                                 // Posun na další řádek
+		if (is_array($pages_rows)) {                    // Kontrola platného pole stránek
+			foreach ($pages_rows as $r) {               // Průchod načtenými stránkami
+				$page_vals = [                          // Pole hodnot aktuálního řádku stránky
+					(string)$r['builtin_code'],         // Kód stránky
+					(string)$r['system_role'],          // Role stránky
+					(string)$r['module'],               // Modul stránky
+					(int)$r['inactive'],                // Příznak deaktivace
+					(string)$r['editor_note'],          // Kontext pro AI
+					(string)$r['caption'],              // Název v primárním jazyce
+					(string)$r['description'],          // Popis v primárním jazyce
+					(string)$r['helptext'],             // Nápověda v primárním jazyce
+					(string)$r['caption_l'],            // Název ve druhém jazyce
+					(string)$r['description_l'],        // Popis ve druhém jazyce
+					(string)$r['helptext_l']            // Nápověda ve druhém jazyce
+				];                                      // Konec pole hodnot stránky
+				$sheetPage->fromArray($page_vals, null, 'A' . $row_idx); // Zápis celého řádku do listu page
+				$row_idx++;                             // Posun na další řádek
+			}
 		}
-		free_result($q_pages);                          // Uvolnění výsledku dotazu stránek
 
 		foreach (range('A', 'K') as $colId) {           // Automatická šířka sloupců na záložce page
 			$sheetPage->getColumnDimension($colId)->setAutoSize(true); // Nastavení auto-size sloupce
@@ -439,7 +464,7 @@ HTML;
 		$sheetMenu->getStyle('A1:R1')->getFont()->setBold(true); // Tučné záhlaví záložky menu
 		$sheetMenu->freezePane('A2');                   // Ukotvení prvního řádku záhlaví
 
-		$q_menu = sqlrun("
+		$menu_rows = sqlarray_simple("
 			SELECT
 				m.builtin_code,
 				ISNULL(pm.builtin_code, '') AS parent_code,
@@ -472,34 +497,35 @@ HTML;
 			  AND m.record_type = 'A'
 			  AND m.removed = 0
 			ORDER BY CASE WHEN m.parent_uuid IS NULL THEN 0 ELSE 1 END, m.sort_code, m.builtin_code
-		");                                             // Dotaz na položky systémového menu s překladem vazeb
+		");                                             // Načtení položek systémového menu do pole
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce menu
-		while ($r = fetch($q_menu)) {                   // Průchod načtenými položkami menu
-			$menu_vals = [                              // Pole hodnot řádku menu
-				(string)$r['builtin_code'],             // Kód položky menu
-				(string)$r['parent_code'],              // Kód nadřízené položky
-				(string)$r['sort_code'],                // Pořadí
-				(string)$r['target_page'],              // Kód cílové stránky
-				(string)$r['url_parameters'],          // URL parametry
-				(string)$r['target_url'],               // Externí URL
-				(string)$r['target_window'],            // Cílové okno
-				(string)$r['system_role'],              // Minimální role
-				(int)$r['permanent'],                   // Příznak trvalého zobrazení
-				(string)$r['svg_icon'],                 // SVG ikona
-				(string)$r['css_class'],                // CSS třída
-				(string)$r['editor_note'],              // Poznámka pro AI
-				(string)$r['caption'],                  // Popisek v primárním jazyce
-				(string)$r['description'],              // Popis v primárním jazyce
-				(string)$r['helptext'],                 // Tooltip v primárním jazyce
-				(string)$r['caption_l'],                // Popisek ve druhém jazyce
-				(string)$r['description_l'],            // Popis ve druhém jazyce
-				(string)$r['helptext_l']                // Tooltip ve druhém jazyce
-			];                                          // Konec pole hodnot menu
-			$sheetMenu->fromArray($menu_vals, null, 'A' . $row_idx); // Zápis celého řádku do listu menu
-			$row_idx++;                                 // Posun na další řádek
+		if (is_array($menu_rows)) {                     // Kontrola platného pole menu
+			foreach ($menu_rows as $r) {                // Průchod načtenými položkami menu
+				$menu_vals = [                          // Pole hodnot řádku menu
+					(string)$r['builtin_code'],         // Kód položky menu
+					(string)$r['parent_code'],          // Kód nadřízené položky
+					(string)$r['sort_code'],            // Pořadí
+					(string)$r['target_page'],          // Kód cílové stránky
+					(string)$r['url_parameters'],       // URL parametry
+					(string)$r['target_url'],           // Externí URL
+					(string)$r['target_window'],        // Cílové okno
+					(string)$r['system_role'],          // Minimální role
+					(int)$r['permanent'],               // Příznak trvalého zobrazení
+					(string)$r['svg_icon'],             // SVG ikona
+					(string)$r['css_class'],            // CSS třída
+					(string)$r['editor_note'],          // Poznámka pro AI
+					(string)$r['caption'],              // Popisek v primárním jazyce
+					(string)$r['description'],          // Popis v primárním jazyce
+					(string)$r['helptext'],             // Tooltip v primárním jazyce
+					(string)$r['caption_l'],            // Popisek ve druhém jazyce
+					(string)$r['description_l'],        // Popis ve druhém jazyce
+					(string)$r['helptext_l']            // Tooltip ve druhém jazyce
+				];                                      // Konec pole hodnot menu
+				$sheetMenu->fromArray($menu_vals, null, 'A' . $row_idx); // Zápis celého řádku do listu menu
+				$row_idx++;                             // Posun na další řádek
+			}
 		}
-		free_result($q_menu);                           // Uvolnění výsledku dotazu menu
 
 		foreach (range('A', 'R') as $colId) {           // Nastavení šířek sloupců na záložce menu
 			if ($colId === 'J') {                       // Sloupec se zdrojovým kódem SVG ikony
@@ -538,7 +564,7 @@ HTML;
 		$sheetPhrase->getStyle('A1:J1')->getFont()->setBold(true); // Tučné záhlaví záložky phrase
 		$sheetPhrase->freezePane('A2');                 // Ukotvení prvního řádku záhlaví
 
-		$q_phrases = sqlrun("
+		$phrase_rows = sqlarray_simple("
 			SELECT
 				a.source_code,
 				a.builtin_code,
@@ -559,26 +585,27 @@ HTML;
 			  AND a.record_type = 'A'
 			  AND a.removed = 0
 			ORDER BY a.source_code, a.builtin_code
-		");                                             // Dotaz na všechny systémové fráze v meta_phrase
+		");                                             // Načtení všech systémových frází do pole
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce phrase
-		while ($r = fetch($q_phrases)) {                // Průchod načtenými frázemi
-			$phrase_vals = [                            // Pole hodnot řádku fráze
-				(string)$r['source_code'],              // Zdrojová třída fráze
-				(string)$r['builtin_code'],             // Kód fráze
-				(string)$r['module'],                   // Modul
-				(string)$r['svg_icon'],                 // SVG ikona
-				(string)$r['css_class'],                // CSS třída
-				(string)$r['editor_note'],              // Kontext pro AI
-				(string)$r['caption'],                  // Text v primárním jazyce
-				(string)$r['helptext'],                 // Tooltip v primárním jazyce
-				(string)$r['caption_l'],                // Text ve druhém jazyce
-				(string)$r['helptext_l']                // Tooltip ve druhém jazyce
-			];                                          // Konec pole hodnot fráze
-			$sheetPhrase->fromArray($phrase_vals, null, 'A' . $row_idx); // Zápis celého řádku do listu phrase
-			$row_idx++;                                 // Posun na další řádek
+		if (is_array($phrase_rows)) {                   // Kontrola platného pole frází
+			foreach ($phrase_rows as $r) {              // Průchod načtenými frázemi
+				$phrase_vals = [                        // Pole hodnot řádku fráze
+					(string)$r['source_code'],          // Zdrojová třída fráze
+					(string)$r['builtin_code'],         // Kód fráze
+					(string)$r['module'],               // Modul
+					(string)$r['svg_icon'],             // SVG ikona
+					(string)$r['css_class'],            // CSS třída
+					(string)$r['editor_note'],          // Kontext pro AI
+					(string)$r['caption'],              // Text v primárním jazyce
+					(string)$r['helptext'],             // Tooltip v primárním jazyce
+					(string)$r['caption_l'],            // Text ve druhém jazyce
+					(string)$r['helptext_l']            // Tooltip ve druhém jazyce
+				];                                      // Konec pole hodnot fráze
+				$sheetPhrase->fromArray($phrase_vals, null, 'A' . $row_idx); // Zápis celého řádku do listu phrase
+				$row_idx++;                             // Posun na další řádek
+			}
 		}
-		free_result($q_phrases);                        // Uvolnění výsledku dotazu frází
 
 		foreach (range('A', 'J') as $colId) {           // Nastavení šířek sloupců na záložce phrase
 			if ($colId === 'D') {                       // Sloupec s SVG ikonou
@@ -610,7 +637,7 @@ HTML;
 		$sheetClass->getStyle('A1:R1')->getFont()->setBold(true); // Tučné záhlaví záložky class
 		$sheetClass->freezePane('A2');                  // Ukotvení prvního řádku záhlaví
 
-		$q_classes = sqlrun("
+		$class_rows = sqlarray_simple("
 			SELECT
 				c.class_name,
 				ISNULL(mo.object_type, 'T') AS storage_type,
@@ -656,34 +683,35 @@ HTML;
 			  AND c.record_type = 'A'
 			  AND c.removed = 0
 			ORDER BY CASE WHEN c.class_name = 'sys_global_columns' THEN 0 ELSE 1 END, c.class_name
-		");                                             // Dotaz na logické třídy včetně předků pro vyhodnocení dědičnosti
+		");                                             // Načtení logických tříd včetně předků do pole
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce class
-		while ($r = fetch($q_classes)) {                // Průchod načtenými třídami
-			$class_vals = [                             // Pole hodnot řádku třídy
-				(string)$r['class_name'],               // Název logické třídy
-				(string)$r['storage_type'],             // Typ fyzického objektu (T, V, F, C)
-				(string)$r['storage_code'],             // Kód fyzické tabulky
-				(string)$r['ancestor_code'],            // Kód nadřízené třídy
-				(string)$r['sort_code'],                // Pořadí
-				$this->format_inherited_val($r['own_iconname'], $r['anc_iconname'], true), // Ikona (příp. <zděděná>)
-				(int)$r['is_final'],                    // Příznak is_final
-				(int)$r['is_protected'],                // Příznak is_protected
-				(int)$r['inactive'],                    // Příznak inactive
-				(string)$r['editor_note'],              // Kontext pro AI
-				$this->format_inherited_val($r['own_caption'], $r['anc_caption'], true),               // Název třídy
-				$this->format_inherited_val($r['own_caption_plural'], $r['anc_caption_plural'], true), // Množné číslo
-				$this->format_inherited_val($r['own_description'], $r['anc_description'], true),       // Popis třídy
-				$this->format_inherited_val($r['own_helptext'], $r['anc_helptext'], true),             // Nápověda třídy
-				$this->format_inherited_val($r['own_caption_l'], $r['anc_caption_l'], true),           // Překlad názvu
-				$this->format_inherited_val($r['own_caption_plural_l'], $r['anc_caption_plural_l'], true), // Překlad mn. č.
-				$this->format_inherited_val($r['own_description_l'], $r['anc_description_l'], true),   // Překlad popisu
-				$this->format_inherited_val($r['own_helptext_l'], $r['anc_helptext_l'], true)          // Překlad nápovědy
-			];                                          // Konec pole hodnot třídy
-			$sheetClass->fromArray($class_vals, null, 'A' . $row_idx); // Zápis řádku do listu class
-			$row_idx++;                                 // Posun na další řádek
+		if (is_array($class_rows)) {                    // Kontrola platného pole tříd
+			foreach ($class_rows as $r) {               // Průchod načtenými třídami
+				$class_vals = [                         // Pole hodnot řádku třídy
+					(string)$r['class_name'],           // Název logické třídy
+					(string)$r['storage_type'],         // Typ fyzického objektu (T, V, F, C)
+					(string)$r['storage_code'],         // Kód fyzické tabulky
+					(string)$r['ancestor_code'],        // Kód nadřízené třídy
+					(string)$r['sort_code'],            // Pořadí
+					$this->format_inherited_val($r['own_iconname'], $r['anc_iconname'], true), // Ikona (příp. <zděděná>)
+					(int)$r['is_final'],                // Příznak is_final
+					(int)$r['is_protected'],            // Příznak is_protected
+					(int)$r['inactive'],                // Příznak inactive
+					(string)$r['editor_note'],          // Kontext pro AI
+					$this->format_inherited_val($r['own_caption'], $r['anc_caption'], true),               // Název třídy
+					$this->format_inherited_val($r['own_caption_plural'], $r['anc_caption_plural'], true), // Množné číslo
+					$this->format_inherited_val($r['own_description'], $r['anc_description'], true),       // Popis třídy
+					$this->format_inherited_val($r['own_helptext'], $r['anc_helptext'], true),             // Nápověda třídy
+					$this->format_inherited_val($r['own_caption_l'], $r['anc_caption_l'], true),           // Překlad názvu
+					$this->format_inherited_val($r['own_caption_plural_l'], $r['anc_caption_plural_l'], true), // Překlad mn. č.
+					$this->format_inherited_val($r['own_description_l'], $r['anc_description_l'], true),   // Překlad popisu
+					$this->format_inherited_val($r['own_helptext_l'], $r['anc_helptext_l'], true)          // Překlad nápovědy
+				];                                      // Konec pole hodnot třídy
+				$sheetClass->fromArray($class_vals, null, 'A' . $row_idx); // Zápis řádku do listu class
+				$row_idx++;                             // Posun na další řádek
+			}
 		}
-		free_result($q_classes);                        // Uvolnění dotazu tříd
 
 		foreach (range('A', 'R') as $colId) {           // Automatická šířka sloupců na záložce class
 			$sheetClass->getColumnDimension($colId)->setAutoSize(true); // Nastavení auto-size sloupce
@@ -715,7 +743,7 @@ HTML;
 		$sheetCol->getStyle('A1:AN1')->getFont()->setBold(true); // Tučné záhlaví záložky column
 		$sheetCol->freezePane('A2');                    // Ukotvení prvního řádku záhlaví
 
-		$q_cols = sqlrun("
+		$col_rows = sqlarray_simple("
 			SELECT
 				mcl.class_name,
 				c.column_name,
@@ -810,56 +838,57 @@ HTML;
 			  AND c.record_type = 'A'
 			  AND c.removed = 0
 			ORDER BY CASE WHEN mcl.class_name = 'sys_global_columns' THEN 0 ELSE 1 END, mcl.class_name, c.parent_order, c.column_name
-		");                                             // Dotaz na sloupce metadat včetně hodnot zděděných z globálního slovníku
+		");                                             // Načtení sloupců metadat včetně hodnot zděděných z globálního slovníku
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce column
-		while ($r = fetch($q_cols)) {                   // Průchod načtenými sloupci metadat
-			$col_vals = [                               // Pole hodnot řádku sloupce
-				(string)$r['class_name'],               // Logická třída sloupce
-				(string)$r['column_name'],              // Název sloupce
-				(int)$r['parent_order'],                // Pořadí v tabulce
-				$this->format_inherited_val($r['own_sort_code'], $r['anc_sort_code'], true),             // Kód řazení
-				$this->format_inherited_val($r['own_list_order'], $r['anc_list_order'], false),          // Pořadí v Master panelu
-				$this->format_inherited_val($r['own_input_type'], $r['anc_input_type'], true),           // Typ inputu
-				$this->format_inherited_val($r['own_input_width'], $r['anc_input_width'], true),         // Šířka inputu
-				$this->format_inherited_val($r['own_input_rows'], $r['anc_input_rows'], false),          // Počet řádků textarea
-				$this->format_inherited_val($r['own_max_length'], $r['anc_max_length'], false),          // Maximální délka
-				$this->format_inherited_val($r['own_css_class'], $r['anc_css_class'], false),            // CSS třída
-				$this->format_inherited_val($r['own_translate'], $r['anc_translate'], false),            // Příznak překladu
-				$this->format_inherited_val($r['own_history'], $r['anc_history'], false),                // Příznak historie
-				$this->format_inherited_val($r['own_is_html'], $r['anc_is_html'], false),                // Příznak HTML
-				$this->format_inherited_val($r['own_is_mandatory'], $r['anc_is_mandatory'], false),      // Příznak povinnosti
-				$this->format_inherited_val($r['own_is_url'], $r['anc_is_url'], false),                  // Příznak URL
-				$this->format_inherited_val($r['own_is_computed'], $r['anc_is_computed'], false),        // Příznak computed
-				$this->format_inherited_val($r['own_show_empty'], $r['anc_show_empty'], false),          // Příznak show_empty
-				$this->format_inherited_val($r['own_hidden'], $r['anc_hidden'], false),                  // Příznak skrytí
-				$this->format_inherited_val($r['own_customizable'], $r['anc_customizable'], false),      // Příznak customizable
-				(string)$r['ancestor_column'],          // Název předka v sys_global_columns
-				$this->format_inherited_val($r['own_ref_codetable'], $r['anc_ref_codetable'], true),     // Číselník
-				$this->format_inherited_val($r['own_ref_class_code'], $r['anc_ref_class_code'], true),   // Odkazovaná třída
-				(int)$r['is_final'],                    // Příznak is_final
-				(int)$r['is_protected'],                // Příznak is_protected
-				(int)$r['inactive'],                    // Příznak inactive
-				(string)$r['editor_note'],              // Poznámka pro AI
-				$this->format_inherited_val($r['own_caption'], $r['anc_caption'], true),                 // Název
-				$this->format_inherited_val($r['own_caption_plural'], $r['anc_caption_plural'], true),   // Množné číslo
-				$this->format_inherited_val($r['own_description'], $r['anc_description'], true),         // Popis
-				$this->format_inherited_val($r['own_label'], $r['anc_label'], true),                     // Návěstí ve formuláři
-				$this->format_inherited_val($r['own_header'], $r['anc_header'], true),                   // Záhlaví v tabulce
-				$this->format_inherited_val($r['own_helptext'], $r['anc_helptext'], true),               // Nápověda
-				$this->format_inherited_val($r['own_placeholder'], $r['anc_placeholder'], true),         // Placeholder
-				$this->format_inherited_val($r['own_caption_l'], $r['anc_caption_l'], true),             // Překlad názvu
-				$this->format_inherited_val($r['own_caption_plural_l'], $r['anc_caption_plural_l'], true), // Překlad mn. č.
-				$this->format_inherited_val($r['own_description_l'], $r['anc_description_l'], true),     // Překlad popisu
-				$this->format_inherited_val($r['own_label_l'], $r['anc_label_l'], true),                 // Překlad návěstí
-				$this->format_inherited_val($r['own_header_l'], $r['anc_header_l'], true),               // Překlad záhlaví
-				$this->format_inherited_val($r['own_helptext_l'], $r['anc_helptext_l'], true),           // Překlad nápovědy
-				$this->format_inherited_val($r['own_placeholder_l'], $r['anc_placeholder_l'], true)     // Překlad placeholderu
-			];                                          // Konec pole hodnot sloupce
-			$sheetCol->fromArray($col_vals, null, 'A' . $row_idx); // Zápis řádku do listu column
-			$row_idx++;                                 // Posun na další řádek
+		if (is_array($col_rows)) {                      // Kontrola platného pole sloupců
+			foreach ($col_rows as $r) {                 // Průchod načtenými sloupci metadat
+				$col_vals = [                           // Pole hodnot řádku sloupce
+					(string)$r['class_name'],           // Logická třída sloupce
+					(string)$r['column_name'],          // Název sloupce
+					(int)$r['parent_order'],            // Pořadí v tabulce
+					$this->format_inherited_val($r['own_sort_code'], $r['anc_sort_code'], true),             // Kód řazení
+					$this->format_inherited_val($r['own_list_order'], $r['anc_list_order'], false),          // Pořadí v Master panelu
+					$this->format_inherited_val($r['own_input_type'], $r['anc_input_type'], true),           // Typ inputu
+					$this->format_inherited_val($r['own_input_width'], $r['anc_input_width'], true),         // Šířka inputu
+					$this->format_inherited_val($r['own_input_rows'], $r['anc_input_rows'], false),          // Počet řádků textarea
+					$this->format_inherited_val($r['own_max_length'], $r['anc_max_length'], false),          // Maximální délka
+					$this->format_inherited_val($r['own_css_class'], $r['anc_css_class'], false),            // CSS třída
+					$this->format_inherited_val($r['own_translate'], $r['anc_translate'], false),            // Příznak překladu
+					$this->format_inherited_val($r['own_history'], $r['anc_history'], false),                // Příznak historie
+					$this->format_inherited_val($r['own_is_html'], $r['anc_is_html'], false),                // Příznak HTML
+					$this->format_inherited_val($r['own_is_mandatory'], $r['anc_is_mandatory'], false),      // Příznak povinnosti
+					$this->format_inherited_val($r['own_is_url'], $r['anc_is_url'], false),                  // Příznak URL
+					$this->format_inherited_val($r['own_is_computed'], $r['anc_is_computed'], false),        // Příznak computed
+					$this->format_inherited_val($r['own_show_empty'], $r['anc_show_empty'], false),          // Příznak show_empty
+					$this->format_inherited_val($r['own_hidden'], $r['anc_hidden'], false),                  // Příznak skrytí
+					$this->format_inherited_val($r['own_customizable'], $r['anc_customizable'], false),      // Příznak customizable
+					(string)$r['ancestor_column'],      // Název předka v sys_global_columns
+					$this->format_inherited_val($r['own_ref_codetable'], $r['anc_ref_codetable'], true),     // Číselník
+					$this->format_inherited_val($r['own_ref_class_code'], $r['anc_ref_class_code'], true),   // Odkazovaná třída
+					(int)$r['is_final'],                // Příznak is_final
+					(int)$r['is_protected'],            // Příznak is_protected
+					(int)$r['inactive'],                // Příznak inactive
+					(string)$r['editor_note'],          // Poznámka pro AI
+					$this->format_inherited_val($r['own_caption'], $r['anc_caption'], true),                 // Název
+					$this->format_inherited_val($r['own_caption_plural'], $r['anc_caption_plural'], true),   // Množné číslo
+					$this->format_inherited_val($r['own_description'], $r['anc_description'], true),         // Popis
+					$this->format_inherited_val($r['own_label'], $r['anc_label'], true),                     // Návěstí ve formuláři
+					$this->format_inherited_val($r['own_header'], $r['anc_header'], true),                   // Záhlaví v tabulce
+					$this->format_inherited_val($r['own_helptext'], $r['anc_helptext'], true),               // Nápověda
+					$this->format_inherited_val($r['own_placeholder'], $r['anc_placeholder'], true),         // Placeholder
+					$this->format_inherited_val($r['own_caption_l'], $r['anc_caption_l'], true),             // Překlad názvu
+					$this->format_inherited_val($r['own_caption_plural_l'], $r['anc_caption_plural_l'], true), // Překlad mn. č.
+					$this->format_inherited_val($r['own_description_l'], $r['anc_description_l'], true),     // Překlad popisu
+					$this->format_inherited_val($r['own_label_l'], $r['anc_label_l'], true),                 // Překlad návěstí
+					$this->format_inherited_val($r['own_header_l'], $r['anc_header_l'], true),               // Překlad záhlaví
+					$this->format_inherited_val($r['own_helptext_l'], $r['anc_helptext_l'], true),           // Překlad nápovědy
+					$this->format_inherited_val($r['own_placeholder_l'], $r['anc_placeholder_l'], true)      // Překlad placeholderu
+				];                                      // Konec pole hodnot sloupce
+				$sheetCol->fromArray($col_vals, null, 'A' . $row_idx); // Zápis řádku do listu column
+				$row_idx++;                             // Posun na další řádek
+			}
 		}
-		free_result($q_cols);                           // Uvolnění dotazu sloupců
 
 		foreach (range('A', 'Z') as $colId) {           // Automatická šířka sloupců A až Z na záložce column
 			$sheetCol->getColumnDimension($colId)->setAutoSize(true); // Nastavení auto-size sloupce
@@ -886,49 +915,119 @@ HTML;
 	 * Vykreslí načtená data a případné logovací zprávy.
 	 */
 	protected function render_results(): void {
+		echo <<<HTML
+		<style>
+			.xlsx-msg-wrap table {
+				border-collapse: collapse;
+				border: 1px solid #64748b;
+				font-size: 12px;
+				margin-bottom: 18px;
+			}
+			.xlsx-msg-wrap th {
+				background-color: #a5c4d4;
+				color: #000;
+				border: 1px solid #64748b;
+				padding: 4px 8px;
+				text-align: center;
+				font-weight: bold;
+			}
+			.xlsx-msg-wrap td {
+				background-color: #dbe4f0;
+				border: 1px solid #64748b;
+				padding: 4px 8px;
+			}
+			table.xlsx-preview {
+				border-collapse: collapse;
+				border: 1px solid #64748b;
+				font-size: 12px;
+				margin: 5px 0 22px 0;
+				width: auto;
+			}
+			table.xlsx-preview th,
+			table.xlsx-preview td {
+				border: 1px solid #888;
+				padding: 3px 6px;
+				vertical-align: top;
+			}
+			table.xlsx-preview td {
+				max-width: 300px;
+				white-space: pre-wrap;
+				word-break: break-word;
+				overflow-wrap: break-word;
+			}
+			table.xlsx-preview tr.sheet-title th {
+				text-align: left;
+				font-size: 13px;
+				font-weight: bold;
+				padding: 4px 8px;
+			}
+			table.xlsx-preview tr.sheet-title th.mand-sheet {
+				background-color: #cbd5e1;
+				color: #000;
+			}
+			table.xlsx-preview tr.sheet-title th.opt-sheet {
+				background-color: yellow;
+				color: #000;
+			}
+			table.xlsx-preview tr.col-headers th {
+				position: sticky;
+				top: 0;
+				z-index: 2;
+				font-weight: bold;
+				text-align: center;
+			}
+			table.xlsx-preview tr.col-headers th.mandatory {
+				background-color: #a5c4d4;
+				color: #000;
+			}
+			table.xlsx-preview tr.col-headers th.optional {
+				background-color: yellow;
+				color: #000;
+			}
+			table.xlsx-preview tbody tr.row-odd td {
+				background-color: #ffffff;
+			}
+			table.xlsx-preview tbody tr.row-even td {
+				background-color: #e2e8f0;
+			}
+			table.xlsx-preview tbody tr:hover td {
+				background-color: #dbeafe;
+			}
+		</style>
+HTML;
+
 		// Vypsání zpráv nasbíraných třídou request_message
-		echo "<div style='margin: 15px 0;'>{$this->reader->rqm}</div>"; // Výpis tabulky výsledkových zpráv
+		echo "<div class='xlsx-msg-wrap' style='margin: 5px 0 15px 0;'>{$this->reader->rqm}</div>"; // Výpis tabulky výsledkových zpráv
 
 		// Zobrazení dat v HTML tabulkách pro režim náhledu
 		if ($this->import_mode === '0') {               // Kontrola, zda je zvolen režim pouhého zobrazení
 			$max_display_rows = 500;                    // Maximální počet vykreslovaných řádků v náhledu
-			
-			echo <<<HTML
-			<style>
-				.md-table td { max-width: 300px; white-space: pre-wrap; word-break: break-word; }
-				.md-table th.optional { background-color: #fef08a !important; color: #854d0e; }
-				.md-table th.mandatory { background-color: #e9f2fa !important; }
-			</style>
-HTML;
-
-			$msg_outside = htmlspecialchars($this->phrase('msg_data_outside_table', [], '(Data zasahují i mimo rozeznanou tabulku)')); // Text varování mimo tabulku
+			$msg_outside = htmlspecialchars($this->phrase('msg_data_outside_table', [], 'Data jsou i mimo tabulku')); // Text varování mimo tabulku
 
 			foreach ($this->reader->data as $tn => $table) { // Průchod načtenými záložkami
 				if (!$table) {                          // Přeskočení prázdné definice tabulky
 					continue;                           // Pokračování na další záložku
 				}
 				
-				$col_count = $table['column_count'];    // Počet sloupců aktuální záložky
-				$row_count = $table['row_count'];       // Počet datových řádků aktuální záložky
-				$mimo_text = !empty($table['mimo']) ? "<span style='color: #dc2626; margin-left: 10px;'>{$msg_outside}</span>" : ""; // Varování při datech mimo tabulku
+				$col_count = (int)$table['column_count']; // Počet sloupců aktuální záložky
+				$row_count = (int)$table['row_count'];    // Počet datových řádků aktuální záložky
+				$span_cols = ($col_count > 0) ? $col_count : 1; // Bezpečný colspan i pro prázdnou záložku
+				$mimo_text = !empty($table['mimo']) ? " <span style='color: red; font-weight: bold;'>{$msg_outside}</span>" : ""; // Varování při datech mimo tabulku
 				
-				$is_mandatory_table = $this->reader->is_mandatory_table($tn); // Zjištění, zda je záložka povinná
-				$header_bg = $is_mandatory_table ? "background-color: #e2e8f0; color: #0f172a;" : "background-color: #fef08a; color: #854d0e;"; // Styl záhlaví tabulky
-				$sheet_header = htmlspecialchars($this->phrase(
-					'sheet_header_info',                // Kód fráze záhlaví záložky
-					['sheet' => $tn, 'rows' => $row_count, 'cols' => $col_count], // Proměnné pro interpolaci
-					'Záložka: {' . chr(36) . 'sheet} [{' . chr(36) . 'rows} řádků, {' . chr(36) . 'cols} sloupců]' // Výchozí šablona záhlaví
-				));
+				$is_mandatory_table = $this->reader->is_mandatory_table((string)$tn); // Zjištění, zda je záložka povinná
+				$sheet_cls = $is_mandatory_table ? "mand-sheet" : "opt-sheet"; // CSS třída záhlaví tabulky
+				$safe_tn = htmlspecialchars((string)$tn); // Ošetřený název záložky
+				$rozmer = " [{$row_count},{$col_count}]"; // Rozměr tabulky ve formátu [řádky,sloupce]
 				
-				echo "<table class='md-table' style='margin-bottom: 30px;'>";
+				echo "<table class='xlsx-preview'>";
 				echo "<thead>";
-				echo "<tr><th colspan='{$col_count}' style='font-size: 14px; {$header_bg}'>{$sheet_header} {$mimo_text}</th></tr>";
-				echo "<tr>";
+				echo "<tr class='sheet-title'><th colspan='{$span_cols}' class='{$sheet_cls}'>{$safe_tn}{$rozmer}{$mimo_text}</th></tr>";
+				echo "<tr class='col-headers'>";
 				
 				foreach ($table['column_list'] as $colname) { // Výpis názvů sloupců záložky
 					$is_mand_col = isset($table['mandatory_column_list'][$colname]); // Kontrola povinnosti sloupce
 					$th_class = $is_mand_col ? "class='mandatory'" : "class='optional'"; // Přiřazení CSS třídy buňce záhlaví
-					echo "<th {$th_class}>" . htmlspecialchars($colname) . "</th>"; // Buňka záhlaví sloupce
+					echo "<th {$th_class}>" . htmlspecialchars((string)$colname) . "</th>"; // Buňka záhlaví sloupce
 				}
 				echo "</tr>";
 				echo "</thead>";
@@ -942,14 +1041,15 @@ HTML;
 							['max' => $max_display_rows, 'total' => $row_count], // Proměnné pro interpolaci
 							'... Zobrazeno pouze prvních {' . chr(36) . 'max} z celkových {' . chr(36) . 'total} řádků ...' // Výchozí text
 						));
-						echo "<tr><td colspan='{$col_count}' style='text-align:center; font-style:italic; background-color:#f8fafc; color: #64748b;'>{$trunc_msg}</td></tr>"; // Řádek informace o zkrácení
+						echo "<tr><td colspan='{$span_cols}' style='text-align:center; font-style:italic; background-color:#f0f0f0; color: #333;'>{$trunc_msg}</td></tr>"; // Řádek informace o zkrácení
 						break;                          // Ukončení výpisu řádků záložky
 					}
 					
-					echo "<tr>";
+					$row_cls = (($num % 2) === 0) ? 'row-odd' : 'row-even'; // Střídání barev lichých a sudých řádků
+					echo "<tr class='{$row_cls}'>";
 					foreach ($table['column_list'] as $cn) { // Výpis hodnot buněk v řádku
-						$val = $rv[$cn] ?? '';          // Hodnota buňky pro zobrazení v tabulce
-						echo "<td>" . htmlspecialchars((string)$val) . "</td>"; // Buňka dat
+						$val = (string)($rv[$cn] ?? ''); // Hodnota buňky pro zobrazení v tabulce
+						echo "<td>" . nl2br(htmlspecialchars($val)) . "</td>"; // Buňka dat se zachováním konců řádků
 					}
 					echo "</tr>";
 					$num++;                             // Inkrementace počitadla vypsaných řádků
@@ -989,16 +1089,18 @@ HTML;
 		echo "-- Tato dávka vkládá data do dočasných tabulek a v závěru volá proceduru pro jejich import.\n";
 		echo "-- Případné chyby hlaste dodavateli RAMSES (hink@rac.cz).\n\n";
 		echo "/* Content description:\n\n{$pc->description}\n\n*/\n\n"; // Popis obsahu balíčku
+		echo "execute p_drop_excel_tables @print_message=0\nGO\n\n";
 		echo "-- Creating temporary tables\n";
 
 		// Průchod mandatory tabulkami a export jejich INSERT struktury
 		foreach ($pc->mandatory_tables as $t) {         // Export jednotlivých staging tabulek
 			$safe_table = charliteral($this->table_prefix . $t . chr(36)); // Sestavení názvu staging tabulky včetně znaku '$'
-			$a = sqlarray_simple("execute p_export_to_sql {$safe_table}, {$safe_table}, @output_as_sqlresult=1"); // Získání DDL a INSERTů
+			$a = sqlarray_simple("SET NOCOUNT ON; execute p_export_to_sql {$safe_table}, {$safe_table}, @output_as_sqlresult=1"); // Získání DDL a INSERTů
 			
 			if (is_array($a)) {                         // Pokud procedura vrátila řádky SQL skriptu
 				foreach ($a as $row) {                  // Výpis jednotlivých řádků skriptu
-					echo "\n{$row['txt']}";             // Výpis vygenerovaného řádku DDL/DML
+					$txt = (string)($row['txt'] ?? $row[0] ?? ''); // Bezpečné přečtení sloupce txt
+					echo "\n{$txt}";                    // Výpis vygenerovaného řádku DDL/DML
 				}
 			}
 			echo "\n";
@@ -1007,8 +1109,8 @@ HTML;
 		$n = charliteral((string)$pc->import_name);     // Název importu jako bezpečný SQL literál
 		$v = charliteral((string)$pc->version_date);    // Datum verze balíčku jako bezpečný SQL literál
 
-		// Závěr SQL skriptu s voláním distribuční procedury
-		echo "\nGO\nset xact_abort on\nbegin tran\nexecute p_request_messages_start\nexecute p_xlsx_{$code}\nexecute insert_request_message {$n}, 1, @charvalue={$v}\ncommit\nGO\n"; // Závěrečný blok dávky
+		// Závěr SQL skriptu s voláním distribuční procedury a úklidem staging tabulek
+		echo "\nGO\nset xact_abort on\nbegin tran\nexecute p_request_messages_start\nexecute p_xlsx_{$code} @import_mode='2'\nexecute insert_request_message {$n}, 1, @charvalue={$v}\ncommit\nGO\nexecute p_drop_excel_tables @print_message=0\nGO\n"; // Závěrečný blok dávky
 		exit;                                           // Okamžité ukončení běhu PHP skriptu
 	}
 }

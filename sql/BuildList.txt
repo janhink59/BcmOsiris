@@ -1,6 +1,7 @@
 F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
 
 system_constant.sql
+table_user_session.sql
 table_*.sql
 f_*.sql
 fillup_meta_original_keys.sql

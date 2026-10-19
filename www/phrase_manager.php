@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-18 12:35
+ * Verze: 2026-10-19 14:45
  * Soubor: phrase_manager.php
  * Třída: phrase_manager
  * Účel: Centralizovaný správce pro dávkové načítání, kešování, lokalizaci
@@ -17,6 +17,9 @@
  *   pro vykreslování tlačítek ve třídě `abstract_button`.
  *
  * Změny:
+ * 2026-10-19 14:45 - Čtení z DB v check_table_exists() a load_sources() převedeno
+ *                    na sqlfirstrow() a sqlarray_simple() kvůli ochraně $dbquery.
+ *                  - Opraveny chybějící mezery před znakem $ v celém souboru.
  * 2026-10-15 - První verze třídy s podporou reflexe dědičnosti, dávkového SQL dotazu,
  *              interpolace proměnných {$var} a automatického zápisu chybějících frází.
  * 2026-10-15 - Oprava mezer kolem proměnných a doplnění automatické registrace
@@ -73,11 +76,10 @@ class phrase_manager {
 	 * Ověří, zda v databázi již existuje tabulka meta_phrase (pojistka pro postupné nasazení).
 	 */
 	private function check_table_exists(): void {
-		$q = sqlrun("SELECT OBJECT_ID('meta_phrase') AS obj_id");            // Dotaz na existenci tabulky
-		if ($row = fetch($q)) {                                              // Načtení výsledku kontroly tabulky
+		$row = sqlfirstrow("SELECT OBJECT_ID('meta_phrase') AS obj_id");     // Dotaz na existenci tabulky přes sqlfirstrow
+		if (!empty($row)) {                                                  // Načtení výsledku kontroly tabulky
 			$this->table_exists = !empty($row['obj_id']);                    // Nastavení příznaku existence
 		}
-		free_result($q);                                                     // Uvolnění výsledku dotazu
 	}
 
 	/**
@@ -109,7 +111,7 @@ class phrase_manager {
 			if ($type instanceof ReflectionNamedType AND !$type->isBuiltin()) { // Pokud jde o objektovou vlastnost
 				$prop_class = $type->getName();                              // Název třídy typované vlastnosti
 				if (!in_array($prop_class, $chain, true)) {                  // Kontrola duplicity v seznamu
-					$chain[] =$prop_class;                                  // Přidání komponenty do seznamu
+					$chain[] = $prop_class;                                  // Přidání komponenty do seznamu
 				}
 			}
 		}
@@ -129,7 +131,7 @@ class phrase_manager {
 		}
 
 		$new_sources = [];                                                   // Seznam dosud nenačtených tříd
-		foreach (array_unique($sources) as$src) {                           // Průchod unikátními názvy tříd
+		foreach (array_unique($sources) as $src) {                           // Průchod unikátními názvy tříd
 			$src_key = (string)$src;                                         // Převod na řetězec
 			if (!isset($this->loaded_sources[$src_key])) {                   // Pokud zdroj ještě nebyl načten
 				$new_sources[] = charliteral($src_key);                      // SQL literál názvu třídy
@@ -144,14 +146,14 @@ class phrase_manager {
 			return;                                                          // Ukončení bez SQL dotazu
 		}
 
-		$in_clause = implode(', ',$new_sources);                            // Složení klauzule IN (...)
-		$lang_chain =$this->lang_manager->get_fallback_chain();             // Fallback řetězec jazyků
+		$in_clause = implode(', ', $new_sources);                            // Složení klauzule IN (...)
+		$lang_chain = $this->lang_manager->get_fallback_chain();             // Fallback řetězec jazyků
 
 		$coal_caption = [];                                                  // Kaskáda pro sloupec caption
 		$coal_helptext = [];                                                 // Kaskáda pro sloupec helptext
 		$joins = "";                                                         // Dynamické LEFT JOINy pro jazyky
 
-		foreach ($lang_chain as$lang) {                                     // Sestavení COALESCE a JOINů pro jazyky
+		foreach ($lang_chain as $lang) {                                     // Sestavení COALESCE a JOINů pro jazyky
 			$coal_caption[] = "NULLIF(CAST(v_{$lang}.caption AS NVARCHAR(MAX)), '')"; // Překlad tenanta (caption)
 			$coal_caption[] = "NULLIF(CAST(l_{$lang}.caption AS NVARCHAR(MAX)), '')"; // Systémový překlad (caption)
 
@@ -205,18 +207,19 @@ class phrase_manager {
 		{$joins}
 		";                                                                   // Sestavený dávkový SQL dotaz frází
 
-		$q = sqlrun($sql);                                                   // Spuštění dávkového dotazu frází
-		while ($row = fetch($q)) {                                           // Průchod načtenými frázemi
-			$src = (string)$row['source_code'];                              // Zdrojová třída fráze
-			$code = (string)$row['builtin_code'];                            // Kód konkrétní fráze
-			$this->phrases[$src][$code] = [                                  // Uložení atributů fráze do keše
-				'caption'   => (string)$row['caption'],                      // Přeložený text fráze
-				'helptext'  => (string)$row['helptext'],                     // Přeložená nápověda / tooltip
-				'svg_icon'  => (string)$row['svg_icon'],                     // Kód vektorové ikony SVG
-				'css_class' => (string)$row['css_class']                     // Doplňková CSS třída
-			];                                                               // Konec položky keše
+		$rows = sqlarray_simple($sql);                                       // Načtení všech frází do pole přes sqlarray_simple
+		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
+			foreach ($rows as $row) {                                        // Průchod načtenými frázemi v paměti
+				$src = (string)$row['source_code'];                          // Zdrojová třída fráze
+				$code = (string)$row['builtin_code'];                        // Kód konkrétní fráze
+				$this->phrases[$src][$code] = [                              // Uložení atributů fráze do keše
+					'caption'   => (string)$row['caption'],                  // Přeložený text fráze
+					'helptext'  => (string)$row['helptext'],                 // Přeložená nápověda / tooltip
+					'svg_icon'  => (string)$row['svg_icon'],                 // Kód vektorové ikony SVG
+					'css_class' => (string)$row['css_class']                 // Doplňková CSS třída
+				];                                                           // Konec položky keše
+			}
 		}
-		free_result($q);                                                     // Uvolnění výsledku dávkového dotazu
 	}
 
 	/**
@@ -251,7 +254,7 @@ class phrase_manager {
 			}
 		} else {
 			// 2. Prohledání celého řetězce dědičnosti (potomek -> předek -> globální '')
-			foreach ($this->lookup_chain as$src) {                          // Průchod hierarchií tříd stránky
+			foreach ($this->lookup_chain as $src) {                          // Průchod hierarchií tříd stránky
 				if (isset($this->phrases[$src][$builtin_code])) {            // Kontrola existence v dané vrstvě
 					return $this->phrases[$src][$builtin_code];              // Nalezeno v hierarchii stránky
 				}
@@ -270,11 +273,11 @@ class phrase_manager {
 		];                                                                   // Konec výchozí struktury
 
 		// Uložíme do paměti pro tento request, abychom neprováděli opakované INSERTy
-		$this->phrases[$target_source][$builtin_code] =$meta;               // Zápis do lokální keše
+		$this->phrases[$target_source][$builtin_code] = $meta;               // Zápis do lokální keše
 
 		// Pokud máme smysluplný výchozí text a tabulka existuje, zapíšeme chybějící frázi do DB
-		if ($this->table_exists AND$default_caption !== '') {               // Podmínka pro auto-discovery zápis
-			$this->auto_register_phrase($target_source, $builtin_code,$default_caption, $default_svg,$default_css); // Zápis do DB
+		if ($this->table_exists AND $default_caption !== '') {               // Podmínka pro auto-discovery zápis
+			$this->auto_register_phrase($target_source, $builtin_code, $default_caption, $default_svg, $default_css); // Zápis do DB
 		}
 
 		return $meta;                                                        // Vrácení metadat fráze
@@ -295,8 +298,8 @@ class phrase_manager {
 		string $default_caption = '',                                        // Výchozí český popisek
 		string $source_code = ''                                             // Volitelná zdrojová třída
 	): string {
-		$meta = $this->get_meta($builtin_code, $default_caption,$source_code); // Načtení metadat fráze
-		return $this->interpolate($meta['caption'],$vars);                  // Vrácení textu po dosazení proměnných
+		$meta = $this->get_meta($builtin_code, $default_caption, $source_code); // Načtení metadat fráze
+		return $this->interpolate($meta['caption'], $vars);                  // Vrácení textu po dosazení proměnných
 	}
 
 	/**
@@ -307,18 +310,18 @@ class phrase_manager {
 	 * @param array<string, mixed> $vars Explicitně předané proměnné
 	 * @return string Text s nahrazenými hodnotami
 	 */
-	public function interpolate(string $text, array$vars = []): string {    // Interpolace proměnných v textu fráze
+	public function interpolate(string $text, array $vars = []): string {    // Interpolace proměnných v textu fráze
 		if (!str_contains($text, '{' . chr(36))) {                           // Kontrola přítomnosti znaku proměnné
 			return $text;                                                    // Rychlý návrat pokud text nemá proměnné
 		}
 
 		$pattern = '/\{' . '\\' . chr(36) . '([a-zA-Z0-9_]+)\}/';            // Regulární výraz pro {$identifikator}
 		return (string)preg_replace_callback($pattern, function(array $matches) use ($vars): string { // Callback náhrady
-			$var_name =$matches[1];                                         // Název nalezené proměnné bez {$}
-			if (array_key_exists($var_name,$vars)) {                        // Hledání v explicitně předaném poli
+			$var_name = $matches[1];                                         // Název nalezené proměnné bez {$}
+			if (array_key_exists($var_name, $vars)) {                        // Hledání v explicitně předaném poli
 				return (string)$vars[$var_name];                             // Přednost má explicitně předaná proměnná
 			}
-			if (array_key_exists($var_name,$GLOBALS) AND is_scalar($GLOBALS[$var_name])) { // Hledání v globálním kontextu
+			if (array_key_exists($var_name, $GLOBALS) AND is_scalar($GLOBALS[$var_name])) { // Hledání v globálním kontextu
 				return (string)$GLOBALS[$var_name];                          // Fallback na skalární globální proměnnou
 			}
 			return $matches[0];                                              // Ponechání původního zástupce při nenalezení

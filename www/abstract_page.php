@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-15 22:45
+ * Verze: 2026-10-19 14:45
  * Soubor: abstract_page.php
  * Třída: abstract_page
  * Účel: Základní abstraktní třída pro objektově orientované stránky.
@@ -25,6 +25,11 @@
  *      pro vykreslení cesty v menu a dropdown roletek.
  * 
  * Změny:
+ * 2026-10-19 14:45 - Přidána vlastnost $full_width umožňující potomkům (např. náhledu
+ *                    tabulek v page_excel_reader) roztáhnout .page-panel na plnou šířku.
+ *                  - Doplněno centrální stylování tabulek .md-table.
+ *                  - V check_system_role_access() nahrazeno sqlrun/fetch za sqlfirstrow()
+ *                    a operátory &&/|| nahrazeny za AND/OR (Anti-LaTeX pravidlo).
  * 2026-10-15 22:45 - Oprava podmínky volání process_save() v render() výhradně
  *                    na HTTP metodu POST (zamezení spouštění při GET požadavcích).
  * 2026-10-15 22:20 - Integrace phrase_manager, metody process_save() a fail-safe
@@ -48,6 +53,11 @@ abstract class abstract_page {
 	 * Příznak zamezení přístupu. Vyhodnocuje předek dle meta_object i potomek v konstruktoru.
 	 */
 	protected bool $access_denied = false;                                   // Příznak odepření přístupu ke stránce
+
+	/**
+	 * Příznak roztažení hlavního panelu (.page-panel) na plnou šířku okna prohlížeče.
+	 */
+	protected bool $full_width = false;                                      // Příznak plné šířky obsahu stránky
 
 	/**
 	 * Instance správce frází načtená pro hierarchii aktuální stránky.
@@ -78,12 +88,12 @@ abstract class abstract_page {
 	 */
 	protected function check_system_role_access(): void {
 		global $dbsession;                                                   // Globální kontext relace
-		if (empty($dbsession) || !isset($dbsession['active_role'])) {
-			return;
+		if (empty($dbsession) OR !isset($dbsession['active_role'])) {
+			return;                                                          // Pokud relace není inicializována, neblokujeme
 		}
 
 		$active_role = (string)$dbsession['active_role'];                    // Aktuální role uživatele (U, A, S, D)
-		if ($active_role === 'S' || $active_role === 'D') {
+		if ($active_role === 'S' OR $active_role === 'D') {
 			return;                                                          // Sysadmin a Developer mají přístup vždy
 		}
 
@@ -98,18 +108,17 @@ abstract class abstract_page {
 		  AND record_type = 'A'
 		  AND removed = 0
 		ORDER BY CASE WHEN object_owner = 0x00 THEN 1 ELSE 0 END
-		";
+		";                                                                   // Dotaz na požadovanou roli stránky
 
-		$q = sqlrun($sql);                                                   // Dotaz na požadovanou roli stránky
-		if ($row = fetch($q)) {
+		$row = sqlfirstrow($sql);                                            // Načtení prvního řádku bez otevřeného kurzoru
+		if (!empty($row) AND isset($row['system_role'])) {
 			$req_role = (string)$row['system_role'];                         // Minimální vyžadovaná role (U, A, S, D)
-			if ($active_role === 'A' && !in_array($req_role, ['U', 'A'], true)) {
+			if ($active_role === 'A' AND !in_array($req_role, ['U', 'A'], true)) {
 				$this->access_denied = true;                                 // Orgadmin nesmí na stránky S a D
-			} elseif ($active_role === 'U' && $req_role !== 'U') {
+			} elseif ($active_role === 'U' AND $req_role !== 'U') {
 				$this->access_denied = true;                                 // Běžný uživatel smí pouze na stránky U
 			}
 		}
-		free_result($q);                                                     // Uvolnění výsledku dotazu
 	}
 
 	/**
@@ -142,7 +151,7 @@ abstract class abstract_page {
 		$this->check_system_role_access();                                   // Pojistka kontroly oprávnění
 
 		// Zpracování formulářových akcí (POST / PRG přesměrování) před výpisem HTML
-		if (!$this->access_denied && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+		if (!$this->access_denied AND ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
 			$this->process_save();                                           // Spuštění ukládací logiky potomka pouze při POST
 		}
 
@@ -152,13 +161,14 @@ abstract class abstract_page {
 		// Načtení globálního správce menu pro drobečkovou navigaci
 		global $menu_manager, $dbsession;                                    // Přístup k navigaci a relaci
 		$breadcrumbs_html = '';                                              // HTML kód drobečkové navigace
-		if (isset($menu_manager) && is_object($menu_manager)) {
+		if (isset($menu_manager) AND is_object($menu_manager)) {
 			$breadcrumbs_html = $menu_manager->render_breadcrumbs();         // Vykreslení drobečkové navigace
 		}
 
-		$lang_code = htmlspecialchars((string)($dbsession['language'] ?? 'cs'));
+		$lang_code = htmlspecialchars((string)($dbsession['language'] ?? 'cs')); // Kód jazyka do atributu html
 		$safe_title = htmlspecialchars($this->page_title);                   // Bezpečný titulek stránky
-		$unsaved_msg = addslashes($this->phrase('msg_unsaved_changes', [], 'Máte neuložené změny. Opravdu chcete stránku opustit?'));
+		$unsaved_msg = addslashes($this->phrase('msg_unsaved_changes', [], 'Máte neuložené změny. Opravdu chcete stránku opustit?')); // Text varování
+		$panel_cls = $this->full_width ? 'page-panel page-panel-full' : 'page-panel'; // Volba šířky hlavního panelu
 
 		echo <<<HTML
 <!DOCTYPE html>
@@ -183,11 +193,31 @@ abstract class abstract_page {
 			margin: 15px auto; /* Dynamické odsazení od pruhu a okrajů */
 			max-width: 800px; 
 		}
+		.page-panel.page-panel-full {
+			max-width: none;
+			margin: 10px 15px;
+			overflow-x: auto;
+		}
 		h1.page-heading { 
 			color: #004488; 
 			margin-top: 0; 
 			border-bottom: 2px solid #eee; 
 			padding-bottom: 10px; 
+		}
+		.md-table {
+			width: 100%;
+			border-collapse: collapse;
+			font-size: 13px;
+		}
+		.md-table th, .md-table td {
+			border: 1px solid #cbd5e1;
+			padding: 6px 10px;
+			text-align: left;
+			vertical-align: top;
+		}
+		.md-table th {
+			background-color: #f1f5f9;
+			font-weight: bold;
 		}
 		.btn { 
 			display: inline-flex; 
@@ -243,11 +273,11 @@ abstract class abstract_page {
 	{$breadcrumbs_html}
 	
 	<!-- Hlavní obálka pro obsah specifické stránky -->
-	<div class="page-panel">
+	<div class="{$panel_cls}">
 HTML;
 		
 		if ($this->access_denied) {
-			$denied_msg = htmlspecialchars($this->phrase('msg_access_denied', [], 'Přístup odepřen. K zobrazení této stránky nemáte dostatečná oprávnění.'));
+			$denied_msg = htmlspecialchars($this->phrase('msg_access_denied', [], 'Přístup odepřen. K zobrazení této stránky nemáte dostatečná oprávnění.')); // Chybová zpráva
 			echo "<div class='msg-err'>{$denied_msg}</div>\n";
 		} else {
 			// Vykreslení specifického obsahu konkrétní stránky
