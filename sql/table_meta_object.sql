@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-18 12:35
+ * Verze: 2026-10-20 11:25
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
@@ -27,6 +27,8 @@
  *            cyklus (SSC) a zaregistrována univerzální schvalovací stránka page_approval.
  *          - 2026-10-18 12:35: Doplněny unikátní indexy uq_meta_object_active a
  *            uq_meta_object_language a symetrické 'L' záznamy pro výchozí stránky.
+ *          - 2026-10-20 11:25: Bezejmenný záznam '' pro globální fráze nahrazen řádnou
+ *            PHP třídou 'global_phrase' a původní záznam '' idempotentně odstraněn.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -125,7 +127,7 @@ EXEC sp_create_index
 GO
 
 -- -----------------------------------------------------------------------------
--- Vyčištění zastaralých systémových záznamů (fráze 'G' a stránky bez prefixu 'page_')
+-- Vyčištění zastaralých systémových záznamů (fráze 'G', bezejmenný '' a stránky bez prefixu 'page_')
 -- -----------------------------------------------------------------------------
 DELETE FROM meta_object
 WHERE object_owner = 0x00
@@ -134,7 +136,7 @@ WHERE object_owner = 0x00
 	OR (
 		object_type = 'P'
 		AND builtin_code IN (
-			'excel_reader', 'main', 'meta_class', 'meta_column',
+			'', 'excel_reader', 'main', 'meta_class', 'meta_column',
 			'organization_licence', 'org_users', 'change_user_context', 'logout'
 		)
 	)
@@ -150,7 +152,7 @@ DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 
 DECLARE @pages TABLE (builtin_code varchar(80), caption varchar(200), description varchar(max), system_role varchar(1));
 INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES 
-('', 'Globální fráze systému', 'Bezejmenný kontejner pro celosystémové textové fráze a sdílené popisky', 'U'),
+('global_phrase', 'Globální fráze systému', 'Třída a kontejner pro celosystémové textové fráze a sdílené popisky', 'U'),
 ('abstract_page', 'Základní šablona stránky', 'Abstraktní předek všech stránek zajišťující hlavičku, kontext a ochranu formulářů', 'U'),
 ('abstract_page_master_detail', 'Šablona Master-Detail', 'Abstraktní dvoupanelová šablona pro správu entit', 'U'),
 ('abstract_button', 'Komponenta tlačítka', 'Základní třída pro vykreslování tlačítek s ikonou a tooltipem', 'U'),

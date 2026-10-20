@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-18 18:15
+ * Verze: 2026-10-20 13:10
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -50,6 +50,11 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-20 13:10 - Doplněn přepínač "Zobrazit i zrušené" (show_removed) do hlavičky
+ *                    levého Master panelu s vizuálním odlišením zrušených záznamů.
+ *                  - V detailním panelu doplněno automatické vykreslení checkboxu
+ *                    removed (s JS potvrzením a kontrolou oprávnění v entity_manager)
+ *                    pro zrušení nebo obnovení záznamu či jazykové mutace.
  * 2026-10-18 18:15 - Převedení čtení dat v render_master() na sqlarray_simple()
  *                    a v render_detail() na sqlfirstrow(), aby vnořené dotazy
  *                    nikdy neuvolnily globální $dbquery v OsirisLib.php.
@@ -99,7 +104,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 		}
 		$page = basename($page, '.php');                                     // Očištění názvu stránky
 		if (!str_starts_with($page, 'page_')) {                              // Kontrola přítomnosti předpony page_
-			$page = 'page_' . $page;                                         // Sjednocení na předponu page_
+			$page = 'page_' .$page;                                         // Sjednocení na předponu page_
 		}
 		return $page;                                                        // Vrácení plného názvu stránky
 	}
@@ -112,7 +117,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 */
 	protected function get_context_url_suffix(): string {
 		$url_suffix = '';                                                    // Výchozí prázdný přívažek URL
-		foreach (['parent_object', 'parent_class', 'menu_code'] as $ctx_param) { // Průchod kontextovými parametry
+		foreach (['parent_object', 'parent_class', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
 			$val = (string)getinput($ctx_param);                             // Hodnota kontextového parametru
 			if ($val !== '') {                                               // Připojení neprázdného parametru
 				$url_suffix .= "&{$ctx_param}=" . urlencode($val);           // Připojení kódovaného parametru
@@ -126,7 +131,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 */
 	protected function get_context_hidden_inputs(): string {
 		$hidden_inputs = '';                                                 // Výchozí prázdný řetězec inputů
-		foreach (['parent_object', 'parent_class', 'menu_code'] as $ctx_param) { // Průchod kontextovými parametry
+		foreach (['parent_object', 'parent_class', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
 			$val = (string)getinput($ctx_param);                             // Hodnota kontextového parametru
 			if ($val !== '') {                                               // Vytvoření skrytého pole pro parametr
 				$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">"; // Skryté pole
@@ -151,12 +156,12 @@ abstract class abstract_page_master_detail extends abstract_page {
 		}
 
 		// Inicializace správce entit PŘED voláním parent::render(), aby byl připraven pro process_save()
-		if ($this->class_name !== '' AND $this->em === null) {               // Kontrola potřeby inicializace správce
+		if ($this->class_name !== '' AND$this->em === null) {               // Kontrola potřeby inicializace správce
 			$this->em = new entity_manager($this->class_name);               // Vytvoření instance entity_manageru
 		}
 
 		// Záchyt pro asynchronní obnovu pouze levého panelu
-		if (isset($_GET['ajax_panel']) AND $_GET['ajax_panel'] === 'master') { // Detekce AJAX požadavku pro levý panel
+		if (isset($_GET['ajax_panel']) AND$_GET['ajax_panel'] === 'master') { // Detekce AJAX požadavku pro levý panel
 			$this->render_master();                                          // Vykreslení pouze levého panelu
 			exit;                                                            // Okamžité ukončení skriptu
 		}
@@ -169,7 +174,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 * Zajišťuje zpracování POST dat z formuláře (včetně SSC stavů a mazání konceptu) a následný redirect.
 	 */
 	protected function process_save(): void {
-		if ($this->is_readonly OR $this->em === null) {                      // Kontrola readonly režimu a správce entit
+		if ($this->is_readonly OR$this->em === null) {                      // Kontrola readonly režimu a správce entit
 			return;                                                          // V readonly režimu nebo bez správce neukládáme
 		}
 
@@ -179,7 +184,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 		}
 
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název aktuální stránky
-		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL
+		$url_suffix =$this->get_context_url_suffix();                       // Kontextové parametry URL
 
 		// 1. Odstranění rozpracovaného nebo vráceného konceptu bez náhrady
 		if (isset($_POST['btn_delete_draft'])) {                             // Detekce stisku tlačítka Smazat koncept
@@ -204,12 +209,16 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;                                                          // Ukončení bez uložení
 		}
 
-		$save_guid = ($update_guid === 'NEW') ? '' : $update_guid;           // Pro nový záznam předáme prázdný řetězec
+		$save_guid = ($update_guid === 'NEW') ? '' :$update_guid;           // Pro nový záznam předáme prázdný řetězec
+		$was_marked_removed = (isset($_POST['removed']) AND (string)$_POST['removed'] === '1'); // Zda uživatel zaškrtl zrušení
 		
-		$saved_orig = $this->em->save_post_data($save_guid, $target_status); // Autonomní uložení dat s cílovým stavem SSC
+		$saved_orig =$this->em->save_post_data($save_guid,$target_status); // Autonomní uložení dat s cílovým stavem SSC
 		
 		// Přesměrování po uložení (PRG vzor čistí POST kontext pro bezpečný refresh F5)
-		if ($saved_orig !== '' AND $saved_orig !== 'NEW') {                  // Pokud máme platný originál uloženého záznamu
+		$show_rem_active = ((string)getinput('show_removed') === '1');       // Zda je zapnuto zobrazování zrušených záznamů
+		if ($was_marked_removed AND !$show_rem_active AND$target_status === 'A') { // Pokud byl záznam zrušen a zrušené se nezobrazují
+			autoredirect("index.php?page={$page_param}{$url_suffix}");       // Přesměrování na čistý seznam bez detailu
+		} elseif ($saved_orig !== '' AND$saved_orig !== 'NEW') {            // Pokud máme platný originál uloženého záznamu
 			autoredirect("index.php?page={$page_param}{$url_suffix}&update_guid=" . urlencode($saved_orig)); // Přesměrování na uložený záznam
 		} else {
 			autoredirect("index.php?page={$page_param}{$url_suffix}");       // Fallback na výchozí seznam
@@ -328,7 +337,18 @@ abstract class abstract_page_master_detail extends abstract_page {
 				background-color: #f9f9f9 !important;
 				color: #999 !important;
 			}
-			/* Štítky schvalovacího cyklu (SSC) v seznamu */
+			/* Zrušené záznamy (removed = 1) v levém panelu */
+			.md-row-removed td {
+				color: #991b1b !important;
+				text-decoration: line-through;
+				background-color: #fef2f2 !important;
+			}
+			.md-row-Active-removed td {
+				color: #991b1b !important;
+				text-decoration: line-through;
+				background-color: #fde8e8 !important;
+			}
+			/* Štítky schvalovacího cyklu (SSC) a stavu zrušení v seznamu */
 			.ssc-badge {
 				display: inline-block;
 				font-size: 10px;
@@ -337,10 +357,12 @@ abstract class abstract_page_master_detail extends abstract_page {
 				border-radius: 3px;
 				margin-left: 6px;
 				vertical-align: middle;
+				text-decoration: none !important;
 			}
 			.ssc-badge-d { background-color: #fef3c7; color: #92400e; border: 1px solid #f59e0b; }
 			.ssc-badge-f { background-color: #dbeafe; color: #1e40af; border: 1px solid #3b82f6; }
 			.ssc-badge-r { background-color: #fee2e2; color: #991b1b; border: 1px solid #ef4444; }
+			.ssc-badge-rem { background-color: #991b1b; color: #ffffff; border: 1px solid #7f1d1d; }
 		</style>
 
 		<div class="md-master" id="md-master-container">
@@ -368,6 +390,17 @@ HTML;
 					const offset = rowRect.top - containerRect.top;
 					scrollingContainer.scrollTop += offset - (containerRect.height / 2) + (rowRect.height / 2);
 				}
+			}
+
+			// Javascript: Přepnutí zobrazení zrušených záznamů (show_removed) v URL
+			function toggleShowRemoved(checked) {
+				const url = new URL(window.location.href);
+				if (checked) {
+					url.searchParams.set('show_removed', '1');
+				} else {
+					url.searchParams.delete('show_removed');
+				}
+				window.location.href = url.toString();
 			}
 
 			// Javascript: Voláno pro asynchronní překreslení (refresh) levého panelu.
@@ -428,6 +461,7 @@ HTML;
 		}
 
 		$update_guid = (string)getinput('update_guid');                      // Aktuálně vybraný záznam
+		$show_removed = ((string)getinput('show_removed') === '1');          // Příznak zobrazení zrušených záznamů
 		
 		$class_meta = $this->em->get_class_meta();                           // Metadata aktuální třídy
 		$caption_plural = (string)($class_meta['caption_plural'] ?? '');     // Množné číslo názvu třídy
@@ -438,10 +472,13 @@ HTML;
 
 		$safe_caption_plural = htmlspecialchars($caption_plural);            // Ošetřený nadpis seznamu
 		$search_placeholder = htmlspecialchars($this->phrase('placeholder_search', [], 'Hledat...')); // Placeholder vyhledávání
+		$lbl_show_rem = htmlspecialchars($this->phrase('lbl_show_removed', [], 'Zobrazit i zrušené')); // Popisek přepínače zrušených
+		$chk_show_rem = $show_removed ? 'checked' : '';                      // Stav zaškrtnutí přepínače zrušených
 
 		$badge_txt_d = htmlspecialchars($this->phrase('badge_draft', [], 'Koncept')); // Štítek rozpracovaného konceptu
 		$badge_txt_f = htmlspecialchars($this->phrase('badge_forwarded', [], 'Ke schválení')); // Štítek postoupeného návrhu
 		$badge_txt_r = htmlspecialchars($this->phrase('badge_rejected', [], 'Vráceno')); // Štítek vráceného návrhu
+		$badge_txt_rem = htmlspecialchars($this->phrase('badge_removed', [], 'Zrušeno')); // Štítek zrušeného záznamu
 
 		// Obálka fixní hlavičky levého panelu
 		echo <<<HTML
@@ -452,7 +489,12 @@ HTML;
 		$this->render_master_top();                                          // Vykreslení horních prvků potomka
 
 		echo <<<HTML
-			<h2 style="font-size: 16px; margin: 0 0 10px 0; border: none; padding: 0;">{$safe_caption_plural}</h2>
+			<div style="display: flex; justify-content: space-between; align-items: center; margin: 0 0 10px 0;">
+				<h2 style="font-size: 16px; margin: 0; border: none; padding: 0;">{$safe_caption_plural}</h2>
+				<label style="font-size: 12px; color: #555; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; user-select: none;">
+					<input type="checkbox" {$chk_show_rem} onchange="toggleShowRemoved(this.checked);"> {$lbl_show_rem}
+				</label>
+			</div>
 			<input type="text" id="master-filter" placeholder="{$search_placeholder}" style="width: 100%; padding: 6px; box-sizing: border-box;">
 		</div>
 		
@@ -475,7 +517,7 @@ HTML;
 HTML;
 
 		// Spuštění T-SQL dotazu a okamžité načtení celého result-setu do pole
-		$sql = $this->em->build_select_query($this->master_where);           // Sestavení SELECT dotazu
+		$sql = $this->em->build_select_query($this->master_where, '', false, $show_removed); // Sestavení SELECT dotazu
 		$rows = sqlarray_simple($sql);                                       // Načtení všech řádků do pole v paměti
 		
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název stránky do URL
@@ -484,19 +526,32 @@ HTML;
 		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
 			foreach ($rows as $row) {                                        // Průchod jednotlivými řádky seznamu
 				$uuid = (string)$row['original'];                            // Originální UUID řádku
-				$rowClass = ($uuid === $update_guid) ? 'md-row-active' : ''; // Třída pro aktivní řádek
-				$rowIdAttr = ($uuid === $update_guid) ? 'id="active-row"' : ''; // Atribut id pro aktivní řádek
+				$is_rem = !empty($row['removed']) OR !empty($row['l_removed']); // Zda je zrušen hlavní záznam nebo aktuální překlad
+				$is_act = ($uuid === $update_guid);                          // Zda jde o právě vybraný řádek
+				if ($is_act AND $is_rem) {                                   // Aktivní zrušený řádek
+					$rowClass = 'md-row-active md-row-Active-removed';       // Kombinovaná třída aktivního zrušeného řádku
+				} elseif ($is_act) {                                         // Aktivní platný řádek
+					$rowClass = 'md-row-active';                             // Třída pro aktivní řádek
+				} elseif ($is_rem) {                                         // Neaktivní zrušený řádek
+					$rowClass = 'md-row-removed';                            // Třída pro zrušený řádek
+				} else {
+					$rowClass = '';                                          // Standardní platný řádek
+				}
+				$rowIdAttr = $is_act ? 'id="active-row"' : '';               // Atribut id pro aktivní řádek
 
 				$rec_type = (string)($row['record_type'] ?? 'A');            // Typ záznamu ('A' nebo 'D')
 				$app_status = (string)($row['approval_status'] ?? 'A');      // Stav schválení ('A', 'D', 'F', 'R')
-				$ssc_badge = '';                                             // Vizuální štítek pro koncepty v seznamu
+				$ssc_badge = '';                                             // Vizuální štítek pro koncepty a zrušené v seznamu
+				if ($is_rem) {                                               // Pokud je záznam označen jako zrušený
+					$ssc_badge .= "<span class=\"ssc-badge ssc-badge-rem\">{$badge_txt_rem}</span>"; // Červený štítek Zrušeno
+				}
 				if ($rec_type === 'D') {                                     // Pokud je řádek neuzavřeným konceptem
 					if ($app_status === 'F') {                               // Návrh postoupený ke schválení
-						$ssc_badge = "<span class=\"ssc-badge ssc-badge-f\">{$badge_txt_f}</span>"; // Modrý štítek
+						$ssc_badge .= "<span class=\"ssc-badge ssc-badge-f\">{$badge_txt_f}</span>"; // Modrý štítek
 					} elseif ($app_status === 'R') {                         // Návrh vrácený schvalovatelem
-						$ssc_badge = "<span class=\"ssc-badge ssc-badge-r\">{$badge_txt_r}</span>"; // Červený štítek
+						$ssc_badge .= "<span class=\"ssc-badge ssc-badge-r\">{$badge_txt_r}</span>"; // Červený štítek
 					} else {
-						$ssc_badge = "<span class=\"ssc-badge ssc-badge-d\">{$badge_txt_d}</span>"; // Žlutý štítek konceptu
+						$ssc_badge .= "<span class=\"ssc-badge ssc-badge-d\">{$badge_txt_d}</span>"; // Žlutý štítek konceptu
 					}
 				}
 
@@ -617,8 +672,8 @@ HTML;
 			$datarow['object_is_mine'] = 1;                                  // Nový záznam patří vždy uživateli
 			$is_mine = true;                                                 // Příznak vlastnictví záznamu
 		} else {
-			// Načtení dat přes T-SQL přímo do pole pomocí sqlfirstrow()
-			$sql = $this->em->build_select_query("m.original = " . guidliteral($update_guid)); // Dotaz na detail záznamu
+			// Načtení dat přes T-SQL přímo do pole pomocí sqlfirstrow() (včetně případně zrušených pro možnost obnovy)
+			$sql = $this->em->build_select_query("m.original = " . guidliteral($update_guid), '', false, true); // Dotaz na detail záznamu
 			$datarow = sqlfirstrow($sql);                                    // Načtení řádku detailu a uzavření statementu
 			
 			if (empty($datarow)) {                                           // Kontrola existence načteného záznamu
@@ -728,6 +783,8 @@ HTML;
 		$lbl_tr_title  = htmlspecialchars($this->phrase('lbl_translatable_tooltip', [], 'Tato hodnota může být přeložena do jiných jazyků')); // Tooltip překladu
 		$lbl_tr_badge  = htmlspecialchars($this->phrase('lbl_supports_translation', [], '(Podporuje překlad)')); // Štítek podpory překladu
 
+		$removed_rendered = false;                                           // Evidence, zda již byl sloupec removed vykreslen ve skupině
+
 		// Iterace přes bloky a generování tabulek s input prvky
 		foreach ($groups as $group_title => $columns) {                      // Vykreslení jednotlivých skupin formuláře
 			if ($group_title !== '') {                                       // Vykreslení nadpisu neprázdné skupiny
@@ -737,13 +794,16 @@ HTML;
 			echo "\t\t\t\t<table class=\"md-table\" style=\"margin-bottom: 30px;\">\n"; // Začátek tabulky skupiny
 			
 			foreach ($columns as $colname) {                                 // Zpracování jednotlivých polí ve skupině
+				if ($colname === 'removed') {                                // Pokud potomek explicitně zařadil removed
+					$removed_rendered = true;                                // Označíme, že removed je ve skupině
+				}
 				$meta = $this->em->get_column_meta($colname);                // Načtení metadat sloupce
 				
-				// Ignorovat neexistující nebo skryté prvky
+				// Ignorovat neexistující nebo skryté prvky (s výjimkou explicitně vyžádaného removed)
 				if (empty($meta)) {                                          // Přeskočení neznámého sloupce v metadatech
 					continue;                                                // Pokračování na další sloupec
 				}
-				if (!empty($meta['hidden'])) {                               // Přeskočení skrytého sloupce ve formuláři
+				if (!empty($meta['hidden']) AND $colname !== 'removed') {    // Přeskočení skrytého sloupce ve formuláři
 					continue;                                                // Pokračování na další sloupec
 				}
 				
@@ -770,6 +830,11 @@ HTML;
 HTML;
 			}
 			echo "\t\t\t\t</table>\n";
+		}
+
+		// Automatické vykreslení řádku pro zrušení / obnovení záznamu (removed) u existujících záznamů
+		if ($update_guid !== 'NEW' AND !$removed_rendered AND $this->em->has_physical_column('removed')) { // Kontrola podpory sloupce removed
+			echo $this->em->render_removed_section($datarow, $is_mine, $this->is_readonly); // Vykreslení sekce removed
 		}
 
 		// Vložení globální auditní stopy

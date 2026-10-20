@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-17 00:50
+ * Verze: 2026-10-20 15:00
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -32,6 +32,9 @@ GO
  * - 2026-10-17 00:50: Doplněno automatické idempotentní vytvoření sloupců
  *   draft_author, approval_note a import_origin + unikátního indexu uq_*_draft
  *   pro record_type = 'D' nad všemi RAC tabulkami a skrytí technických SSC sloupců.
+ * - 2026-10-20 15:00: Pro sloupce svg_icon a svg_code v globálním slovníku
+ *   nastaveno hidden = 0 a is_protected = 1, aby se v detailu vykreslil
+ *   neredigovatelný vizuální náhled ikony přes entity_manager.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -439,6 +442,7 @@ BEGIN
 		)
 
 	-- Skrytí čistě technických RAC a SSC sloupců z automaticky generovaných formulářů
+	-- (Pozn.: sloupec removed je zde hidden = 1, protože se vykresluje dedikovanou metodou render_removed_section na konci formuláře)
 	UPDATE meta_column
 	SET hidden = 1
 	WHERE parent_class = @c_class
@@ -449,6 +453,16 @@ BEGIN
 		'draft_author', 'approval_note', 'import_origin', 'removed',
 		'date_created', 'who_created', 'date_modified', 'who_modified'
 	  );
+
+	-- Sloupce vektorových ikon (svg_icon, svg_code) necháme ve formuláři viditelné (hidden = 0) a chráněné (is_protected = 1),
+	-- aby entity_manager v detailním panelu vykreslil jejich neredigovatelný vizuální náhled.
+	UPDATE meta_column
+	SET hidden = 0,
+		is_protected = 1
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name IN ('svg_icon', 'svg_code');
 
 	-- -------------------------------------------------------------------------
 	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class V GLOBÁLNÍM SLOVNÍKU

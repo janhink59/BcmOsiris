@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-15 22:28
+ * Verze: 2026-10-20 11:25
  * Soubor: table_request_message.sql
  * Popis:   Dočasné zprávy a proměnné requestu vázané na @@SPID v dbsession.
  * Vazby:   - Využívá tabulku dbsession (cizí klíč spid) a tabulku meta_phrase
@@ -7,6 +7,8 @@
  *          - Voláno z procedury printt, p_xlsx_meta_object a dalších SQL procedur.
  * Změny:   - 2026-10-15: Doplněna funkce dbo.f_php_phrase(@code) čtoucí jazyk
  *            a organizaci přímo z dbsession a překládající přes meta_phrase.
+ *          - 2026-10-20 11:25: Výchozí a fallbackový source_code ve funkci
+ *            dbo.f_php_phrase změněn z prázdného '' na 'global_phrase'.
  * ============================================================================= */
 /*
 	Objekty v tomto souboru není třeba uchovávat mezi updaty databáze, protože se jedná o dočasné zprávy pro uživatele.
@@ -56,15 +58,19 @@ GO
 /*
 	Funkce vrátí přeložený text fráze podle zadaného kódu z tabulky meta_phrase.
 	Jazyk a aktivní organizaci načítá autonomně z tabulky dbsession pro aktuální @@SPID.
+	Pro globální fráze používá sjednocený source_code = 'global_phrase'.
 */
 create function dbo.f_php_phrase(
 	@code varchar(80),
-	@source_code varchar(80) = ''
+	@source_code varchar(80) = 'global_phrase'
 )
 returns varchar(6000)
 as
 begin
 	declare @lang varchar(2) = 'cs', @org uuid = 0x00, @result varchar(6000) = null;
+
+	if isnull(@source_code, '') = ''
+		set @source_code = 'global_phrase';
 
 	select @lang = [language], @org = organization
 	from dbsession
@@ -90,7 +96,7 @@ begin
 		  and ms.record_type = 'A'
 		  and ms.removed = 0
 		  and ms.builtin_code = @code
-		  and (ms.source_code = @source_code or ms.source_code = '')
+		  and (ms.source_code = @source_code or ms.source_code = 'global_phrase')
 		order by case when ms.source_code = @source_code then 0 else 1 end;
 	end
 
