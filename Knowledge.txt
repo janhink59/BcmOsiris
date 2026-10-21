@@ -15,7 +15,7 @@
 * BEZPEČNOSTNÍ POJISTKA VÝKONU: Pokud při analýze komplexních vazeb narazíš na limity svého logického vyvozování nebo ztratíš přehled v kontextu, okamžitě upozorni uživatele a vyžádej si přerušení práce.
 * KONTROLA MODELU: Na úplném začátku nové konverzace upozorni uživatele, pokud zapomněl nastavit nejvhodnější programovací model (Argon Nejvyšší / Pro nejvyšší / Pro Extended). Během další komunikace už toto upozornění neopakuj.
 * PRAVIDLA KONVERZACE: Na začátku každého chatu uživatel předá Knowledge.txt a kompletní dávku BcmOsirisDb.sql pro idempotentní vytvoření objektů (případné další PHP soubory nahrává jednotlivě mimo ZIP archiv, protože obsah ZIP archivu je v textovém rozhraní nečitelný; pokud rozhraní odmítne příponu .sql jako binární objekt, předává se s příponou .sql.txt). Na začátku chatu se POUZE diskutuje, neprogramuje. Nechval, místo toho hledej chyby a navrhuj vylepšení.
-* Pokud se domluvíme na úpravě, vracej více upravených souborů najednou v samostatných code blocích v jedné odpovědi. Předem odhadni jejich celkový rozsah a dávkuj je do bezpečného limitu cca 2 000–2 500 řádků (příp. méně u hustě komentovaných souborů) na jednu odpověď, abychom minimalizovali počet zpráv a přitom nepřekročili limit výstupního rozhraní.
+* Pokud se domluvíme na úpravě, vracej více upravených souborů najednou v samostatných code blocích v jedné odpovědi. Předem odhadni jejich celkový rozsah a dávkuj je do bezpečného limitu cca 3 000–3 500 řádků (příp. méně u hustě komentovaných souborů) na jednu odpověď, abychom minimalizovali počet zpráv a přitom nepřekročili limit výstupního rozhraní.
 
 2. Databázové konvence (MSSQL)
 * Databáze plně podporuje UTF-8 (zohledni to v PHP skriptech i T-SQL).
