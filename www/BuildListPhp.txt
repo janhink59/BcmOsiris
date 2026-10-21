@@ -2,12 +2,13 @@ config.php
 OsirisLib.php
 a*.php
 e*.php
+output=BcmOsirisPhp2.txt
 g*.php
 html_classes.php
 i*.php
-output=BcmOsirisPhp2.txt
 l*.php
 m*.php
+output=BcmOsirisPhp3.txt
 p*.php
 r*.php
 s*.php

@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-20 15:00
+ * Verze: 2026-10-21 14:25
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -35,6 +35,9 @@ GO
  * - 2026-10-20 15:00: Pro sloupce svg_icon a svg_code v globálním slovníku
  *   nastaveno hidden = 0 a is_protected = 1, aby se v detailu vykreslil
  *   neredigovatelný vizuální náhled ikony přes entity_manager.
+ * - 2026-10-21 14:25: Odstraněny opuštěné záznamy sloupců iconname, svg_code a svg_name
+ *   z meta_column (sjednoceno na svg_icon). Odstraněna trojitá duplicita výpočtu
+ *   vlastností sloupců z v_syscolumns pomocí dočasné tabulky #syscol_attr.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -100,6 +103,9 @@ BEGIN
 
 	DELETE FROM meta_class WHERE object_owner = 0x00 AND class_name LIKE '%$';
 	DELETE FROM meta_object WHERE object_owner = 0x00 AND builtin_code LIKE '%$';
+
+	-- 1c. Odstranění zastaralých názvů sloupců vektorových ikon (sjednoceno na svg_icon)
+	DELETE FROM meta_column WHERE object_owner = 0x00 AND column_name IN ('iconname', 'svg_code', 'svg_name');
 	
 	-- 2. Odstranění duplicit objektů (ponecháme vždy ten nejstarší platný)
 	WITH cte AS (
@@ -120,42 +126,46 @@ BEGIN
 	) DELETE FROM cte WHERE rn > 1;
 
 	-- -------------------------------------------------------------------------
-	-- 0. VÝPOČET NEJČASTĚJŠÍCH VLASTNOSTÍ (MÓDUS) PRO GLOBÁLNÍ SLOVNÍK
+	-- 0. VÝPOČET VLASTNOSTÍ SLOUPCŮ Z v_syscolumns A MÓDUSU PRO GLOBÁLNÍ SLOVNÍK
 	-- -------------------------------------------------------------------------
+	IF OBJECT_ID('tempdb..#syscol_attr') IS NOT NULL DROP TABLE #syscol_attr;
 	IF OBJECT_ID('tempdb..#global_attr') IS NOT NULL DROP TABLE #global_attr;
-	
-	WITH column_attributes AS (
-		SELECT 
-			colname,
-			CASE 
-				WHEN typename IN ('bit') THEN 'checkbox'
-				WHEN typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN 'date'
-				WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN 'number'
-				WHEN typename IN ('varchar', 'nvarchar', 'text', 'ntext') AND prec = -1 THEN 'textarea'
-				ELSE 'text'
-			END AS calc_input_type,
-			CASE 
-				WHEN typename IN ('varchar', 'nvarchar', 'char', 'nchar') AND prec > 0 THEN prec
-				ELSE 0 
-			END AS calc_max_length,
-			ISNULL(iscomputed, 0) AS calc_is_computed,
-			CASE 
-				WHEN typename = 'bit' THEN 'auto'
-				WHEN typename = 'date' THEN '120px'
-				WHEN typename = 'smalldatetime' THEN '150px'
-				WHEN typename IN ('datetime', 'datetime2') THEN '180px'
-				WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '100px'
-				ELSE '100%'
-			END AS calc_input_width
-		FROM v_syscolumns
-		WHERE colname NOT LIKE '@%'
-		  AND tabname NOT LIKE '%$'                     -- Vyloučení dočasných staging tabulek z Excelu
-	),
-	ranked_attributes AS (
+
+	SELECT 
+		tabname COLLATE DATABASE_DEFAULT AS tabname,
+		object_type COLLATE DATABASE_DEFAULT AS object_type,
+		colid,
+		colname COLLATE DATABASE_DEFAULT AS colname,
+		CASE 
+			WHEN typename IN ('bit') THEN 'checkbox'
+			WHEN typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN 'date'
+			WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN 'number'
+			WHEN typename IN ('varchar', 'nvarchar', 'text', 'ntext') AND prec = -1 THEN 'textarea'
+			ELSE 'text'
+		END AS calc_input_type,
+		CASE 
+			WHEN typename IN ('varchar', 'nvarchar', 'char', 'nchar') AND prec > 0 THEN prec
+			ELSE 0 
+		END AS calc_max_length,
+		ISNULL(iscomputed, 0) AS calc_is_computed,
+		CASE 
+			WHEN typename = 'bit' THEN 'auto'
+			WHEN typename = 'date' THEN '120px'
+			WHEN typename = 'smalldatetime' THEN '150px'
+			WHEN typename IN ('datetime', 'datetime2') THEN '180px'
+			WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '100px'
+			ELSE '100%'
+		END AS calc_input_width
+	INTO #syscol_attr
+	FROM v_syscolumns
+	WHERE colname NOT LIKE '@%'
+	  AND tabname NOT LIKE '%$';                    -- Vyloučení dočasných staging tabulek z Excelu
+
+	WITH ranked_attributes AS (
 		SELECT 
 			colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width,
 			ROW_NUMBER() OVER(PARTITION BY colname ORDER BY COUNT(*) DESC) AS rn
-		FROM column_attributes
+		FROM #syscol_attr
 		GROUP BY colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
 	)
 	SELECT colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
@@ -177,9 +187,7 @@ BEGIN
 		SELECT DISTINCT 
 			tabname,
 			CASE WHEN object_type = 'U' THEN 'T' WHEN object_type = 'V' THEN 'V' ELSE 'F' END AS obj_type
-		FROM v_syscolumns
-		WHERE colname NOT LIKE '@%'
-		  AND tabname NOT LIKE '%$'                     -- Vyloučení dočasných staging tabulek z Excelu
+		FROM #syscol_attr
 	) obj
 	CROSS APPLY (SELECT dbo.f_generate_original('meta_object', @sys_owner, obj.obj_type, obj.tabname) AS orig_uuid) x
 	WHERE NOT EXISTS (
@@ -292,9 +300,8 @@ BEGIN
 	)
 	SELECT 
 		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
-		mcl.original, c.colid, c.colname,
+		mcl.original, la.colid, la.colname,
 		NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-		
 		CASE WHEN la.calc_input_type = ga.calc_input_type THEN NULL ELSE la.calc_input_type END,
 		CASE WHEN la.calc_input_width = ga.calc_input_width THEN NULL ELSE la.calc_input_width END, 
 		NULL, 
@@ -304,32 +311,9 @@ BEGIN
 		CASE WHEN la.calc_is_computed = ga.calc_is_computed THEN NULL ELSE la.calc_is_computed END, 
 		NULL, NULL, NULL,
 		1, 0, gc.original
-	FROM v_syscolumns c
-	CROSS APPLY (
-		SELECT 
-			CASE 
-				WHEN c.typename IN ('bit') THEN 'checkbox'
-				WHEN c.typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN 'date'
-				WHEN c.typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN 'number'
-				WHEN c.typename IN ('varchar', 'nvarchar', 'text', 'ntext') AND c.prec = -1 THEN 'textarea'
-				ELSE 'text'
-			END AS calc_input_type,
-			CASE 
-				WHEN c.typename IN ('varchar', 'nvarchar', 'char', 'nchar') AND c.prec > 0 THEN c.prec
-				ELSE 0 
-			END AS calc_max_length,
-			ISNULL(c.iscomputed, 0) AS calc_is_computed,
-			CASE 
-				WHEN c.typename = 'bit' THEN 'auto'
-				WHEN c.typename = 'date' THEN '120px'
-				WHEN c.typename = 'smalldatetime' THEN '150px'
-				WHEN c.typename IN ('datetime', 'datetime2') THEN '180px'
-				WHEN c.typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '100px'
-				ELSE '100%'
-			END AS calc_input_width
-	) la
+	FROM #syscol_attr la
 	JOIN meta_object mo 
-		ON mo.builtin_code = c.tabname COLLATE DATABASE_DEFAULT 
+		ON mo.builtin_code = la.tabname
 		AND mo.object_type IN ('T', 'V', 'F') 
 		AND mo.record_type = 'A'
 		AND mo.object_owner = 0x00
@@ -340,15 +324,13 @@ BEGIN
 		AND mcl.object_owner = 0x00
 	JOIN meta_column gc
 		ON gc.parent_class = @c_class
-		AND gc.column_name = c.colname COLLATE DATABASE_DEFAULT
+		AND gc.column_name = la.colname
 		AND gc.record_type = 'A'
 		AND gc.object_owner = 0x00
 	JOIN #global_attr ga
 		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
-	CROSS APPLY (SELECT dbo.f_generate_original('meta_column', @sys_owner, CAST(mcl.original AS varchar(36)), c.colname) AS orig_uuid) x
-	WHERE c.colname NOT LIKE '@%'
-	  AND c.tabname NOT LIKE '%$'                   -- Vyloučení dočasných staging tabulek z Excelu
-	  AND NOT EXISTS (
+	CROSS APPLY (SELECT dbo.f_generate_original('meta_column', @sys_owner, CAST(mcl.original AS varchar(36)), la.colname) AS orig_uuid) x
+	WHERE NOT EXISTS (
 		SELECT 1 FROM meta_column mc 
 		WHERE mc.original = x.orig_uuid 
 		  AND mc.record_type = 'A'
@@ -365,7 +347,6 @@ BEGIN
 		input_rows = NULL, css_class = NULL, translate = NULL, 
 		history = NULL, is_html = NULL, is_mandatory = NULL, is_url = NULL, 
 		show_empty = NULL, hidden = NULL, customizable = NULL,
-		
 		input_type = CASE WHEN la.calc_input_type = ga.calc_input_type THEN NULL ELSE la.calc_input_type END,
 		input_width = CASE WHEN la.calc_input_width = ga.calc_input_width THEN NULL ELSE la.calc_input_width END,
 		max_length = CASE WHEN la.calc_max_length = ga.calc_max_length THEN NULL ELSE la.calc_max_length END,
@@ -380,32 +361,9 @@ BEGIN
 		AND mo.object_type IN ('T', 'V', 'F') 
 		AND mo.record_type = 'A' 
 		AND mo.object_owner = 0x00
-	JOIN v_syscolumns c
-		ON c.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
-		AND c.colname = mc.column_name COLLATE DATABASE_DEFAULT
-	CROSS APPLY (
-		SELECT 
-			CASE 
-				WHEN c.typename IN ('bit') THEN 'checkbox'
-				WHEN c.typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN 'date'
-				WHEN c.typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN 'number'
-				WHEN c.typename IN ('varchar', 'nvarchar', 'text', 'ntext') AND c.prec = -1 THEN 'textarea'
-				ELSE 'text'
-			END AS calc_input_type,
-			CASE 
-				WHEN c.typename IN ('varchar', 'nvarchar', 'char', 'nchar') AND c.prec > 0 THEN c.prec
-				ELSE 0 
-			END AS calc_max_length,
-			ISNULL(c.iscomputed, 0) AS calc_is_computed,
-			CASE 
-				WHEN c.typename = 'bit' THEN 'auto'
-				WHEN c.typename = 'date' THEN '120px'
-				WHEN c.typename = 'smalldatetime' THEN '150px'
-				WHEN c.typename IN ('datetime', 'datetime2') THEN '180px'
-				WHEN c.typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '100px'
-				ELSE '100%'
-			END AS calc_input_width
-	) la
+	JOIN #syscol_attr la
+		ON la.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
+		AND la.colname = mc.column_name COLLATE DATABASE_DEFAULT
 	JOIN meta_column gc 
 		ON gc.parent_class = @c_class 
 		AND gc.column_name = mc.column_name 
@@ -415,9 +373,7 @@ BEGIN
 		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
 	WHERE mc.record_type = 'A' 
 	  AND mc.object_owner = 0x00 
-	  AND mc.ancestor IS NULL
-	  AND mc.column_name NOT LIKE '@%'
-	  AND c.tabname NOT LIKE '%$';                  -- Vyloučení dočasných staging tabulek z Excelu
+	  AND mc.ancestor IS NULL;
 
 	-- Výchozí nastavení hodnoty translate pro některé názvy sloupců
 	create table #list_order(column_name varchar(80) collate database_default, list_order int identity primary key)
@@ -454,15 +410,15 @@ BEGIN
 		'date_created', 'who_created', 'date_modified', 'who_modified'
 	  );
 
-	-- Sloupce vektorových ikon (svg_icon, svg_code) necháme ve formuláři viditelné (hidden = 0) a chráněné (is_protected = 1),
-	-- aby entity_manager v detailním panelu vykreslil jejich neredigovatelný vizuální náhled.
+	-- Sloupec vektorových ikon (svg_icon) necháme ve formuláři viditelný (hidden = 0) a chráněný (is_protected = 1),
+	-- aby entity_manager v detailním panelu vykreslil jeho neredigovatelný vizuální náhled.
 	UPDATE meta_column
 	SET hidden = 0,
 		is_protected = 1
 	WHERE parent_class = @c_class
 	  AND object_owner = 0x00
 	  AND record_type = 'A'
-	  AND column_name IN ('svg_icon', 'svg_code');
+	  AND column_name = 'svg_icon';
 
 	-- -------------------------------------------------------------------------
 	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class V GLOBÁLNÍM SLOVNÍKU

@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-20 11:25
+ * Verze: 2026-10-21 15:05
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
@@ -29,6 +29,8 @@
  *            uq_meta_object_language a symetrické 'L' záznamy pro výchozí stránky.
  *          - 2026-10-20 11:25: Bezejmenný záznam '' pro globální fráze nahrazen řádnou
  *            PHP třídou 'global_phrase' a původní záznam '' idempotentně odstraněn.
+ *          - 2026-10-21 15:05: Zaregistrována samostatná stránka page_xlsx_export_meta
+ *            pro zpětný export systémových metadat do Excelu.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -144,7 +146,7 @@ WHERE object_owner = 0x00
 GO
 
 /* =============================================================================
- * REGISTRACE STRÁNKY EXCEL READER A SYSTÉMOVÝCH OBJEKTŮ DO METADAT
+ * REGISTRACE SYSTÉMOVÝCH STRÁNEK A UI TŘÍD DO METADAT
  * Účel: Zajišťuje, aby všechny systémové stránky a UI třídy měly v meta_object
  *       jak hlavní 'A' záznam, tak symetrický 'L' záznam.
  * ============================================================================= */
@@ -166,7 +168,8 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_approval', 'Schvalování změn', 'Přehled, porovnání a schvalování navržených záznamů napříč třídami', 'U'),
 ('page_organization_licence', 'Správa licencí organizací', 'Evidence a aktivace licencí pro jednotlivé tenanty', 'S'),
 ('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
-('page_excel_reader', 'Import dat z Excelu', 'Nástroj pro hromadný import a export datových struktur', 'S'),
+('page_excel_reader', 'Import dat z Excelu', 'Nástroj pro hromadný import a distribuci datových struktur z Excelu', 'S'),
+('page_xlsx_export_meta', 'Export metadat do Excelu', 'Nástroj pro zpětný export systémových metadat do souboru XLSX', 'S'),
 ('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace, aplikační role a žádosti o přístup', 'U'),
 ('page_login', 'Přihlášení do systému', 'Přihlašovací obrazovka s podporou lokální autentizace a SSO', 'U'),
 ('page_password_reset', 'Obnova hesla', 'Stránka pro vyžádání a nastavení nového hesla pomocí tokenu', 'U'),

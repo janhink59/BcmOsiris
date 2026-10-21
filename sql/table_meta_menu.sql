@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-18 12:35
+ * Verze: 2026-10-21 15:05
  * Soubor: table_meta_menu.sql
  * Tabulka: meta_menu
  * Popis:   Uchovává strukturu uživatelského menu s vazbou na fyzické stránky.
@@ -18,6 +18,8 @@
  *            a přidána položka menu approval (Schvalování změn) směřující na page_approval.
  *          - 2026-10-18 12:35: Doplněno idempotentní zakládání symetrických 'L'
  *            záznamů pro výchozí položky systémového menu.
+ *          - 2026-10-21 15:05: Přidána položka menu xlsx_export_meta (Export metadat
+ *            do Excelu) směřující na samostatnou stránku page_xlsx_export_meta.
  * ============================================================================= */
 
 IF OBJECT_ID('meta_menu') IS NULL
@@ -115,6 +117,7 @@ DECLARE @tgt_approval uuid = dbo.f_generate_original('meta_object', @sys_owner, 
 DECLARE @tgt_org_licence uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_organization_licence');
 DECLARE @tgt_org_users uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_org_users');
 DECLARE @tgt_excel_reader uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_excel_reader');
+DECLARE @tgt_xlsx_export_meta uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_xlsx_export_meta');
 
 -- 2. Příprava originálů menu uzlů, abychom je mohli mezi sebou ihned provázat (parent_uuid)
 DECLARE @mnu_home uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'home', '');
@@ -126,6 +129,7 @@ DECLARE @mnu_approval uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'a
 DECLARE @mnu_org_licence uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'organization_licence', '');
 DECLARE @mnu_org_users uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'org_users', '');
 DECLARE @mnu_excel_reader uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'excel_reader', '');
+DECLARE @mnu_xlsx_export_meta uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'xlsx_export_meta', '');
 
 -- 3. Pomocná struktura pro idempotentní dávkový zápis bez duplikace kódu
 DECLARE @init_menu TABLE (
@@ -142,7 +146,8 @@ INSERT INTO @init_menu VALUES
 (@mnu_approval, @mnu_admin, '04', 'approval', 'Schvalování změn', @tgt_approval, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'),
 (@mnu_org_licence, @mnu_admin, '05', 'organization_licence', 'Správa licencí organizací', @tgt_org_licence, 'S', ''),
 (@mnu_org_users, @mnu_admin, '06', 'org_users', 'Uživatelé organizace', @tgt_org_users, 'A', ''),
-(@mnu_excel_reader, @mnu_admin, '07', 'excel_reader', 'Import dat z Excelu', @tgt_excel_reader, 'S', '');
+(@mnu_excel_reader, @mnu_admin, '07', 'excel_reader', 'Import dat z Excelu', @tgt_excel_reader, 'S', ''),
+(@mnu_xlsx_export_meta, @mnu_admin, '08', 'xlsx_export_meta', 'Export metadat do Excelu', @tgt_xlsx_export_meta, 'S', '');
 
 -- 4. Idempotentní INSERT hlavních 'A' záznamů pomocí NOT EXISTS
 INSERT INTO meta_menu (

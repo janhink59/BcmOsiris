@@ -1,6 +1,6 @@
 /* =============================================================================
  * Soubor: table_meta_class.sql
- * Verze: 2026-10-18 17:15
+ * Verze: 2026-10-21 14:25
  * Tabulka: meta_class
  * Popis:   Logické třídy (entity) systému. Slouží jako nadstavba nad 
  *          fyzickými objekty (meta_object). Definuje konkrétní třídy 
@@ -13,6 +13,8 @@
  *          - Přidán sloupec import_origin pro evidenci původu záznamu z importu (Měkký audit).
  *          - 2026-10-18 17:15: Přidán sloupec editor_note pro sémantický kontext AI překladů
  *            a sloupce draft_author a approval_note pro schvalovací cyklus (SSC).
+ *          - 2026-10-21 14:25: Sloupec iconname nahrazen sjednoceným sloupcem
+ *            svg_icon varchar(max) NULL (včetně idempotentní migrace a odstranění iconname).
  * ============================================================================= */
 
 if not exists (select * from v_syscolumns where tabname='meta_class' and colname='storage_object')
@@ -62,7 +64,7 @@ CREATE TABLE meta_class(
 	editor_note varchar(max) NULL,                     -- Sémantický kontext pro překladatele a AI (nepřekládá se)
 	
 	-- Uživatelské rozhraní
-	iconname varchar(250) NULL,                        -- Název ikony pro navigaci/seznamy
+	svg_icon varchar(max) NULL,                        -- Vektorová ikona SVG pro navigaci a seznamy (NULL = dědí se)
 	sort_code varchar(20) NOT NULL DEFAULT '',         -- Výchozí třídění v hierarchii
 	
 	-- Oprávnění (Vazba na role v rámci tenanta)
@@ -85,6 +87,15 @@ EXEC p_create_missing_column 'meta_class', 'import_origin', 'varchar(255) NULL';
 EXEC p_create_missing_column 'meta_class', 'editor_note', 'varchar(max) NULL';
 EXEC p_create_missing_column 'meta_class', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
 EXEC p_create_missing_column 'meta_class', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'meta_class', 'svg_icon', 'varchar(max) NULL';
+GO
+
+-- Idempotentní migrace a odstranění zastaralého sloupce iconname
+IF EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'meta_class' AND colname = 'iconname')
+BEGIN
+	EXEC('UPDATE meta_class SET svg_icon = iconname WHERE svg_icon IS NULL AND iconname IS NOT NULL AND iconname <> ''''');
+	EXEC sp_drop_column 'meta_class', 'iconname';
+END
 GO
 
 -- -----------------------------------------------------------------------------

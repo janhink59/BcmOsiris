@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-20 11:35
+ * Verze: 2026-10-21 15:40
  * Soubor: xlsx_meta_object.php
  * Třída: xlsx_meta_object
  * Účel: Konfigurační a validační třída importního balíčku "meta_object"
@@ -17,24 +17,22 @@
  *   kontrolu přítomnosti všech sloupců (včetně příznaku removed a překladových sloupců *_l)
  *   a nastavení datových typů před vytvořením staging tabulek XLSX_page$,
  *   XLSX_menu$, XLSX_phrase$, XLSX_class$ a XLSX_column$ v excel_reader::save_to_tables().
+ * - Sloupce svg_icon se z Excelu neimportují ani nevalidují (spravují se výhradně SQL skripty).
  * - Kontroluje, že na záložce phrase ani page neexistuje záznam s prázdným
  *   identifikátorem (globální fráze musí mít source_code = 'global_phrase').
- * - Sloupce záložek class a column využívající dědičnost (<v stříškách>) jsou
+ * - Sloupce záložek class a column využívající dědičnost (<ve stříškách>) jsou
  *   ponechány jako varchar, aby procedura p_xlsx_meta_object mohla bezpečně
  *   odstranit stříšky < > a porovnat hodnoty s předkem.
  *
  * Změny:
- * 2026-10-14 - Vytvoření samostatné třídy xlsx_meta_object pro záložky
- *              page, menu a phrase se striktní validací sloupců základního
- *              jazyka i překladových sloupců s příponou _l.
- * 2026-10-15 - Rozšíření validace záložky phrase o sloupce source_code,
- *              svg_icon a css_class pro napojení na novou tabulku meta_phrase.
- * 2026-10-18 17:15 - Rozšíření balíčku o záložky class (meta_class) a column
- *                    (meta_column) s mnemotechnickými identifikátory vazeb.
+ * 2026-10-21 15:40 - Ze záložek menu, phrase a class vyřazena validace sloupce svg_icon
+ *                    (vektorové ikony se z Excelu neimportují ani neaktualizují).
  * 2026-10-20 11:35 - Doplnění sloupce removed na všechny záložky (page, menu,
  *                    phrase, class, column) a sloupce inactive na záložku phrase.
  *                  - Doplněna validace zákazu prázdného source_code na záložce phrase
  *                    a prázdného builtin_code na záložce page.
+ * 2026-10-18 17:15 - Rozšíření balíčku o záložky class (meta_class) a column
+ *                    (meta_column) s mnemotechnickými identifikátory vazeb.
  * =============================================================================
  */
 
@@ -44,8 +42,8 @@ class xlsx_meta_object extends xlsx_abstract {
 
 	/**
 	 * Definuje záložky, sloupce a jejich datové typy pro balíček meta_object.
-	 * Kontroluje i přítomnost sloupců removed a sloupců s příponou _l, aby uložená
-	 * procedura p_xlsx_meta_object měla vždy garantovanou strukturu staging tabulek.
+	 * Kontroluje přítomnost povinných sloupců (bez svg_icon) a sloupců s příponou _l,
+	 * aby uložená procedura p_xlsx_meta_object měla vždy garantovanou strukturu staging tabulek.
 	 */
 	public function prepare(): void {
 		$this->package_name = "Import systémových objektů, stránek, menu, frází, logických tříd a sloupců"; // Název balíčku pro logování a distribuci
@@ -71,17 +69,17 @@ class xlsx_meta_object extends xlsx_abstract {
 			}
 		}
 
-		// 2. Validace záložky "menu" (struktura navigace -> tabulka meta_menu)
+		// 2. Validace záložky "menu" (struktura navigace -> tabulka meta_menu, bez svg_icon)
 		$this->setDataType(                                 // Registrace textových sloupců záložky menu
-			'builtin_code,parent_code,sort_code,target_page,url_parameters,target_url,target_window,system_role,svg_icon,css_class,editor_note,caption,description,helptext,caption_l,description_l,helptext_l',
+			'builtin_code,parent_code,sort_code,target_page,url_parameters,target_url,target_window,system_role,css_class,editor_note,caption,description,helptext,caption_l,description_l,helptext_l',
 			'varchar',
 			'menu'
 		);
 		$this->setDataType('permanent,removed', 'bit', 'menu'); // Převod příznaku trvalého zobrazení a odstranění na bit (0/1)
 
-		// 3. Validace záložky "phrase" (textové fráze -> tabulka meta_phrase)
+		// 3. Validace záložky "phrase" (textové fráze -> tabulka meta_phrase, bez svg_icon)
 		$this->setDataType(                                 // Registrace textových sloupců záložky phrase pro meta_phrase
-			'source_code,builtin_code,module,svg_icon,css_class,editor_note,caption,helptext,caption_l,helptext_l',
+			'source_code,builtin_code,module,css_class,editor_note,caption,helptext,caption_l,helptext_l',
 			'varchar',
 			'phrase'
 		);
@@ -101,10 +99,10 @@ class xlsx_meta_object extends xlsx_abstract {
 			}
 		}
 
-		// 4. Validace záložky "class" (logické třídy -> tabulka meta_class), pokud je v sešitu přítomna
+		// 4. Validace záložky "class" (logické třídy -> tabulka meta_class, bez svg_icon), pokud je v sešitu přítomna
 		if (array_key_exists('class', $this->reader->data)) { // Kontrola přítomnosti záložky class v XLSX
 			$this->setDataType(                             // Registrace všech sloupců záložky class jako varchar (kvůli <stříškám>)
-				'class_name,storage_type,storage_code,ancestor_code,sort_code,iconname,is_final,is_protected,inactive,removed,editor_note,caption,caption_plural,description,helptext,caption_l,caption_plural_l,description_l,helptext_l',
+				'class_name,storage_type,storage_code,ancestor_code,sort_code,is_final,is_protected,inactive,removed,editor_note,caption,caption_plural,description,helptext,caption_l,caption_plural_l,description_l,helptext_l',
 				'varchar',
 				'class'
 			);

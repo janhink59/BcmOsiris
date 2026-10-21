@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-20 15:00
+ * Verze: 2026-10-21 15:40
  * Soubor: p_xlsx_meta_object.sql
  * Procedura: p_xlsx_meta_object
  * Účel: Hromadný import systémových stránek a tříd (page), textových frází (phrase),
@@ -17,10 +17,14 @@
  * - Validuje kódy jazyků proti tabulce [language].
  * - Využívá deterministickou funkci dbo.f_generate_original pro výpočet klíčů
  *   original a převod mnemotechnických textových odkazů na UUID.
+ * - Využívá funkci dbo.f_xlsx_clean pro odstranění stříšek <...> u zděděných hodnot.
  * - Zapisuje průběžné a chybové zprávy přes proceduru insert_request_message.
  *
- * Architektura dvou režimů (Jádro vs. Překlady), dědičnosti (<do stříšek>) a removed:
+ * Architektura dvou režimů (Jádro vs. Překlady), dědičnosti (<do stříšek>), svg_icon a removed:
  * - Upravuje výhradně systémové záznamy (object_owner = 0x00).
+ * - Sloupce svg_icon se z Excelu vůbec neimportují ani neaktualizují (jejich nastavení
+ *   v tabulkách meta_phrase, meta_menu a meta_class zůstává nedotčené a řeší se výhradně
+ *   idempotentními databázovými skripty).
  * - REŽIM 1: Import jádra a základního jazyka (když second_language = ''):
  *   Zapisuje hlavní 'A' záznamy a symetrické 'L' záznamy pro základní jazyk (@lang).
  * - REŽIM 2: Import překladů druhého jazyka (když second_language <> ''):
@@ -56,6 +60,10 @@
  * - 2026-10-20 15:00: Doplněn propis sloupce inactive na záložce phrase do meta_phrase
  *   a rozšířena kontrola removed = 0 v Excelu vs. removed = 1 v DB i pro 'L' záznamy
  *   v překladovém režimu (@is_trans_mode = 1).
+ * - 2026-10-21 14:25: Opakující se výrazy pro odstranění stříšek <...> nahrazeny
+ *   funkcí dbo.f_xlsx_clean.
+ * - 2026-10-21 15:40: Vyřazeno čtení a přepisování sloupce svg_icon ze záložek
+ *   phrase, menu a class (hodnoty svg_icon v DB zůstávají při importu z Excelu nedotčeny).
  * ============================================================================= */
 
 EXECUTE dropni 'p_xlsx_meta_object', 'P'
@@ -190,9 +198,9 @@ BEGIN
 			ISNULL(s.caption, '') AS caption,
 			ISNULL(s.description, '') AS description,
 			ISNULL(s.helptext, '') AS helptext,
-			CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.caption_l, '') END AS caption_l,
-			CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.description_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.description_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.description_l, '') END AS description_l,
-			CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.helptext_l, '') END AS helptext_l
+			dbo.f_xlsx_clean(s.caption_l, 1) AS caption_l,
+			dbo.f_xlsx_clean(s.description_l, 1) AS description_l,
+			dbo.f_xlsx_clean(s.helptext_l, 1) AS helptext_l
 		INTO #clean_page
 		FROM XLSX_page$ s;
 
@@ -403,7 +411,7 @@ BEGIN
 	END
 
 	-- =========================================================================
-	-- 2. Zpracování záložky: phrase (tabulka meta_phrase)
+	-- 2. Zpracování záložky: phrase (tabulka meta_phrase – bez čtení svg_icon)
 	-- =========================================================================
 	IF OBJECT_ID('XLSX_phrase$') IS NOT NULL
 	BEGIN
@@ -439,7 +447,7 @@ BEGIN
 			RETURN;
 		END
 
-		-- Očištění dat záložky phrase (hodnoty *_l v <stříškách> se považují za nepřeložené '')
+		-- Očištění dat záložky phrase (bez svg_icon; hodnoty *_l v <stříškách> se považují za nepřeložené '')
 		IF OBJECT_ID('tempdb..#clean_phrase') IS NOT NULL DROP TABLE #clean_phrase;
 
 		SELECT
@@ -447,15 +455,14 @@ BEGIN
 			LTRIM(RTRIM(s.builtin_code)) AS builtin_code,
 			dbo.f_generate_original('meta_phrase', @sys_owner, LTRIM(RTRIM(s.source_code)), LTRIM(RTRIM(s.builtin_code))) AS orig_uuid,
 			ISNULL(s.module, '') AS module,
-			ISNULL(s.svg_icon, '') AS svg_icon,
 			ISNULL(s.css_class, '') AS css_class,
 			ISNULL(TRY_CAST(s.inactive AS bit), 0) AS inactive,
 			ISNULL(TRY_CAST(s.removed AS bit), 0) AS removed,
 			ISNULL(s.editor_note, '') AS editor_note,
 			ISNULL(s.caption, '') AS caption,
 			ISNULL(s.helptext, '') AS helptext,
-			CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.caption_l, '') END AS caption_l,
-			CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.helptext_l, '') END AS helptext_l
+			dbo.f_xlsx_clean(s.caption_l, 1) AS caption_l,
+			dbo.f_xlsx_clean(s.helptext_l, 1) AS helptext_l
 		INTO #clean_phrase
 		FROM XLSX_phrase$ s;
 
@@ -513,14 +520,13 @@ BEGIN
 			IF @cnt_rem > 0
 				EXEC insert_request_message 'Zreplikováno odstranění frází (removed=1) na záložce phrase', 1, @intvalue = @cnt_rem, @obj_type = 'meta_phrase', @obj_name = 'phrase';
 
-			-- 2.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_phrase
+			-- 2.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_phrase (svg_icon v DB zůstává nedotčeno!)
 			UPDATE t
 			SET
 				t.[language] = @lang,
 				t.source_code = s.source_code,
 				t.builtin_code = s.builtin_code,
 				t.module = s.module,
-				t.svg_icon = s.svg_icon,
 				t.css_class = s.css_class,
 				t.inactive = s.inactive,
 				t.editor_note = s.editor_note,
@@ -542,7 +548,7 @@ BEGIN
 				uuid, object_owner, original, record_type, approval_status, [language],
 				inactive, removed, import_origin,
 				source_code, builtin_code, module,
-				svg_icon, css_class,
+				css_class,
 				editor_note, caption, helptext,
 				is_final, is_protected,
 				date_created, who_created, date_modified, who_modified
@@ -551,7 +557,7 @@ BEGIN
 				s.orig_uuid, @sys_owner, s.orig_uuid, 'A', 'A', @lang,
 				s.inactive, 0, @import_origin,
 				s.source_code, s.builtin_code, s.module,
-				s.svg_icon, s.css_class,
+				s.css_class,
 				s.editor_note, s.caption, s.helptext,
 				1, 1,
 				GETDATE(), @user_session, GETDATE(), @user_session
@@ -566,22 +572,23 @@ BEGIN
 
 			SET @cnt_a = @cnt_a + @@ROWCOUNT;
 
-			-- Symetrické 'L' záznamy v meta_phrase pro primární jazyk (@lang)
+			-- Symetrické 'L' záznamy v meta_phrase pro primární jazyk (@lang) – svg_icon se přebírá z 'A' záznamu v DB
 			UPDATE t
 			SET
-				t.source_code = s.source_code,
-				t.builtin_code = s.builtin_code,
-				t.module = s.module,
-				t.svg_icon = s.svg_icon,
-				t.css_class = s.css_class,
-				t.inactive = s.inactive,
-				t.caption = s.caption,
-				t.helptext = s.helptext,
+				t.source_code = a.source_code,
+				t.builtin_code = a.builtin_code,
+				t.module = a.module,
+				t.svg_icon = a.svg_icon,
+				t.css_class = a.css_class,
+				t.inactive = a.inactive,
+				t.caption = a.caption,
+				t.helptext = a.helptext,
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
 			FROM meta_phrase t
-			JOIN #clean_phrase s ON s.orig_uuid = t.original
+			JOIN meta_phrase a ON a.original = t.original AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
+			JOIN #clean_phrase s ON s.orig_uuid = a.original
 			WHERE s.removed = 0
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
@@ -598,22 +605,22 @@ BEGIN
 				date_created, who_created, date_modified, who_modified
 			)
 			SELECT
-				NEWID(), @sys_owner, s.orig_uuid, 'L', 'A', @lang,
-				s.inactive, 0, @import_origin,
-				s.source_code, s.builtin_code, s.module,
-				s.svg_icon, s.css_class,
-				s.caption, s.helptext,
+				NEWID(), @sys_owner, a.original, 'L', 'A', @lang,
+				a.inactive, 0, @import_origin,
+				a.source_code, a.builtin_code, a.module,
+				a.svg_icon, a.css_class,
+				a.caption, a.helptext,
 				1, 1,
 				GETDATE(), @user_session, GETDATE(), @user_session
-			FROM #clean_phrase s
+			FROM meta_phrase a
+			JOIN #clean_phrase s ON s.orig_uuid = a.original
 			WHERE s.removed = 0
-			  AND EXISTS (
-				SELECT 1 FROM meta_phrase a
-				WHERE a.original = s.orig_uuid AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
-			  )
+			  AND a.object_owner = @sys_owner
+			  AND a.record_type = 'A'
+			  AND a.removed = 0
 			  AND NOT EXISTS (
 				SELECT 1 FROM meta_phrase t
-				WHERE t.original = s.orig_uuid
+				WHERE t.original = a.original
 				  AND t.object_owner = @sys_owner
 				  AND t.record_type = 'L'
 				  AND t.[language] = @lang
@@ -700,7 +707,7 @@ BEGIN
 	END
 
 	-- =========================================================================
-	-- 3. Zpracování záložky: menu (tabulka meta_menu)
+	-- 3. Zpracování záložky: menu (tabulka meta_menu – bez čtení svg_icon)
 	-- =========================================================================
 	IF OBJECT_ID('XLSX_menu$') IS NOT NULL
 	BEGIN
@@ -735,15 +742,14 @@ BEGIN
 			ISNULL(NULLIF(LTRIM(RTRIM(s.system_role)), ''), 'S') AS system_role,
 			ISNULL(TRY_CAST(s.permanent AS bit), 0) AS permanent,
 			ISNULL(TRY_CAST(s.removed AS bit), 0) AS removed,
-			ISNULL(s.svg_icon, '') AS svg_icon,
 			ISNULL(s.css_class, '') AS css_class,
 			ISNULL(s.editor_note, '') AS editor_note,
 			ISNULL(s.caption, '') AS caption,
 			ISNULL(s.description, '') AS description,
 			ISNULL(s.helptext, '') AS helptext,
-			CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.caption_l, '') END AS caption_l,
-			CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.description_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.description_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.description_l, '') END AS description_l,
-			CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.helptext_l, '') END AS helptext_l
+			dbo.f_xlsx_clean(s.caption_l, 1) AS caption_l,
+			dbo.f_xlsx_clean(s.description_l, 1) AS description_l,
+			dbo.f_xlsx_clean(s.helptext_l, 1) AS helptext_l
 		INTO #clean_menu
 		FROM XLSX_menu$ s;
 
@@ -781,7 +787,7 @@ BEGIN
 			IF @cnt_rem > 0
 				EXEC insert_request_message 'Zreplikováno odstranění položek menu (removed=1)', 1, @intvalue = @cnt_rem, @obj_type = 'meta_menu', @obj_name = 'menu';
 
-			-- 3.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_menu
+			-- 3.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_menu (svg_icon v DB zůstává nedotčeno!)
 			UPDATE t
 			SET
 				t.[language] = @lang,
@@ -793,7 +799,6 @@ BEGIN
 				t.target_window = s.target_window,
 				t.system_role = s.system_role,
 				t.permanent = s.permanent,
-				t.svg_icon = s.svg_icon,
 				t.css_class = s.css_class,
 				t.editor_note = s.editor_note,
 				t.caption = s.caption,
@@ -817,7 +822,7 @@ BEGIN
 				builtin_code, parent_uuid, sort_code,
 				target_object, url_parameters, target_url, target_window,
 				caption, description, helptext, editor_note,
-				svg_icon, css_class, system_role, permanent,
+				css_class, system_role, permanent,
 				is_final, is_protected,
 				date_created, who_created, date_modified, who_modified
 			)
@@ -827,7 +832,7 @@ BEGIN
 				s.builtin_code, s.calc_parent_uuid, s.sort_code,
 				s.calc_target_object, s.url_parameters, s.target_url, s.target_window,
 				s.caption, s.description, s.helptext, s.editor_note,
-				s.svg_icon, s.css_class, s.system_role, s.permanent,
+				s.css_class, s.system_role, s.permanent,
 				1, 1,
 				GETDATE(), @user_session, GETDATE(), @user_session
 			FROM #clean_menu s
@@ -881,27 +886,28 @@ BEGIN
 				RETURN;
 			END
 
-			-- Symetrické 'L' záznamy v meta_menu pro primární jazyk (@lang)
+			-- Symetrické 'L' záznamy v meta_menu pro primární jazyk (@lang) – svg_icon se přebírá z 'A' záznamu v DB
 			UPDATE t
 			SET
-				t.parent_uuid = s.calc_parent_uuid,
-				t.sort_code = s.sort_code,
-				t.target_object = s.calc_target_object,
-				t.url_parameters = s.url_parameters,
-				t.target_url = s.target_url,
-				t.target_window = s.target_window,
-				t.system_role = s.system_role,
-				t.permanent = s.permanent,
-				t.svg_icon = s.svg_icon,
-				t.css_class = s.css_class,
-				t.caption = s.caption,
-				t.description = s.description,
-				t.helptext = s.helptext,
+				t.parent_uuid = a.parent_uuid,
+				t.sort_code = a.sort_code,
+				t.target_object = a.target_object,
+				t.url_parameters = a.url_parameters,
+				t.target_url = a.target_url,
+				t.target_window = a.target_window,
+				t.system_role = a.system_role,
+				t.permanent = a.permanent,
+				t.svg_icon = a.svg_icon,
+				t.css_class = a.css_class,
+				t.caption = a.caption,
+				t.description = a.description,
+				t.helptext = a.helptext,
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
 			FROM meta_menu t
-			JOIN #clean_menu s ON s.orig_uuid = t.original
+			JOIN meta_menu a ON a.original = t.original AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
+			JOIN #clean_menu s ON s.orig_uuid = a.original
 			WHERE s.removed = 0
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
@@ -919,23 +925,23 @@ BEGIN
 				date_created, who_created, date_modified, who_modified
 			)
 			SELECT
-				NEWID(), @sys_owner, s.orig_uuid, 'L', 'A', @lang,
+				NEWID(), @sys_owner, a.original, 'L', 'A', @lang,
 				0, @import_origin,
-				s.builtin_code, s.calc_parent_uuid, s.sort_code,
-				s.calc_target_object, s.url_parameters, s.target_url, s.target_window,
-				s.caption, s.description, s.helptext,
-				s.svg_icon, s.css_class, s.system_role, s.permanent,
+				a.builtin_code, a.parent_uuid, a.sort_code,
+				a.target_object, a.url_parameters, a.target_url, a.target_window,
+				a.caption, a.description, a.helptext,
+				a.svg_icon, a.css_class, a.system_role, a.permanent,
 				1, 1,
 				GETDATE(), @user_session, GETDATE(), @user_session
-			FROM #clean_menu s
+			FROM meta_menu a
+			JOIN #clean_menu s ON s.orig_uuid = a.original
 			WHERE s.removed = 0
-			  AND EXISTS (
-				SELECT 1 FROM meta_menu a
-				WHERE a.original = s.orig_uuid AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
-			  )
+			  AND a.object_owner = @sys_owner
+			  AND a.record_type = 'A'
+			  AND a.removed = 0
 			  AND NOT EXISTS (
 				SELECT 1 FROM meta_menu t
-				WHERE t.original = s.orig_uuid
+				WHERE t.original = a.original
 				  AND t.object_owner = @sys_owner
 				  AND t.record_type = 'L'
 				  AND t.[language] = @lang
@@ -1025,7 +1031,7 @@ BEGIN
 	END
 
 	-- =========================================================================
-	-- 4. Zpracování volitelné záložky: class (tabulka meta_class)
+	-- 4. Zpracování volitelné záložky: class (tabulka meta_class – bez čtení svg_icon)
 	-- =========================================================================
 	IF OBJECT_ID('XLSX_class$') IS NOT NULL
 	BEGIN
@@ -1044,7 +1050,7 @@ BEGIN
 			RETURN;
 		END
 
-		-- Očištění hodnot uzavřených <do stříšek> do pomocné tabulky #clean_class
+		-- Očištění hodnot uzavřených <do stříšek> do pomocné tabulky #clean_class pomocí dbo.f_xlsx_clean (bez svg_icon)
 		-- U *_l sloupců platí, že hodnota ponechaná <ve stříškách> je zděděná a nepřeložená -> ukládá se jako '' (NULL)
 		IF OBJECT_ID('tempdb..#clean_class') IS NOT NULL DROP TABLE #clean_class;
 
@@ -1057,40 +1063,22 @@ BEGIN
 			LTRIM(RTRIM(ISNULL(s.ancestor_code, ''))) AS ancestor_code,
 			CASE WHEN LTRIM(RTRIM(ISNULL(s.ancestor_code, ''))) <> '' THEN dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), LTRIM(RTRIM(s.ancestor_code)), '') ELSE NULL END AS calc_ancestor_uuid,
 			LTRIM(RTRIM(ISNULL(s.sort_code, ''))) AS sort_code,
-			v.iconname,
-			ISNULL(TRY_CAST(v.is_final AS bit), 1) AS is_final,
-			ISNULL(TRY_CAST(v.is_protected AS bit), 0) AS is_protected,
-			ISNULL(TRY_CAST(v.inactive AS bit), 0) AS inactive,
-			ISNULL(TRY_CAST(v.removed AS bit), 0) AS removed,
-			v.editor_note,
-			v.caption,
-			v.caption_plural,
-			v.description,
-			v.helptext,
-			v.caption_l,
-			v.caption_plural_l,
-			v.description_l,
-			v.helptext_l,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.is_final, 0) AS bit), 1) AS is_final,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.is_protected, 0) AS bit), 0) AS is_protected,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.inactive, 0) AS bit), 0) AS inactive,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.removed, 0) AS bit), 0) AS removed,
+			dbo.f_xlsx_clean(s.editor_note, 0) AS editor_note,
+			dbo.f_xlsx_clean(s.caption, 0) AS caption,
+			dbo.f_xlsx_clean(s.caption_plural, 0) AS caption_plural,
+			dbo.f_xlsx_clean(s.description, 0) AS description,
+			dbo.f_xlsx_clean(s.helptext, 0) AS helptext,
+			dbo.f_xlsx_clean(s.caption_l, 1) AS caption_l,
+			dbo.f_xlsx_clean(s.caption_plural_l, 1) AS caption_plural_l,
+			dbo.f_xlsx_clean(s.description_l, 1) AS description_l,
+			dbo.f_xlsx_clean(s.helptext_l, 1) AS helptext_l,
 			CAST(1 AS bit) AS storage_valid
 		INTO #clean_class
-		FROM XLSX_class$ s
-		CROSS APPLY (
-			SELECT
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.iconname, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.iconname, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.iconname)), 2, LEN(LTRIM(RTRIM(s.iconname))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.iconname, ''))) END AS iconname,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.is_final, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.is_final, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.is_final)), 2, LEN(LTRIM(RTRIM(s.is_final))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.is_final, ''))) END AS is_final,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.is_protected, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.is_protected, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.is_protected)), 2, LEN(LTRIM(RTRIM(s.is_protected))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.is_protected, ''))) END AS is_protected,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.inactive, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.inactive, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.inactive)), 2, LEN(LTRIM(RTRIM(s.inactive))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.inactive, ''))) END AS inactive,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.removed, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.removed, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.removed)), 2, LEN(LTRIM(RTRIM(s.removed))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.removed, '0'))) END AS removed,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.editor_note, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.editor_note, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.editor_note)), 2, LEN(LTRIM(RTRIM(s.editor_note))) - 2) ELSE ISNULL(s.editor_note, '') END AS editor_note,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.caption)), 2, LEN(LTRIM(RTRIM(s.caption))) - 2) ELSE ISNULL(s.caption, '') END AS caption,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_plural, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_plural, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.caption_plural)), 2, LEN(LTRIM(RTRIM(s.caption_plural))) - 2) ELSE ISNULL(s.caption_plural, '') END AS caption_plural,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.description, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.description, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.description)), 2, LEN(LTRIM(RTRIM(s.description))) - 2) ELSE ISNULL(s.description, '') END AS description,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.helptext, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.helptext, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.helptext)), 2, LEN(LTRIM(RTRIM(s.helptext))) - 2) ELSE ISNULL(s.helptext, '') END AS helptext,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.caption_l, '') END AS caption_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_plural_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_plural_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.caption_plural_l, '') END AS caption_plural_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.description_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.description_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.description_l, '') END AS description_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.helptext_l, '') END AS helptext_l
-		) v;
+		FROM XLSX_class$ s;
 
 		-- Propustná kontrola existence úložného objektu (storage_code) v meta_object
 		UPDATE s
@@ -1159,14 +1147,13 @@ BEGIN
 			IF @cnt_rem > 0
 				EXEC insert_request_message 'Zreplikováno odstranění logických tříd (removed=1)', 1, @intvalue = @cnt_rem, @obj_type = 'meta_class', @obj_name = 'class';
 
-			-- 4.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_class (pouze pro platný storage_object a removed = 0)
+			-- 4.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_class (svg_icon v DB zůstává nedotčeno!)
 			UPDATE t
 			SET
 				t.[language] = @lang,
 				t.storage_object = s.calc_storage_uuid,
 				t.ancestor_class = s.calc_ancestor_uuid,
 				t.sort_code = s.sort_code,
-				t.iconname = NULLIF(s.iconname, ''),
 				t.is_final = s.is_final,
 				t.is_protected = s.is_protected,
 				t.inactive = s.inactive,
@@ -1191,7 +1178,7 @@ BEGIN
 			INSERT INTO meta_class (
 				uuid, object_owner, original, record_type, approval_status, [language],
 				inactive, removed, import_origin,
-				class_name, storage_object, ancestor_class, sort_code, iconname,
+				class_name, storage_object, ancestor_class, sort_code,
 				is_final, is_protected,
 				editor_note, caption, caption_plural, description, helptext,
 				date_created, who_created, date_modified, who_modified
@@ -1199,7 +1186,7 @@ BEGIN
 			SELECT
 				s.orig_uuid, @sys_owner, s.orig_uuid, 'A', 'A', @lang,
 				s.inactive, 0, @import_origin,
-				s.class_name, s.calc_storage_uuid, s.calc_ancestor_uuid, s.sort_code, NULLIF(s.iconname, ''),
+				s.class_name, s.calc_storage_uuid, s.calc_ancestor_uuid, s.sort_code,
 				s.is_final, s.is_protected,
 				NULLIF(s.editor_note, ''), NULLIF(s.caption, ''), NULLIF(s.caption_plural, ''), NULLIF(s.description, ''), NULLIF(s.helptext, ''),
 				GETDATE(), @user_session, GETDATE(), @user_session
@@ -1239,7 +1226,6 @@ BEGIN
 			-- Pokud je hodnota na třídě shodná s předkem (ancestor_class), uložíme NULL pro zachování dědičnosti
 			UPDATE c
 			SET
-				c.iconname = CASE WHEN ISNULL(c.iconname, '') = ISNULL(anc.iconname, '') THEN NULL ELSE c.iconname END,
 				c.caption = CASE WHEN ISNULL(c.caption, '') = ISNULL(anc.caption, '') THEN NULL ELSE c.caption END,
 				c.caption_plural = CASE WHEN ISNULL(c.caption_plural, '') = ISNULL(anc.caption_plural, '') THEN NULL ELSE c.caption_plural END,
 				c.description = CASE WHEN ISNULL(c.description, '') = ISNULL(anc.description, '') THEN NULL ELSE c.description END,
@@ -1250,13 +1236,13 @@ BEGIN
 			  AND c.record_type = 'A'
 			  AND c.removed = 0;
 
-			-- Symetrické 'L' záznamy v meta_class pro primární jazyk (@lang)
+			-- Symetrické 'L' záznamy v meta_class pro primární jazyk (@lang) – svg_icon se přebírá z 'A' záznamu v DB
 			UPDATE t
 			SET
 				t.storage_object = a.storage_object,
 				t.ancestor_class = a.ancestor_class,
 				t.sort_code = a.sort_code,
-				t.iconname = a.iconname,
+				t.svg_icon = a.svg_icon,
 				t.is_final = a.is_final,
 				t.is_protected = a.is_protected,
 				t.inactive = a.inactive,
@@ -1280,7 +1266,7 @@ BEGIN
 			INSERT INTO meta_class (
 				uuid, object_owner, original, record_type, approval_status, [language],
 				inactive, removed, import_origin,
-				class_name, storage_object, ancestor_class, sort_code, iconname,
+				class_name, storage_object, ancestor_class, sort_code, svg_icon,
 				is_final, is_protected,
 				caption, caption_plural, description, helptext,
 				date_created, who_created, date_modified, who_modified
@@ -1288,7 +1274,7 @@ BEGIN
 			SELECT
 				NEWID(), @sys_owner, a.original, 'L', 'A', @lang,
 				a.inactive, 0, @import_origin,
-				a.class_name, a.storage_object, a.ancestor_class, a.sort_code, a.iconname,
+				a.class_name, a.storage_object, a.ancestor_class, a.sort_code, a.svg_icon,
 				a.is_final, a.is_protected,
 				a.caption, a.caption_plural, a.description, a.helptext,
 				GETDATE(), @user_session, GETDATE(), @user_session
@@ -1352,7 +1338,7 @@ BEGIN
 			INSERT INTO meta_class (
 				uuid, object_owner, original, record_type, approval_status, [language],
 				inactive, removed, import_origin,
-				class_name, storage_object, ancestor_class, sort_code, iconname,
+				class_name, storage_object, ancestor_class, sort_code, svg_icon,
 				is_final, is_protected,
 				caption, caption_plural, description, helptext,
 				date_created, who_created, date_modified, who_modified
@@ -1360,7 +1346,7 @@ BEGIN
 			SELECT
 				NEWID(), @sys_owner, a.original, 'L', 'A', @sec_lang,
 				a.inactive, 0, @import_origin,
-				a.class_name, a.storage_object, a.ancestor_class, a.sort_code, a.iconname,
+				a.class_name, a.storage_object, a.ancestor_class, a.sort_code, a.svg_icon,
 				a.is_final, a.is_protected,
 				NULLIF(s.caption_l, ''),
 				NULLIF(s.caption_plural_l, ''),
@@ -1425,7 +1411,7 @@ BEGIN
 
 		DECLARE @global_cls_uuid uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'sys_global_columns', '');
 
-		-- Očištění všech hodnot od případných stříšek <...> do pomocné tabulky #clean_column
+		-- Očištění všech hodnot od případných stříšek <...> do pomocné tabulky #clean_column pomocí dbo.f_xlsx_clean
 		-- U *_l sloupců platí, že hodnota ponechaná <ve stříškách> je zděděná a nepřeložená -> ukládá se jako NULL
 		IF OBJECT_ID('tempdb..#clean_column') IS NOT NULL DROP TABLE #clean_column;
 
@@ -1434,47 +1420,47 @@ BEGIN
 			LTRIM(RTRIM(ISNULL(s.column_name, ''))) AS column_name,
 			p.calc_parent_class,
 			dbo.f_generate_original('meta_column', @sys_owner, CAST(p.calc_parent_class AS varchar(36)), LTRIM(RTRIM(ISNULL(s.column_name, '')))) AS orig_uuid,
-			ISNULL(TRY_CAST(v.parent_order AS int), 0) AS parent_order,
-			NULLIF(v.sort_code, '') AS sort_code,
-			TRY_CAST(NULLIF(v.list_order, '') AS int) AS list_order,
-			NULLIF(v.input_type, '') AS input_type,
-			NULLIF(v.input_width, '') AS input_width,
-			TRY_CAST(NULLIF(v.input_rows, '') AS int) AS input_rows,
-			TRY_CAST(NULLIF(v.max_length, '') AS int) AS max_length,
-			NULLIF(v.css_class, '') AS css_class,
-			TRY_CAST(NULLIF(v.translate, '') AS bit) AS translate,
-			TRY_CAST(NULLIF(v.history, '') AS bit) AS history,
-			TRY_CAST(NULLIF(v.is_html, '') AS bit) AS is_html,
-			TRY_CAST(NULLIF(v.is_mandatory, '') AS bit) AS is_mandatory,
-			TRY_CAST(NULLIF(v.is_url, '') AS bit) AS is_url,
-			TRY_CAST(NULLIF(v.is_computed, '') AS bit) AS is_computed,
-			TRY_CAST(NULLIF(v.show_empty, '') AS bit) AS show_empty,
-			TRY_CAST(NULLIF(v.hidden, '') AS bit) AS hidden,
-			TRY_CAST(NULLIF(v.customizable, '') AS bit) AS customizable,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.parent_order, 0) AS int), 0) AS parent_order,
+			NULLIF(dbo.f_xlsx_clean(s.sort_code, 0), '') AS sort_code,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.list_order, 0), '') AS int) AS list_order,
+			NULLIF(dbo.f_xlsx_clean(s.input_type, 0), '') AS input_type,
+			NULLIF(dbo.f_xlsx_clean(s.input_width, 0), '') AS input_width,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.input_rows, 0), '') AS int) AS input_rows,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.max_length, 0), '') AS int) AS max_length,
+			NULLIF(dbo.f_xlsx_clean(s.css_class, 0), '') AS css_class,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.translate, 0), '') AS bit) AS translate,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.history, 0), '') AS bit) AS history,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.is_html, 0), '') AS bit) AS is_html,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.is_mandatory, 0), '') AS bit) AS is_mandatory,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.is_url, 0), '') AS bit) AS is_url,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.is_computed, 0), '') AS bit) AS is_computed,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.show_empty, 0), '') AS bit) AS show_empty,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.hidden, 0), '') AS bit) AS hidden,
+			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.customizable, 0), '') AS bit) AS customizable,
 			v.ancestor_column,
 			CASE WHEN LTRIM(RTRIM(ISNULL(s.class_name, ''))) <> 'sys_global_columns' AND v.ancestor_column <> '' THEN dbo.f_generate_original('meta_column', @sys_owner, CAST(@global_cls_uuid AS varchar(36)), v.ancestor_column) ELSE NULL END AS calc_ancestor_uuid,
-			v.referenced_codetable,
+			dbo.f_xlsx_clean(s.referenced_codetable, 0) AS referenced_codetable,
 			v.referenced_class_code,
 			CASE WHEN v.referenced_class_code <> '' THEN dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), v.referenced_class_code, '') ELSE NULL END AS calc_ref_class_uuid,
-			ISNULL(TRY_CAST(v.is_final AS bit), 1) AS is_final,
-			ISNULL(TRY_CAST(v.is_protected AS bit), 0) AS is_protected,
-			ISNULL(TRY_CAST(v.inactive AS bit), 0) AS inactive,
-			ISNULL(TRY_CAST(v.removed AS bit), 0) AS removed,
-			NULLIF(v.editor_note, '') AS editor_note,
-			NULLIF(v.caption, '') AS caption,
-			NULLIF(v.caption_plural, '') AS caption_plural,
-			NULLIF(v.description, '') AS description,
-			NULLIF(v.label, '') AS label,
-			NULLIF(v.header, '') AS header,
-			NULLIF(v.helptext, '') AS helptext,
-			NULLIF(v.placeholder, '') AS placeholder,
-			NULLIF(v.caption_l, '') AS caption_l,
-			NULLIF(v.caption_plural_l, '') AS caption_plural_l,
-			NULLIF(v.description_l, '') AS description_l,
-			NULLIF(v.label_l, '') AS label_l,
-			NULLIF(v.header_l, '') AS header_l,
-			NULLIF(v.helptext_l, '') AS helptext_l,
-			NULLIF(v.placeholder_l, '') AS placeholder_l,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.is_final, 0) AS bit), 1) AS is_final,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.is_protected, 0) AS bit), 0) AS is_protected,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.inactive, 0) AS bit), 0) AS inactive,
+			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.removed, 0) AS bit), 0) AS removed,
+			NULLIF(dbo.f_xlsx_clean(s.editor_note, 0), '') AS editor_note,
+			NULLIF(dbo.f_xlsx_clean(s.caption, 0), '') AS caption,
+			NULLIF(dbo.f_xlsx_clean(s.caption_plural, 0), '') AS caption_plural,
+			NULLIF(dbo.f_xlsx_clean(s.description, 0), '') AS description,
+			NULLIF(dbo.f_xlsx_clean(s.label, 0), '') AS label,
+			NULLIF(dbo.f_xlsx_clean(s.header, 0), '') AS header,
+			NULLIF(dbo.f_xlsx_clean(s.helptext, 0), '') AS helptext,
+			NULLIF(dbo.f_xlsx_clean(s.placeholder, 0), '') AS placeholder,
+			NULLIF(dbo.f_xlsx_clean(s.caption_l, 1), '') AS caption_l,
+			NULLIF(dbo.f_xlsx_clean(s.caption_plural_l, 1), '') AS caption_plural_l,
+			NULLIF(dbo.f_xlsx_clean(s.description_l, 1), '') AS description_l,
+			NULLIF(dbo.f_xlsx_clean(s.label_l, 1), '') AS label_l,
+			NULLIF(dbo.f_xlsx_clean(s.header_l, 1), '') AS header_l,
+			NULLIF(dbo.f_xlsx_clean(s.helptext_l, 1), '') AS helptext_l,
+			NULLIF(dbo.f_xlsx_clean(s.placeholder_l, 1), '') AS placeholder_l,
 			CAST(1 AS bit) AS class_valid
 		INTO #clean_column
 		FROM XLSX_column$ s
@@ -1483,45 +1469,8 @@ BEGIN
 		) p
 		CROSS APPLY (
 			SELECT
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.parent_order, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.parent_order, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.parent_order)), 2, LEN(LTRIM(RTRIM(s.parent_order))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.parent_order, ''))) END AS parent_order,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.sort_code, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.sort_code, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.sort_code)), 2, LEN(LTRIM(RTRIM(s.sort_code))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.sort_code, ''))) END AS sort_code,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.list_order, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.list_order, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.list_order)), 2, LEN(LTRIM(RTRIM(s.list_order))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.list_order, ''))) END AS list_order,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.input_type, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.input_type, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.input_type)), 2, LEN(LTRIM(RTRIM(s.input_type))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.input_type, ''))) END AS input_type,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.input_width, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.input_width, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.input_width)), 2, LEN(LTRIM(RTRIM(s.input_width))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.input_width, ''))) END AS input_width,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.input_rows, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.input_rows, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.input_rows)), 2, LEN(LTRIM(RTRIM(s.input_rows))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.input_rows, ''))) END AS input_rows,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.max_length, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.max_length, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.max_length)), 2, LEN(LTRIM(RTRIM(s.max_length))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.max_length, ''))) END AS max_length,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.css_class, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.css_class, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.css_class)), 2, LEN(LTRIM(RTRIM(s.css_class))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.css_class, ''))) END AS css_class,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.translate, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.translate, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.translate)), 2, LEN(LTRIM(RTRIM(s.translate))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.translate, ''))) END AS translate,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.history, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.history, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.history)), 2, LEN(LTRIM(RTRIM(s.history))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.history, ''))) END AS history,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.is_html, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.is_html, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.is_html)), 2, LEN(LTRIM(RTRIM(s.is_html))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.is_html, ''))) END AS is_html,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.is_mandatory, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.is_mandatory, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.is_mandatory)), 2, LEN(LTRIM(RTRIM(s.is_mandatory))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.is_mandatory, ''))) END AS is_mandatory,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.is_url, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.is_url, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.is_url)), 2, LEN(LTRIM(RTRIM(s.is_url))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.is_url, ''))) END AS is_url,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.is_computed, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.is_computed, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.is_computed)), 2, LEN(LTRIM(RTRIM(s.is_computed))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.is_computed, ''))) END AS is_computed,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.show_empty, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.show_empty, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.show_empty)), 2, LEN(LTRIM(RTRIM(s.show_empty))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.show_empty, ''))) END AS show_empty,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.hidden, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.hidden, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.hidden)), 2, LEN(LTRIM(RTRIM(s.hidden))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.hidden, ''))) END AS hidden,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.customizable, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.customizable, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.customizable)), 2, LEN(LTRIM(RTRIM(s.customizable))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.customizable, ''))) END AS customizable,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.ancestor_column, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.ancestor_column, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.ancestor_column)), 2, LEN(LTRIM(RTRIM(s.ancestor_column))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.ancestor_column, ''))) END AS ancestor_column,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.referenced_codetable, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.referenced_codetable, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.referenced_codetable)), 2, LEN(LTRIM(RTRIM(s.referenced_codetable))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.referenced_codetable, ''))) END AS referenced_codetable,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.referenced_class_code, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.referenced_class_code, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.referenced_class_code)), 2, LEN(LTRIM(RTRIM(s.referenced_class_code))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.referenced_class_code, ''))) END AS referenced_class_code,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.is_final, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.is_final, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.is_final)), 2, LEN(LTRIM(RTRIM(s.is_final))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.is_final, ''))) END AS is_final,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.is_protected, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.is_protected, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.is_protected)), 2, LEN(LTRIM(RTRIM(s.is_protected))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.is_protected, ''))) END AS is_protected,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.inactive, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.inactive, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.inactive)), 2, LEN(LTRIM(RTRIM(s.inactive))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.inactive, ''))) END AS inactive,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.removed, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.removed, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.removed)), 2, LEN(LTRIM(RTRIM(s.removed))) - 2) ELSE LTRIM(RTRIM(ISNULL(s.removed, '0'))) END AS removed,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.editor_note, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.editor_note, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.editor_note)), 2, LEN(LTRIM(RTRIM(s.editor_note))) - 2) ELSE ISNULL(s.editor_note, '') END AS editor_note,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.caption)), 2, LEN(LTRIM(RTRIM(s.caption))) - 2) ELSE ISNULL(s.caption, '') END AS caption,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_plural, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_plural, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.caption_plural)), 2, LEN(LTRIM(RTRIM(s.caption_plural))) - 2) ELSE ISNULL(s.caption_plural, '') END AS caption_plural,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.description, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.description, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.description)), 2, LEN(LTRIM(RTRIM(s.description))) - 2) ELSE ISNULL(s.description, '') END AS description,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.label, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.label, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.label)), 2, LEN(LTRIM(RTRIM(s.label))) - 2) ELSE ISNULL(s.label, '') END AS label,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.header, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.header, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.header)), 2, LEN(LTRIM(RTRIM(s.header))) - 2) ELSE ISNULL(s.header, '') END AS header,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.helptext, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.helptext, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.helptext)), 2, LEN(LTRIM(RTRIM(s.helptext))) - 2) ELSE ISNULL(s.helptext, '') END AS helptext,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.placeholder, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.placeholder, ''))), 1) = '>' THEN SUBSTRING(LTRIM(RTRIM(s.placeholder)), 2, LEN(LTRIM(RTRIM(s.placeholder))) - 2) ELSE ISNULL(s.placeholder, '') END AS placeholder,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.caption_l, '') END AS caption_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.caption_plural_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.caption_plural_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.caption_plural_l, '') END AS caption_plural_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.description_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.description_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.description_l, '') END AS description_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.label_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.label_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.label_l, '') END AS label_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.header_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.header_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.header_l, '') END AS header_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.helptext_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.helptext_l, '') END AS helptext_l,
-				CASE WHEN LEFT(LTRIM(RTRIM(ISNULL(s.placeholder_l, ''))), 1) = '<' AND RIGHT(LTRIM(RTRIM(ISNULL(s.placeholder_l, ''))), 1) = '>' THEN '' ELSE ISNULL(s.placeholder_l, '') END AS placeholder_l
+				dbo.f_xlsx_clean(s.ancestor_column, 0) AS ancestor_column,
+				dbo.f_xlsx_clean(s.referenced_class_code, 0) AS referenced_class_code
 		) v;
 
 		-- Propustná kontrola existence nadřízené třídy v meta_class

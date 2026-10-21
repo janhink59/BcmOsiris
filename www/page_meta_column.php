@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-18 17:15
+ * Verze: 2026-10-21 15:00
  * Soubor: page_meta_column.php
  * Účel: Detailní editace metadat konkrétního sloupce (tenant override nebo překlad).
  *       Funguje jako podřízená stránka editoru logických tříd (page_meta_class)
@@ -13,18 +13,12 @@
  *   a `$this->phrase()` pro lokalizaci všech nadpisů, sekcí a upozornění.
  *
  * Změny:
+ * 2026-10-21 15:00 - Všechna čtení z databáze převedena ze sqlrun/fetch na
+ *                    sqlfirstrow() a sqlarray_simple() (ochrana globálního $dbquery
+ *                    při vnořeném volání $this->phrase()).
  * 2026-10-18 17:15 - Doplněn sloupec editor_note do prezentační sekce formuláře
  *                    a nahrazen operátor && za AND (Anti-LaTeX).
- * 2026-10-16 09:55 - Oprava spojených řádků u definice sekce $grp_beh a u plnění
- *                    proměnné $options_html (doplněna diakritika do inline komentářů).
  * 2026-10-16 00:15 - Zapojení abstract_button a phrase_manager ($this->phrase).
- *                  - Odstraněna ruční kontrola role v konstruktoru (řeší předek a entity_manager).
- * 2026-10-15 22:55 - Doplněno volání parent::__construct(), výchozí napojení na
- *                    sys_global_columns při prázdném parent_class, přepínač třídy
- *                    v hlavičce Master panelu a návratové tlačítko do page_meta_class.
- * 2026-10-09 - Odstraněna redundantní vlastnost $access_denied a překrývané metody (řeší rodič).
- *            - Optimalizace konstruktoru: nevolá DB, pokud je přístup odepřen.
- *            - Oprava vyhodnocení oprávnění (přechod z right_sysadmin/right_orgadmin na active_role).
  * =============================================================================
  */
 
@@ -59,26 +53,24 @@ class page_meta_column extends abstract_page_master_detail {
 
 		// Pokud nebyla v URL předána žádná třída, předvybereme globální slovník sys_global_columns
 		if ($this->parent_class === '') {                                    // Kontrola prázdného parametru třídy
-			$q_def = sqlrun("SELECT TOP 1 original FROM meta_class WHERE class_name = 'sys_global_columns' AND object_owner = 0x00 AND record_type = 'A' AND removed = 0"); // Dotaz na výchozí třídu
-			if ($r_def = fetch($q_def)) {                                    // Načtení výchozí třídy
+			$r_def = sqlfirstrow("SELECT TOP 1 original FROM meta_class WHERE class_name = 'sys_global_columns' AND object_owner = 0x00 AND record_type = 'A' AND removed = 0"); // Dotaz na výchozí třídu
+			if (!empty($r_def)) {                                            // Načtení výchozí třídy
 				$this->parent_class = (string)$r_def['original'];            // Výchozí UUID pro sys_global_columns
 				$_GET['parent_class'] =$this->parent_class;                 // Zápis do GET pro propagaci kontextu
 			}
-			free_result($q_def);                                             // Uvolnění výsledku dotazu
 		}
 		
 		if ($this->parent_class !== '') {                                    // Pokud máme platnou nadřízenou třídu
 			$this->master_where = "m.parent_class = " . guidliteral($this->parent_class); // Podmínka pro levý panel
 			
-			// Zjištění názvu nadřízeného objektu pro titulek přes dynamický dotaz z entity_manageru
+			// Zjištění názvu nadřízeného objektu pro titulek přes sqlfirstrow()
 			$em_parent = new entity_manager('meta_class');                   // Správce pro načtení nadřízené třídy
-			$q = sqlrun($em_parent->build_select_query("m.original = " . guidliteral($this->parent_class))); // Dotaz na nadřízenou třídu
+			$row = sqlfirstrow($em_parent->build_select_query("m.original = " . guidliteral($this->parent_class))); // Načtení nadřízené třídy
 			
-			if ($row = fetch($q)) {                                          // Načtení dat nadřízené třídy
+			if (!empty($row)) {                                              // Pokud byla nadřízená třída nalezena
 				$this->parent_name = (string)$row['caption'] !== '' ? (string)$row['caption'] : (string)$row['class_name']; // Určení názvu třídy
 				$this->page_title = $this->phrase('page_title_class', ['class' =>$this->parent_name], 'Sloupce: {' . chr(36) . 'class}'); // Aktualizace titulku stránky
 			}
-			free_result($q);                                                 // Uvolnění výsledku dotazu
 		}
 	}
 
@@ -115,23 +107,24 @@ class page_meta_column extends abstract_page_master_detail {
 			echo "<div style=\"margin-bottom: 10px;\">" . $btn_back->render() . "</div>\n"; // Výpis návratového tlačítka
 		}
 
-		// 2. Rychlý výběr logické třídy pro filtrování sloupců
+		// 2. Rychlý výběr logické třídy pro filtrování sloupců (načteno přes sqlarray_simple)
 		$options_html = '';                                                  // HTML opcí pro výběr třídy
-		$q_cls = sqlrun("
+		$cls_rows = sqlarray_simple("
 			SELECT original, class_name, caption
 			FROM meta_class
 			WHERE object_owner = 0x00 AND record_type = 'A' AND removed = 0
 			ORDER BY CASE WHEN class_name = 'sys_global_columns' THEN 0 ELSE 1 END, class_name
-		");                                                                  // Dotaz na seznam logických tříd
-		while ($cls = fetch($q_cls)) {                                       // Sestavení položek roletky tříd
-			$c_uuid = (string)$cls['original'];                              // UUID logické třídy
-			$c_code = htmlspecialchars((string)$cls['class_name']);          // Kód logické třídy
-			$c_cap = htmlspecialchars((string)$cls['caption']);              // Popisek logické třídy
-			$sel = (strcasecmp($c_uuid,$this->parent_class) === 0) ? 'selected' : ''; // Označení aktivní třídy
-			$label = ($c_cap !== '' AND$c_cap !== $c_code) ? "{$c_code} ({$c_cap})" : $c_code; // Text položky v roletce tříd
-			$options_html .= "<option value=\"{$c_uuid}\" {$sel}>{$label}</option>"; // Přidání volby do seznamu
+		");                                                                  // Načtení seznamu logických tříd do pole
+		if (is_array($cls_rows)) {                                           // Kontrola platného pole tříd
+			foreach ($cls_rows as$cls) {                                    // Sestavení položek roletky tříd
+				$c_uuid = (string)$cls['original'];                          // UUID logické třídy
+				$c_code = htmlspecialchars((string)$cls['class_name']);      // Kód logické třídy
+				$c_cap = htmlspecialchars((string)$cls['caption']);          // Popisek logické třídy
+				$sel = (strcasecmp($c_uuid,$this->parent_class) === 0) ? 'selected' : ''; // Označení aktivní třídy
+				$label = ($c_cap !== '' AND$c_cap !== $c_code) ? "{$c_code} ({$c_cap})" : $c_code; // Text položky v roletce
+				$options_html .= "<option value=\"{$c_uuid}\" {$sel}>{$label}</option>"; // Přidání volby do seznamu
+			}
 		}
-		free_result($q_cls);                                                 // Uvolnění výsledku dotazu
 
 		$lbl_class = htmlspecialchars($this->phrase('lbl_select_class', [], 'Logická třída (objekt):')); // Popisek roletky
 

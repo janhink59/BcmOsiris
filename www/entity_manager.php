@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-20 13:10
+ * Verze: 2026-10-21 14:36
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit pro čtení i autonomní zápis (STI Architektura).
  * 
@@ -42,11 +42,11 @@
  *    - is_protected: Je-li nastaveno na sloupci, tenant NESMÍ tento sloupec
  *      přepsat. V SQL (při čtení) i v PHP (při zápisu) se tvrdě vynucuje 
  *      hodnota ze systémového originálu (0x00).
- *    - svg_icon / svg_code: V detailním formuláři se zobrazuje výhradně jako
+ *    - svg_icon: V detailním formuláři se zobrazuje výhradně jako
  *      neredigovatelný vizuální náhled ikony; v POST datech je zcela ignorován
  *      pro všechny role, protože SVG kód se spravuje výhradně DB skriptem/importem.
  *    - Ochrana metadat (meta_*): Funkčně významné atributy metadat (translate = 0)
- *      smí upravovat výhradně uživatel s active_role = 'D' (Developer). Překladové
+ *      smí upravovat výhradně uživatel s active_role = 'D' (Developer). Překlady
  *      sloupce (translate = 1) mohou upravovat všichni uživatelé.
  * 
  * 5. Asymetrický zápis překladů (right_translate)
@@ -72,11 +72,15 @@
  *      jsou při schválení vybraného návrhu automaticky odmítnuty (`approval_status = 'R'`).
  * 
  * Změny:
+ * 2026-10-21 14:36 - Sjednocení názvu sloupce vektorové ikony výhradně na svg_icon.
+ *                  - Výrazné zkrácení kódu v save_post_data() a approve_draft():
+ *                    8 opakujících se smyček foreach ($this->physical_cols) nahrazeno
+ *                    metodami insert_from_map() a clone_with_map() a zjednodušena CTE v build_select_query().
  * 2026-10-20 13:10 - Doplněna podpora pro zrušení a obnovení záznamu či překladu (removed)
  *                    v UI editoru: metody has_physical_column(), can_remove_record(),
  *                    render_removed_section(), parametr $show_removed v build_select_query()
  *                    a zpracování removed/inactive v extract_post_data() a save_post_data().
- *                  - Sloupce svg_icon a svg_code se v render_dynamic_input() vykreslují
+ *                  - Sloupce svg_icon se v render_dynamic_input() vykreslují
  *                    výhradně jako neredigovatelný vizuální náhled SVG ikony a v
  *                    extract_post_data() jsou vyřazeny ze zpracování POSTu.
  *                  - Roletka pro source_code v meta_phrase nabízí 'global_phrase' místo
@@ -170,6 +174,48 @@ class entity_manager {
 	}
 
 	/**
+	 * Sestaví a spustí příkaz INSERT INTO ... VALUES (...) vyfiltrováním předané mapy
+	 * sloupců a SQL výrazů proti skutečným fyzickým sloupcům tabulky ($this->physical_cols).
+	 *
+	 * @param array<string, string|int> $row_map Asociativní pole [sloupec => SQL výraz]
+	 */
+	private function insert_from_map(array $row_map): void {                 // Vložení nového záznamu podle mapy sloupců
+		$ins_cols = [];                                                      // Seznam vkládaných fyzických sloupců
+		$ins_vals = [];                                                      // Seznam odpovídajících SQL hodnot
+		foreach ($this->physical_cols as $col) {                             // Průchod fyzickými sloupci tabulky
+			if (array_key_exists($col, $row_map)) {                          // Zařazení sloupce, pokud je v mapě definován
+				$ins_cols[] = "[$col]";                                      // Název fyzického sloupce v závorkách
+				$ins_vals[] = (string)$row_map[$col];                        // SQL literál nebo výraz hodnoty
+			}
+		}
+		$sql = "INSERT INTO {$this->storage_table} (" . implode(', ', $ins_cols) . ") VALUES (" . implode(', ', $ins_vals) . ")"; // Sestavení SQL příkazu INSERT
+		sqlrun($sql);                                                        // Provedení příkazu INSERT
+	}
+
+	/**
+	 * Sestaví a spustí klonovací příkaz INSERT INTO ... SELECT ... FROM ...
+	 * Sloupce uvedené v $override_map nahradí zadaným SQL výrazem, ostatní fyzické
+	 * sloupce převezme beze změny ze zdrojového řádku.
+	 *
+	 * @param array<string, string|int> $override_map Mapa přepisovaných sloupců [sloupec => SQL výraz]
+	 * @param string                    $where_sql    Podmínka WHERE pro výběr zdrojového záznamu
+	 * @param string                    $top_sql      Volitelná klauzule TOP (např. 'TOP 1')
+	 * @param string                    $order_sql    Volitelná klauzule ORDER BY
+	 */
+	private function clone_with_map(array $override_map, string $where_sql, string $top_sql = '', string $order_sql = ''): void { // Klonování záznamu s modifikací
+		$ins_cols = [];                                                      // Cílové sloupce klonovaného záznamu
+		$sel_vals = [];                                                      // Výrazy v SELECT klauzuli klonu
+		foreach ($this->physical_cols as $col) {                             // Průchod všemi fyzickými sloupci tabulky
+			$ins_cols[] = "[$col]";                                          // Zařazení fyzického sloupce do INSERTu
+			$sel_vals[] = array_key_exists($col, $override_map) ? (string)$override_map[$col] : "[$col]"; // Nová nebo původní hodnota
+		}
+		$top_part = ($top_sql !== '') ? "{$top_sql} " : "";                  // Případné omezení TOP 1
+		$ord_part = ($order_sql !== '') ? " {$order_sql}" : "";              // Případné řazení zdrojového dotazu
+		$sql = "INSERT INTO {$this->storage_table} (" . implode(', ', $ins_cols) . ") \nSELECT {$top_part}" . implode(', ', $sel_vals) . " \nFROM {$this->storage_table} \nWHERE {$where_sql}{$ord_part}"; // Sestavení klonovacího SQL dotazu
+		sqlrun($sql);                                                        // Provedení klonovacího dotazu
+	}
+
+	/**
 	 * Načte metadata logické třídy, identifikuje fyzickou tabulku 
 	 * a načte definici sloupců včetně uplatnění pravidel dědičnosti a jazykových vrstev.
 	 */
@@ -211,7 +257,7 @@ class entity_manager {
 		$class_sel_str = implode(",\n\t\t\t\t", $class_selects);             // Spojení sloupců do SELECTu
 		$class_joins = $build_trans_joins('mc', 'meta_class');               // JOINy pro překlady třídy
 
-		// 1. Načtení definice logické třídy a zjištění fyzické tabulky přes storage_object
+		// 1. Načtení definice logické třídy a zjištění fyzické tabulku přes storage_object
 		// Nejdříve načítáme mc.* a až za ním mc.caption (přeložené přes COALESCE), čímž
 		// asociativní pole $row převezme právě tu přeloženou hodnotu.
 		$sql_class = "
@@ -611,42 +657,22 @@ class entity_manager {
 
 		// Sestavení CTE bloku (Common Table Expressions) s podporou vlastních konceptů uživatele ('D') a volby $show_removed
 		$has_draft_author_col = in_array('draft_author', $this->physical_cols, true); // Zda má tabulka sloupec draft_author
+		$rem_filter = $show_removed ? "" : "WHERE rc.removed = 0";           // Podmíněný filtr platných záznamů
+		$sy_where = $show_removed ? "WHERE my.original IS NULL" : "WHERE sy.removed = 0 AND my.original IS NULL"; // Filtr v kombinaci sy a my
 
-		if ($show_removed) {                                                 // Režim zahrnující i zrušené záznamy (preferuje platný před zrušeným pro stejný original)
-			$sy_cte = "
+		$sy_cte = "
 		sy_raw AS (
 			SELECT rc.*, CAST(0 AS BIT) AS object_is_mine,
-				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.removed ASC, rc.date_modified DESC) AS rn_sy
-			FROM s JOIN {$table} rc ON rc.object_owner = 0x00 AND rc.record_type = 'A'
+				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.removed ASC, rc.date_modified DESC) AS rn_rec
+			FROM s JOIN {$table} rc ON rc.object_owner = 0x00 AND rc.record_type = 'A' {$rem_filter}
 		),
-		sy AS (
-			SELECT * FROM sy_raw WHERE rn_sy = 1
-		),
+		sy AS (SELECT * FROM sy_raw WHERE rn_rec = 1),
 		my_raw AS (
 			SELECT rc.*, CAST(1 AS BIT) AS object_is_mine,
-				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.removed ASC, rc.date_modified DESC) AS rn_my
-			FROM s JOIN {$table} rc ON rc.object_owner = s.organization_uuid AND rc.record_type = 'A'
+				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.removed ASC, rc.date_modified DESC) AS rn_rec
+			FROM s JOIN {$table} rc ON rc.object_owner = s.organization_uuid AND rc.record_type = 'A' {$rem_filter}
 		),
-		my AS (
-			SELECT * FROM my_raw WHERE rn_my = 1
-		)";                                                                  // CTE pro sy a my včetně zrušených
-			$sy_where = "WHERE my.original IS NULL";                         // V režimu show_removed nefiltrujeme sy.removed = 0
-		} else {
-			$sy_cte = "
-		sy AS (
-			-- Všechny čistě systémové 'A' záznamy zkoumané tabulky
-			SELECT rc.*, CAST(0 AS BIT) AS object_is_mine, CAST(1 AS BIGINT) AS rn_sy
-			FROM s JOIN {$table} rc ON rc.object_owner = 0x00 AND rc.record_type = 'A'
-			WHERE rc.removed = 0
-		),
-		my AS (
-			-- Vlastní platné schválené záznamy (overridy tenanta)
-			SELECT rc.*, CAST(1 AS BIT) AS object_is_mine, CAST(1 AS BIGINT) AS rn_my
-			FROM s JOIN {$table} rc ON rc.object_owner = s.organization_uuid AND rc.record_type = 'A'
-			WHERE rc.removed = 0
-		)";                                                                  // Standardní CTE pouze pro platné záznamy
-			$sy_where = "WHERE sy.removed = 0 AND my.original IS NULL";      // Standardní filtr na platné záznamy
-		}
+		my AS (SELECT * FROM my_raw WHERE rn_rec = 1)";                      // Společné CTE pro systémové a vlastní záznamy
 
 		if (!$ignore_drafts AND $has_draft_author_col) {                     // Standardní režim s podporou vlastních konceptů
 			$cte_sql = "
@@ -657,7 +683,7 @@ class entity_manager {
 		{$sy_cte},
 		dr AS (
 			-- Vlastní rozpracované, postoupené nebo vrácené koncepty přihlášeného uživatele v aktuálním jazyce
-			SELECT rc.*, CAST(1 AS BIT) AS object_is_mine, CAST(1 AS BIGINT) AS rn_dr
+			SELECT rc.*, CAST(1 AS BIT) AS object_is_mine, CAST(1 AS BIGINT) AS rn_rec
 			FROM s JOIN {$table} rc ON rc.object_owner = s.organization_uuid AND rc.record_type = 'D'
 			WHERE rc.removed = 0
 			  AND rc.[language] = s.sess_lang
@@ -890,9 +916,9 @@ HTML;
 			return "<!-- Neznámý sloupec: {$column_name} -->";               // HTML komentář pro neznámý sloupec
 		}
 
-		// Speciální ošetření pro vektorové ikony (svg_icon / svg_code):
+		// Speciální ošetření pro vektorové ikony (svg_icon):
 		// Zobrazuje se vždy jen vizuální náhled ikony bez možnosti ruční editace SVG kódu.
-		if ($column_name === 'svg_icon' OR $column_name === 'svg_code') {    // Kontrola sloupce vektorové ikony
+		if ($column_name === 'svg_icon') {                                   // Kontrola sloupce vektorové ikony
 			$trimmed_svg = trim($value);                                     // Očištěný SVG řetězec
 			$note_svg = htmlspecialchars($this->phrase('msg_svg_readonly_note', 'Nastavuje se pouze databázovým skriptem')); // Informační poznámka
 			if ($trimmed_svg !== '' AND str_starts_with($trimmed_svg, '<svg')) { // Pokud obsahuje platnou značku <svg
@@ -1094,7 +1120,7 @@ HTML;
 	 */
 	public function extract_post_data(): array {
 		$data = [];                                                          // Výstupní pole sanitizovaných dat
-		// Ignorujeme čistě interní parametry a sloupce svg_icon / svg_code (ty se nikdy needitují ručně).
+		// Ignorujeme čistě interní parametry a sloupec svg_icon (ten se nikdy needituje ručně).
 		// Sloupce inactive, removed, valid_from a valid_to zpracováváme pro povolenou editaci v UI.
 		$meta_columns_list = [                                               // Seznam technických a chráněných sloupců mimo POST
 			'uuid', 'object_owner', 'original', 'record_type', 'approval_status', 
@@ -1102,7 +1128,7 @@ HTML;
 			'language',
 			'is_template', 'template', 'date_created', 'who_created', 
 			'date_modified', 'who_modified', 'import_origin',
-			'svg_icon', 'svg_code'
+			'svg_icon'
 		];                                                                   // Konec seznamu technických sloupců
 		
 		foreach ($this->columns_meta as $colname => $meta) {                 // Průchod všemi sloupci třídy
@@ -1357,6 +1383,9 @@ HTML;
 			}
 		}
 
+		// Společná auditní časová razítka a identifikátory pro INSERT a klonování
+		$audit_base_map = ['date_created' => 'GETDATE()', 'date_modified' => 'GETDATE()', 'who_created' => $user_uuid_sql, 'who_modified' => $user_uuid_sql]; // Základní auditní mapa
+
 		// =====================================================================
 		// VĚTEV A: ZÁPIS KONCEPTU NEBO POSTOUPENÍ KE SCHVÁLENÍ ('D' / 'F')
 		// =====================================================================
@@ -1391,87 +1420,16 @@ HTML;
 			} else {
 				// Koncept ještě neexistuje -> pokud v DB existuje schválený 'A' záznam, naklonujeme ho do 'D', jinak provedeme čistý INSERT
 				$src_a_row = sqlfirstrow("SELECT TOP 1 uuid FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND removed = 0 AND object_owner IN ({$org_uuid_sql}, 0x00) ORDER BY object_owner DESC"); // Kontrola předlohy A
+				$d_ssc_map = ['record_type' => "'D'", 'approval_status' => $safe_status, 'draft_author' => $user_acc_sql, 'approval_note' => "''", 'language' => $lang_literal_sql]; // SSC sloupce konceptu
 
 				if (!empty($src_a_row)) {                                    // Klonování existujícího 'A' záznamu do 'D'
 					$src_a_uuid = guidliteral((string)$src_a_row['uuid']);   // UUID zdrojového 'A' řádku
-					$ins_cols = [];                                          // Cílové sloupce klonovaného konceptu
-					$sel_vals = [];                                          // Výrazy v SELECT klauzuli klonu
-
-					foreach ($this->physical_cols as $col) {                 // Sestavení sloupců pro klonování do 'D'
-						$ins_cols[] = "[$col]";                              // Zařazení fyzického sloupce
-						if ($col === 'uuid') {                               // Primární klíč konceptu
-							$sel_vals[] = "NEWID()";                         // Koncept má vždy unikátní NEWID()
-						} elseif ($col === 'object_owner') {                 // Vlastník konceptu
-							$sel_vals[] = $org_uuid_sql;                     // Vlastníkem je organizace uživatele
-						} elseif ($col === 'original') {                     // Originál záznamu
-							$sel_vals[] = "original";                        // Zachování společného originálu
-						} elseif ($col === 'record_type') {                  // Typ záznamu
-							$sel_vals[] = "'D'";                             // Označení konceptu 'D'
-						} elseif ($col === 'approval_status') {              // Stav schválení
-							$sel_vals[] = $safe_status;                      // Stav 'D' nebo 'F'
-						} elseif ($col === 'draft_author') {                 // Autor konceptu
-							$sel_vals[] = $user_acc_sql;                     // UUID účtu přihlášeného uživatele
-						} elseif ($col === 'approval_note') {                // Poznámka schvalování
-							$sel_vals[] = "''";                              // Výchozí prázdná poznámka
-						} elseif ($col === 'language') {                     // Jazyk konceptu
-							$sel_vals[] = $lang_literal_sql;                 // Aktuální jazyk relace
-						} elseif (in_array($col, ['date_created', 'date_modified'], true)) { // Časová razítka konceptu
-							$sel_vals[] = "GETDATE()";                       // Čas pořízení konceptu
-						} elseif (in_array($col, ['who_created', 'who_modified'], true)) { // Auditní sloupce konceptu
-							$sel_vals[] = $user_uuid_sql;                    // Relace autora konceptu
-						} elseif (array_key_exists($col, $d_post_data)) {    // Změněný sloupec z formuláře
-							$sel_vals[] = $d_post_data[$col];                // Nová hodnota z formuláře
-						} else {
-							$sel_vals[] = "[$col]";                          // Převzetí nezměněné hodnoty z 'A' záznamu
-						}
-					}
-
-					$sql_clone_d = "INSERT INTO {$table} (" . implode(', ', $ins_cols) . ") \nSELECT " . implode(', ', $sel_vals) . " \nFROM {$table} \nWHERE uuid = {$src_a_uuid}"; // SQL klonování do D
-					sqlrun($sql_clone_d);                                    // Vložení klonovaného konceptu
+					$d_sys_map = ['uuid' => 'NEWID()', 'object_owner' => $org_uuid_sql, 'original' => 'original']; // Identifikátory klonovaného konceptu
+					$this->clone_with_map($d_sys_map + $d_ssc_map + $audit_base_map + $d_post_data, "uuid = {$src_a_uuid}"); // Vložení klonovaného konceptu
 				} else {
 					// Zcela nový záznam zakládaný rovnou jako koncept ('D' nebo 'F')
-					$ins_cols = [];                                          // Sloupce pro INSERT nového konceptu
-					$ins_vals = [];                                          // Hodnoty pro INSERT nového konceptu
-
-					foreach ($this->physical_cols as $col) {                 // Sestavení sloupců nového konceptu
-						if ($col === 'uuid') {                               // Primární klíč řádku
-							$ins_cols[] = "[$col]";                          // Sloupec uuid
-							$ins_vals[] = "NEWID()";                         // Unikátní NEWID() pro koncept
-						} elseif ($col === 'original') {                     // Logický identifikátor záznamu
-							$ins_cols[] = "[$col]";                          // Sloupec original
-							$ins_vals[] = $orig_guid_sql;                    // Vypočtené deterministické UUID
-						} elseif ($col === 'object_owner') {                 // Vlastník záznamu
-							$ins_cols[] = "[$col]";                          // Sloupec object_owner
-							$ins_vals[] = $org_uuid_sql;                     // UUID organizace uživatele
-						} elseif ($col === 'record_type') {                  // Typ záznamu
-							$ins_cols[] = "[$col]";                          // Sloupec record_type
-							$ins_vals[] = "'D'";                             // Typ 'D' (koncept)
-						} elseif ($col === 'approval_status') {              // Stav schválení
-							$ins_cols[] = "[$col]";                          // Sloupec approval_status
-							$ins_vals[] = $safe_status;                      // Stav 'D' nebo 'F'
-						} elseif ($col === 'draft_author') {                 // Autor konceptu
-							$ins_cols[] = "[$col]";                          // Sloupec draft_author
-							$ins_vals[] = $user_acc_sql;                     // UUID účtu autora
-						} elseif ($col === 'approval_note') {                // Poznámka schvalovatele
-							$ins_cols[] = "[$col]";                          // Sloupec approval_note
-							$ins_vals[] = "''";                              // Prázdná poznámka
-						} elseif ($col === 'language') {                     // Jazyk konceptu
-							$ins_cols[] = "[$col]";                          // Sloupec language
-							$ins_vals[] = $lang_literal_sql;                 // Jazyk relace
-						} elseif (in_array($col, ['date_created', 'date_modified'], true)) { // Časová razítka
-							$ins_cols[] = "[$col]";                          // Sloupec data
-							$ins_vals[] = "GETDATE()";                       // Aktuální čas
-						} elseif (in_array($col, ['who_created', 'who_modified'], true)) { // Auditní vazby
-							$ins_cols[] = "[$col]";                          // Sloupec autora
-							$ins_vals[] = $user_uuid_sql;                    // Relace autora
-						} elseif (array_key_exists($col, $d_post_data)) {    // Datový sloupec z formuláře
-							$ins_cols[] = "[$col]";                          // Název datového sloupce
-							$ins_vals[] = $d_post_data[$col];                // Hodnota datového sloupce
-						}
-					}
-
-					$sql_ins_d = "INSERT INTO {$table} (" . implode(', ', $ins_cols) . ") VALUES (" . implode(', ', $ins_vals) . ")"; // SQL příkaz INSERT konceptu
-					sqlrun($sql_ins_d);                                      // Provedení INSERTu nového konceptu
+					$d_sys_map = ['uuid' => 'NEWID()', 'original' => $orig_guid_sql, 'object_owner' => $org_uuid_sql]; // Identifikátory nového konceptu
+					$this->insert_from_map($d_sys_map + $d_ssc_map + $audit_base_map + $d_post_data); // Provedení INSERTu nového konceptu
 				}
 			}
 
@@ -1482,41 +1440,11 @@ HTML;
 		// =====================================================================
 		// VĚTEV B: PŘÍMÝ ZÁPIS SCHVÁLENÉHO ZÁZNAMU ('A' + symetrické 'L')
 		// =====================================================================
+		$a_new_hdr = ['uuid' => $orig_guid_sql, 'original' => $orig_guid_sql, 'object_owner' => $org_uuid_sql, 'record_type' => "'A'", 'approval_status' => "'A'", 'language' => $lang_literal_sql]; // Hlavička nového A záznamu
+
 		// 4. Zápis do 'A' záznamu (Správa Master dat a auditních stop)
 		if ($update_guid === '' AND !$a_exists) {                            // Zcela nový záznam ukládaný rovnou jako schválený
-			$insert_cols = [];                                               // Sloupce pro INSERT nového 'A' záznamu
-			$insert_vals = [];                                               // Hodnoty pro INSERT nového 'A' záznamu
-			
-			foreach ($this->physical_cols as $col) {                         // Sestavení polí pro nový 'A' záznam
-				if (in_array($col, ['uuid', 'original'], true)) {            // Primární klíč a originál
-					$insert_cols[] = "[$col]";                               // Identifikátory záznamu
-					$insert_vals[] = $orig_guid_sql;                         // Hodnota spočteného originálu
-				} elseif ($col === 'object_owner') {                         // Vlastník záznamu
-					$insert_cols[] = "[$col]";                               // Sloupec vlastníka
-					$insert_vals[] = $org_uuid_sql;                          // UUID organizace uživatele
-				} elseif ($col === 'record_type') {                          // Typ záznamu
-					$insert_cols[] = "[$col]";                               // Typ záznamu
-					$insert_vals[] = "'A'";                                  // Hlavní schválený záznam
-				} elseif ($col === 'approval_status') {                      // Stav schválení
-					$insert_cols[] = "[$col]";                               // Sloupec stavu schválení
-					$insert_vals[] = "'A'";                                  // Schválený stav
-				} elseif ($col === 'language') {                             // Jazyk záznamu
-					$insert_cols[] = "[$col]";                               // Výchozí jazyk záznamu
-					$insert_vals[] = $lang_literal_sql;                      // Aktuální jazyk relace
-				} elseif (in_array($col, ['date_created', 'date_modified'], true)) { // Časová razítka
-					$insert_cols[] = "[$col]";                               // Časové razítko
-					$insert_vals[] = "GETDATE()";                            // Aktuální databázový čas
-				} elseif (in_array($col, ['who_created', 'who_modified'], true)) { // Auditní identifikátory
-					$insert_cols[] = "[$col]";                               // Auditní identifikátor autora
-					$insert_vals[] = $user_uuid_sql;                         // UUID přihlášené relace
-				} elseif (array_key_exists($col, $a_post_data)) {            // Datové pole z formuláře
-					$insert_cols[] = "[$col]";                               // Datový sloupec z formuláře
-					$insert_vals[] = $a_post_data[$col];                     // Hodnota datového sloupce
-				}
-			}
-
-			$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") VALUES (" . implode(', ', $insert_vals) . ")"; // Sestavení INSERT dotazu
-			sqlrun($sql);                                                    // Provedení INSERTu nového 'A' záznamu
+			$this->insert_from_map($a_new_hdr + $audit_base_map + $a_post_data); // Provedení INSERTu nového 'A' záznamu
 			
 		} elseif (!empty($a_post_data)) {                                    // UPDATE nebo OVERRIDE existujícího 'A' záznamu
 			// B) UPDATE NEBO OVERRIDE 'A' ZÁZNAMU
@@ -1533,75 +1461,12 @@ HTML;
 			} else {
 				// OVERRIDE: Tenant zasahuje do systémového záznamu poprvé (nebo schvaluje nový koncept, kde ještě 'A' nebylo).
 				$sys_row = sqlfirstrow("SELECT 1 AS ex FROM {$table} WHERE original = {$orig_guid_sql} AND object_owner = 0x00 AND record_type = 'A' AND removed = 0"); // Kontrola systémového originálu
-				$sys_exists = !empty($sys_row);                              // Zda existuje systémový záznam 0x00
-
-				if ($sys_exists) {                                           // Klonování ze systémového originálu 0x00
-					$insert_cols = [];                                       // Cílové sloupce klonovaného záznamu
-					$select_vals = [];                                       // Zdrojové výrazy v SELECT klauzuli
-					
-					foreach ($this->physical_cols as $col) {                 // Průchod fyzickými sloupci tabulky
-						$insert_cols[] = "[$col]";                           // Zařazení fyzického sloupce
-						
-						if ($col === 'uuid') {                               // Primární klíč klonu
-							$select_vals[] = "NEWID()";                      // Dočasné UUID (přepíše trigger trgo_)
-						} elseif ($col === 'object_owner') {                 // Vlastník klonu
-							$select_vals[] = $org_uuid_sql;                  // Vlastníkem klonu je tenant
-						} elseif ($col === 'record_type') {                  // Typ záznamu klonu
-							$select_vals[] = "'A'";                          // Klon je rovněž typu 'A'
-						} elseif ($col === 'approval_status') {              // Stav schválení klonu
-							$select_vals[] = "'A'";                          // Schválený stav
-						} elseif (in_array($col, ['date_created', 'date_modified'], true)) { // Čas vytvoření klonu
-							$select_vals[] = "GETDATE()";                    // Čas vytvoření klonu
-						} elseif (in_array($col, ['who_created', 'who_modified'], true)) { // Autor vytvoření klonu
-							$select_vals[] = $user_uuid_sql;                 // Autor vytvoření klonu
-						} elseif ($col === 'original') {                     // Vazba na originál
-							$select_vals[] = "original";                     // Zachování vazby na společný originál
-						} elseif ($col === 'language') {                     // Jazyk záznamu
-							$select_vals[] = "language";                     // Zachování původního jazyka záznamu
-						} elseif (array_key_exists($col, $a_post_data)) {    // Změněná hodnota tenanta
-							$select_vals[] = $a_post_data[$col];             // Aplikace změněné hodnoty tenanta
-						} else {
-							$select_vals[] = "[$col]";                       // Převzetí nezměněné hodnoty ze systému
-						}
-					}
-
-					$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") \nSELECT " . implode(', ', $select_vals) . " \nFROM {$table} \nWHERE original = {$orig_guid_sql} AND object_owner = 0x00 AND record_type = 'A'"; // SQL klonování
-					sqlrun($sql);                                            // Vytvoření tenantova 'A' overridu
+				if (!empty($sys_row)) {                                      // Klonování ze systémového originálu 0x00
+					$ov_hdr = ['uuid' => 'NEWID()', 'object_owner' => $org_uuid_sql, 'original' => 'original', 'record_type' => "'A'", 'approval_status' => "'A'", 'language' => 'language']; // Hlavička klonu A
+					$this->clone_with_map($ov_hdr + $audit_base_map + $a_post_data, "original = {$orig_guid_sql} AND object_owner = 0x00 AND record_type = 'A'"); // Vytvoření tenantova 'A' overridu
 				} else {
 					// Případ, kdy záznam dosud existoval pouze jako 'D' (koncept nového záznamu) a uživatel klikl na "Uložit jako schválené"
-					$insert_cols = [];                                       // Sloupce pro nový 'A' záznam
-					$insert_vals = [];                                       // Hodnoty pro nový 'A' záznam
-
-					foreach ($this->physical_cols as $col) {                 // Sestavení polí pro 'A' záznam
-						if (in_array($col, ['uuid', 'original'], true)) {    // Klíč a originál
-							$insert_cols[] = "[$col]";                       // Sloupec identifikátoru
-							$insert_vals[] = $orig_guid_sql;                 // Deterministický originál
-						} elseif ($col === 'object_owner') {                 // Vlastník záznamu
-							$insert_cols[] = "[$col]";                       // Sloupec vlastníka
-							$insert_vals[] = $org_uuid_sql;                  // Organizace uživatele
-						} elseif ($col === 'record_type') {                  // Typ záznamu
-							$insert_cols[] = "[$col]";                       // Sloupec record_type
-							$insert_vals[] = "'A'";                          // Schválený záznam 'A'
-						} elseif ($col === 'approval_status') {              // Stav schválení
-							$insert_cols[] = "[$col]";                       // Sloupec approval_status
-							$insert_vals[] = "'A'";                          // Schválený stav 'A'
-						} elseif ($col === 'language') {                     // Jazyk záznamu
-							$insert_cols[] = "[$col]";                       // Sloupec language
-							$insert_vals[] = $lang_literal_sql;              // Jazyk relace
-						} elseif (in_array($col, ['date_created', 'date_modified'], true)) { // Časová razítka
-							$insert_cols[] = "[$col]";                       // Sloupec data
-							$insert_vals[] = "GETDATE()";                    // Aktuální čas
-						} elseif (in_array($col, ['who_created', 'who_modified'], true)) { // Auditní sloupce
-							$insert_cols[] = "[$col]";                       // Sloupec autora
-							$insert_vals[] = $user_uuid_sql;                 // Relace uživatele
-						} elseif (array_key_exists($col, $a_post_data)) {    // Datové pole z formuláře
-							$insert_cols[] = "[$col]";                       // Název sloupce
-							$insert_vals[] = $a_post_data[$col];             // Hodnota sloupce
-						}
-					}
-
-					$sql = "INSERT INTO {$table} (" . implode(', ', $insert_cols) . ") VALUES (" . implode(', ', $insert_vals) . ")"; // SQL INSERT
-					sqlrun($sql);                                            // Vložení nového 'A' záznamu
+					$this->insert_from_map($a_new_hdr + $audit_base_map + $a_post_data); // Vložení nového 'A' záznamu
 				}
 			}
 		}
@@ -1631,36 +1496,9 @@ HTML;
 					sqlrun($sql_l);                                          // Provedení UPDATE 'L' záznamu
 				}
 			} else {
-				$insert_cols_l = [];                                         // Sloupce pro nový 'L' záznam
-				$select_vals_l = [];                                         // Hodnoty pro nový 'L' záznam
-				
-				foreach ($this->physical_cols as $col) {                     // Sestavení polí pro klonování do 'L'
-					$insert_cols_l[] = "[$col]";                             // Zařazení fyzického sloupce
-					
-					if ($col === 'uuid') {                                   // Primární klíč 'L' záznamu
-						$select_vals_l[] = "NEWID()";                        // Unikátní PK pro 'L' záznam
-					} elseif ($col === 'object_owner') {                     // Vlastník jazykové mutace
-						$select_vals_l[] = $l_owner_sql;                     // Vlastník jazykové mutace
-					} elseif ($col === 'record_type') {                      // Typ záznamu
-						$select_vals_l[] = "'L'";                            // Označení jazykového záznamu
-					} elseif ($col === 'approval_status') {                  // Stav schválení
-						$select_vals_l[] = "'A'";                            // Schválený stav 'L' záznamu
-					} elseif ($col === 'language') {                         // Kód jazyka překladu
-						$select_vals_l[] = $lang_literal_sql;                // Kód jazyka překladu
-					} elseif (in_array($col, ['date_created', 'date_modified'], true)) { // Časová razítka 'L'
-						$select_vals_l[] = "GETDATE()";                      // Čas pořízení překladu
-					} elseif (in_array($col, ['who_created', 'who_modified'], true)) { // Auditní sloupce 'L'
-						$select_vals_l[] = $user_uuid_sql;                   // Autor pořízení překladu
-					} elseif (array_key_exists($col, $l_post_data)) {        // Přeložená hodnota sloupce
-						$select_vals_l[] = $l_post_data[$col];               // Přeložená hodnota sloupce
-					} else {
-						$select_vals_l[] = "[$col]";                         // Převzetí ostatních polí z 'A' záznamu
-					}
-				}
-
+				$l_hdr = ['uuid' => 'NEWID()', 'object_owner' => $l_owner_sql, 'record_type' => "'L'", 'approval_status' => "'A'", 'language' => $lang_literal_sql]; // Hlavička nového L záznamu
 				$source_owner_sql = (!$is_sysadmin_org) ? "object_owner IN ({$org_uuid_sql}, 0x00)" : "object_owner = 0x00"; // Podmínka vlastníka zdroje
-				$sql_l = "INSERT INTO {$table} (" . implode(', ', $insert_cols_l) . ") \nSELECT TOP 1 " . implode(', ', $select_vals_l) . " \nFROM {$table} \nWHERE original = {$orig_guid_sql} AND {$source_owner_sql} AND record_type = 'A' ORDER BY object_owner DESC, removed ASC"; // SQL INSERT L
-				sqlrun($sql_l);                                              // Založení nového 'L' záznamu
+				$this->clone_with_map($l_hdr + $audit_base_map + $l_post_data, "original = {$orig_guid_sql} AND {$source_owner_sql} AND record_type = 'A'", 'TOP 1', 'ORDER BY object_owner DESC, removed ASC'); // Založení nového 'L' záznamu
 			}
 
 			// Jednotná auditní stopa: Pokud nebyl hlavní 'A' záznam aktualizován v kroku 4
@@ -1785,6 +1623,7 @@ HTML;
 			'draft_author', 'approval_note', 'language',
 			'date_created', 'who_created', 'date_modified', 'who_modified'
 		];                                                                   // Konec seznamu vynechaných sloupců
+		$ap_audit_map = ['date_created' => $author_date_sql, 'who_created' => $author_session_sql, 'date_modified' => 'GETDATE()', 'who_modified' => $approver_session_sql]; // Audit autora a schvalovatele
 
 		sqlrun("BEGIN TRAN");                                                // Zahájení transakce schválení
 
@@ -1815,40 +1654,9 @@ HTML;
 				sqlrun($sql_upd_a);                                          // Provedení UPDATE schváleného záznamu
 			} else {
 				// INSERT nového 'A' záznamu: who_modified -> who_created a date_modified -> date_created (autor návrhu se stává tvůrcem!)
-				$ins_cols = [];                                              // Sloupce pro INSERT nového A záznamu
-				$sel_vals = [];                                              // Výrazy v SELECT klauzuli z návrhu
-
-				foreach ($this->physical_cols as $col) {                     // Sestavení sloupců pro nový A záznam
-					$ins_cols[] = "[$col]";                                  // Zařazení fyzického sloupce
-					if ($col === 'uuid') {                                   // Primární klíč nového A záznamu
-						$sel_vals[] = (!empty($existing_a) ? "NEWID()" : "original"); // Pro zcela nový záznam uuid = original
-					} elseif ($col === 'object_owner') {                     // Vlastník záznamu
-						$sel_vals[] = $owner_sql;                            // Vlastník návrhu
-					} elseif ($col === 'original') {                         // Originál záznamu
-						$sel_vals[] = "original";                            // Originál z návrhu
-					} elseif ($col === 'record_type') {                      // Typ záznamu
-						$sel_vals[] = "'A'";                                 // Schválený záznam 'A'
-					} elseif ($col === 'approval_status') {                  // Stav schválení
-						$sel_vals[] = "'A'";                                 // Schválený stav 'A'
-					} elseif ($col === 'draft_author') {                     // Autor konceptu
-						$sel_vals[] = "0x00";                                // U schváleného záznamu vždy 0x00
-					} elseif ($col === 'approval_note') {                    // Poznámka schvalování
-						$sel_vals[] = "''";                                  // U schváleného záznamu prázdná
-					} elseif ($col === 'date_created') {                     // Datum vytvoření (z návrhu autora)
-						$sel_vals[] = $author_date_sql;                      // Datum postoupení návrhu autorem
-					} elseif ($col === 'who_created') {                      // Autor vytvoření (z návrhu autora)
-						$sel_vals[] = $author_session_sql;                   // Relace původního autora návrhu
-					} elseif ($col === 'date_modified') {                    // Datum schválení
-						$sel_vals[] = "GETDATE()";                           // Okamžik schválení
-					} elseif ($col === 'who_modified') {                     // Schvalovatel
-						$sel_vals[] = $approver_session_sql;                 // Relace schvalovatele
-					} else {
-						$sel_vals[] = "[$col]";                              // Hodnota datového sloupce z návrhu
-					}
-				}
-
-				$sql_ins_a = "INSERT INTO {$table} (" . implode(', ', $ins_cols) . ") \nSELECT " . implode(', ', $sel_vals) . " \nFROM {$table} \nWHERE uuid = {$draft_uuid_sql}"; // SQL INSERT A
-				sqlrun($sql_ins_a);                                          // Založení schváleného A záznamu
+				$ap_a_pk = (!empty($existing_a) ? 'NEWID()' : 'original');   // Primární klíč nového A záznamu
+				$ap_a_hdr = ['uuid' => $ap_a_pk, 'object_owner' => $owner_sql, 'original' => 'original', 'record_type' => "'A'", 'approval_status' => "'A'", 'draft_author' => '0x00', 'approval_note' => "''"]; // Hlavička A záznamu
+				$this->clone_with_map($ap_a_hdr + $ap_audit_map, "uuid = {$draft_uuid_sql}"); // Založení schváleného A záznamu
 			}
 		}
 
@@ -1883,42 +1691,8 @@ HTML;
 			sqlrun($sql_upd_l);                                              // Provedení UPDATE L záznamu
 		} else {
 			// INSERT nového 'L' záznamu (who_created = autor návrhu, who_modified = schvalovatel)
-			$ins_cols_l = [];                                                // Sloupce pro nový L záznam
-			$sel_vals_l = [];                                                // Výrazy v SELECT klauzuli pro L
-
-			foreach ($this->physical_cols as $col) {                         // Sestavení sloupců pro nový L záznam
-				$ins_cols_l[] = "[$col]";                                    // Zařazení fyzického sloupce
-				if ($col === 'uuid') {                                       // Primární klíč L záznamu
-					$sel_vals_l[] = "NEWID()";                               // Unikátní NEWID() pro L záznam
-				} elseif ($col === 'object_owner') {                         // Vlastník L záznamu
-					$sel_vals_l[] = $l_owner_sql;                            // Vlastník překladu
-				} elseif ($col === 'original') {                             // Originál záznamu
-					$sel_vals_l[] = "original";                              // Společný originál
-				} elseif ($col === 'record_type') {                          // Typ záznamu
-					$sel_vals_l[] = "'L'";                                   // Jazykový záznam 'L'
-				} elseif ($col === 'approval_status') {                      // Stav schválení
-					$sel_vals_l[] = "'A'";                                   // Schválený stav 'A'
-				} elseif ($col === 'draft_author') {                         // Autor konceptu
-					$sel_vals_l[] = "0x00";                                  // Vynulovaný autor konceptu
-				} elseif ($col === 'approval_note') {                        // Poznámka schvalování
-					$sel_vals_l[] = "''";                                    // Prázdná poznámka
-				} elseif ($col === 'language') {                             // Jazyk překladu
-					$sel_vals_l[] = $draft_lang_sql;                         // Kód jazyka z návrhu
-				} elseif ($col === 'date_created') {                         // Datum vytvoření překladu
-					$sel_vals_l[] = $author_date_sql;                        // Datum postoupení návrhu autorem
-				} elseif ($col === 'who_created') {                          // Autor překladu
-					$sel_vals_l[] = $author_session_sql;                     // Relace autora návrhu
-				} elseif ($col === 'date_modified') {                        // Datum schválení
-					$sel_vals_l[] = "GETDATE()";                             // Okamžik schválení
-				} elseif ($col === 'who_modified') {                         // Schvalovatel
-					$sel_vals_l[] = $approver_session_sql;                   // Relace schvalovatele
-				} else {
-					$sel_vals_l[] = "[$col]";                                // Datový sloupec z návrhu
-				}
-			}
-
-			$sql_ins_l = "INSERT INTO {$table} (" . implode(', ', $ins_cols_l) . ") \nSELECT " . implode(', ', $sel_vals_l) . " \nFROM {$table} \nWHERE uuid = {$draft_uuid_sql}"; // SQL INSERT L
-			sqlrun($sql_ins_l);                                              // Založení schváleného L záznamu
+			$ap_l_hdr = ['uuid' => 'NEWID()', 'object_owner' => $l_owner_sql, 'original' => 'original', 'record_type' => "'L'", 'approval_status' => "'A'", 'draft_author' => '0x00', 'approval_note' => "''", 'language' => $draft_lang_sql]; // Hlavička L záznamu
+			$this->clone_with_map($ap_l_hdr + $ap_audit_map, "uuid = {$draft_uuid_sql}"); // Založení schváleného L záznamu
 		}
 
 		// Pokud šlo o překlad u třídy s is_final = 1 (kde se neměnil A záznam), zaktualizujeme alespoň audit na hlavním A záznamu
