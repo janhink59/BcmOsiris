@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 17:45
+ * Verze: 2026-10-22 22:40
  * Soubor: page_approval.php
  * Třída: page_approval
  * Účel: Univerzální schvalovací obrazovka (SSC) pro porovnání původních
@@ -13,7 +13,7 @@
  *   layout (`.md-master` a `.md-detail`) bez duplicity CSS a JS kódu.
  * - Využívá `entity_manager` (inicializovaný v `abstract_page_master_detail::render()`
  *   přes `$this->class_name`) pro načtení metadat cílové logické třídy, získání
- *   původních schválených hodnot (`fetch_records(..., true)`) a spuštění
+ *   původních schválených hodnot (`fetch_row(..., true)`) a spuštění
  *   transakčního schválení (`approve_draft()`) nebo vrácení (`reject_draft()`).
  * - Využívá `abstract_button` a `$this->phrase()` pro plnou lokalizaci.
  * - Načítá pouze návrhy ve stavu `approval_status = 'F'` (`record_type = 'D'`),
@@ -24,9 +24,9 @@
  *   ve specializovaných modulech `page_org_users` a `page_change_user_context`.
  *
  * Změny:
- * 2026-10-22 17:45 - Načtení původního schváleného stavu v render_detail() napojeno
- *                    na $em->fetch_records(..., true).
- *                  - Doplněna striktní kontrola vlastníka (object_owner) a jazyka
+ * 2026-10-22 22:40 - Oprava načtení původního schváleného stavu v render_detail()
+ *                    přímo přes $em->fetch_row($where_app, true).
+ * 2026-10-22 17:45 - Doplněna striktní kontrola vlastníka (object_owner) a jazyka
  *                    a odstraněn duplicitní JS listener pro #master-filter.
  * 2026-10-18 18:15 - Převedení všech dotazů z sqlrun/fetch na sqlarray_simple()
  *                    a sqlfirstrow() kvůli globálnímu $dbquery v OsirisLib.php.
@@ -284,7 +284,7 @@ class page_approval extends abstract_page_master_detail {
 				SELECT mo.builtin_code AS ref_table
 				FROM meta_class mc
 				JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
-				WHERE mc.original = {$ref_cls_sql} AND mc.object_owner = 0x00 AND mc.record_type = 'A' AND mc.removed = 0
+				WHERE mc.original = {$ref_cls_sql} AND mc.object_owner = 0x00 AND mc.record_type = 'A' AND mo.removed = 0
 			");                                                              // Zjištění cílové fyzické tabulky
 
 			if (!empty($r_rc) AND !empty($r_rc['ref_table'])) {              // Pokud cílová tabulka existuje
@@ -462,13 +462,7 @@ HTML;
 
 		// Načtení současného schváleného stavu ('A'/'L') se zapnutým $ignore_drafts = true
 		$where_app = "m.original = {$orig_sql}";                             // Podmínka pro načtení schváleného stavu
-		if (method_exists($em, 'fetch_records')) {                           // Použití dvoupolového vyhodnocení v PHP
-			$app_rows = $em->fetch_records($where_app, '', true);            // Načtení schváleného záznamu bez konceptů
-			$approved_row = !empty($app_rows) ? reset($app_rows) : [];       // První nalezený schválený řádek
-		} else {
-			$sql_approved = $em->build_select_query($where_app, '', true);   // Fallback na SQL dotaz
-			$approved_row = sqlfirstrow($sql_approved);                      // Načtení schválených hodnot
-		}
+		$approved_row = $em->fetch_row($where_app, true);                    // Načtení schváleného záznamu bez konceptů přes dvoupolové vyhodnocení
 
 		$is_new_record = empty($approved_row);                               // Zda jde o návrh zcela nového záznamu
 

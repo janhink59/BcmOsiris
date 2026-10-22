@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 17:45
+ * Verze: 2026-10-22 22:40
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -14,7 +14,7 @@
  *   `autoredirect()` z `OsirisLib.php`.
  * - Bezpečné načítání parametrů z URL zajišťuje funkce `getinput()`.
  * - Databázové dotazy a překlady podle `fallback_order` jsou delegovány na instanci
- *   `entity_manager` (`fetch_records()`), kterou tato třída inicializuje v metodě `render()`.
+ *   `entity_manager` (`fetch_rows()` a `fetch_row()`), kterou tato třída inicializuje v metodě `render()`.
  * - Vykreslování akčních tlačítek využívá komponentu `abstract_button`
  *   a lokalizaci textů zajišťuje `$this->phrase()` přes `phrase_manager`.
  *
@@ -51,11 +51,10 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
- * 2026-10-22 17:45 - Napojení render_master() a render_detail() na metodu
- *                    $this->em->fetch_records() vyhodnocující jazykové verze v PHP.
- *                  - Přidána vlastnost $allow_insert pro zákaz vkládání nových
+ * 2026-10-22 22:40 - Oprava volání čtecích metod entity_manageru v render_master()
+ *                    a render_detail() na $this->em->fetch_rows() a $this->em->fetch_row().
+ * 2026-10-22 17:45 - Přidána vlastnost $allow_insert pro zákaz vkládání nových
  *                    záznamů (update_guid=NEW) u vybraných tříd (např. page_organization).
- *                  - Opraveny všechny chybějící mezery před znakem $.
  * 2026-10-21 15:05 - Klientské filtrování #master-filter přesunuto do centrálního
  *                    delegovaného listeneru v render_body() (funguje pro všechny potomky
  *                    i po AJAX obnově levého panelu bez duplikace <script> bloku).
@@ -64,9 +63,6 @@
  *                  - V detailním panelu doplněno automatické vykreslení checkboxu
  *                    removed (s JS potvrzením a kontrolou oprávnění v entity_manager)
  *                    pro zrušení nebo obnovení záznamu či jazykové mutace.
- * 2026-10-18 18:15 - Převedení čtení dat v render_master() na sqlarray_simple()
- *                    a v render_detail() na sqlfirstrow(), aby vnořené dotazy
- *                    nikdy neuvolnily globální $dbquery v OsirisLib.php.
  * 2026-10-17 01:05 - Integrace schvalovacího cyklu (SSC): podpora tlačítek pro uložení
  *                    konceptu ('D'), postoupení ke schválení ('F'), přímé uložení ('A')
  *                    a smazání konceptu bez zápisu do historie.
@@ -417,9 +413,7 @@ HTML;
 				<tbody id="master-list">
 HTML;
 
-		$rows = method_exists($this->em, 'fetch_records')
-			? $this->em->fetch_records($this->master_where, '', false, $show_removed)
-			: sqlarray_simple($this->em->build_select_query($this->master_where, '', false, $show_removed)); // Načtení záznamů s překlady
+		$rows = $this->em->fetch_rows($this->master_where, '', false, $show_removed); // Dvoupolové načtení záznamů s překlady v PHP
 		
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název stránky do URL
 		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL
@@ -568,13 +562,7 @@ HTML;
 			$is_mine = true;                                                 // Příznak vlastnictví záznamu
 		} else {
 			$where_detail = "m.original = " . guidliteral($update_guid);     // Podmínka pro vyhledání konkrétního záznamu
-			if (method_exists($this->em, 'fetch_records')) {                 // Použití dvoupolového vyhodnocení v PHP
-				$det_rows = $this->em->fetch_records($where_detail, '', false, true); // Načtení záznamu s překlady
-				$datarow = !empty($det_rows) ? reset($det_rows) : [];        // První nalezený záznam
-			} else {
-				$sql = $this->em->build_select_query($where_detail, '', false, true); // Fallback na SQL dotaz
-				$datarow = sqlfirstrow($sql);                                // Načtení řádku detailu
-			}
+			$datarow = $this->em->fetch_row($where_detail, false, true);     // Načtení záznamu s překlady přes dvoupolové vyhodnocení
 			
 			if (empty($datarow)) {                                           // Kontrola existence načteného záznamu
 				$msg_nf = htmlspecialchars($this->phrase('msg_record_not_found', [], 'Záznam nebyl nalezen.')); // Chybová hláška

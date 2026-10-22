@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 17:45
+ * Verze: 2026-10-22 22:40
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – čtecí, metadatová a UI vrstva (STI Architektura).
  *       Zápisové a schvalovací metody jsou vyčleněny do traitu entity_manager_write
@@ -38,6 +38,9 @@
  *    d) pokud je hodnota prázdná a záznam má `ancestor`, vyhodnotí tutéž logiku pro předka.
  * 
  * Změny:
+ * 2026-10-22 22:40 - Oprava projekce sloupců předků ($select_anc_cols) a překladů ($select_l_cols)
+ *                    v metodě fetch_rows() (odstraněno chybové str_replace nad m.record_type).
+ *                  - Doplněna metoda fetch_records() jako zpětně kompatibilní alias pro fetch_rows().
  * 2026-10-22 17:45 - Kompletní náhrada masivních LEFT JOIN / COALESCE dotazů v load_metadata()
  *                    a čtení dat za dvoupolové vyhodnocení ('A' + podřízené 'L' seřazené dle
  *                    fallback_order < 1000 z dbo.f_language_list) v metodách fetch_rows()
@@ -490,12 +493,15 @@ class entity_manager {
 
 		$trans_cols = [];                                                    // Seznam překládaných sloupců třídy
 		$select_a_cols = [];                                                 // Sloupce pro SELECT v části 'A'
+		$select_anc_cols = [];                                               // Sloupce pro SELECT v části 'ANC_A'
 		$select_l_cols = [];                                                 // Sloupce pro SELECT v části 'L'
 
 		foreach ($this->columns_meta as $colname => $meta) {                 // Sestavení projekce sloupců
+			$select_anc_cols[] = "anc.[{$colname}]";                         // V 'ANC_A' bereme přímo z tabulky anc
+			$select_l_cols[] = "l.[{$colname}]";                             // V 'L' bereme přímo z tabulky l
+
 			if (in_array($colname, $meta_columns_list, true)) {              // Technický sloupec
 				$select_a_cols[] = "m.[{$colname}]";                         // V 'A' bereme přímo z m
-				$select_l_cols[] = "l.[{$colname}]";                         // V 'L' bereme přímo z l
 				continue;                                                    // Další sloupec
 			}
 
@@ -511,20 +517,20 @@ class entity_manager {
 				$expr_a = "COALESCE(m.[{$colname}], o.[{$colname}]) AS [{$colname}]"; // Fallback na systémový originál při NULL
 			}
 			$select_a_cols[] = $expr_a;                                      // Přidání do SELECTu 'A'
-			$select_l_cols[] = $is_trans ? "l.[{$colname}]" : "m.[{$colname}]"; // V 'L' nás zajímají jen překládané sloupce
 		}
 
 		// Pojistka pro povinné řídicí sloupce, pokud by nebyly v columns_meta
 		foreach (['uuid', 'original', 'record_type', 'approval_status', 'draft_author', 'approval_note', 'language', 'removed', 'date_created', 'who_created', 'date_modified', 'who_modified'] as $req_c) { // Povinné sloupce
 			if (!isset($this->columns_meta[$req_c]) AND in_array($req_c, $this->physical_cols, true)) { // Pokud chybí v columns_meta
 				$select_a_cols[] = "m.[{$req_c}]";                           // Přidání z m
+				$select_anc_cols[] = "anc.[{$req_c}]";                       // Přidání z anc
 				$select_l_cols[] = "l.[{$req_c}]";                           // Přidání z l
 			}
 		}
 
 		$sel_a_str = implode(",\n\t\t\t", $select_a_cols);                   // Řetězec sloupců pro 'A'
+		$sel_anc_str = implode(",\n\t\t\t", $select_anc_cols);               // Řetězec sloupců pro 'ANC_A'
 		$sel_l_str = implode(",\n\t\t\t", $select_l_cols);                   // Řetězec sloupců pro 'L'
-		$sel_anc_str = str_replace('m.[', 'anc.[', str_replace('o.[', 'anc.[', $sel_a_str)); // Projekce pro předky 'ANC_A'
 
 		$has_draft_author_col = in_array('draft_author', $this->physical_cols, true); // Zda tabulka podporuje koncepty
 		$rem_filter = $show_removed ? "" : "WHERE rc.removed = 0";           // Filtr platných záznamů
@@ -782,6 +788,13 @@ class entity_manager {
 		}
 
 		return $result;                                                      // Vrácení seřazeného pole záznamů
+	}
+
+	/**
+	 * Zpětně kompatibilní alias pro metodu fetch_rows().
+	 */
+	public function fetch_records(string $where = '', string $order_by = '', bool $ignore_drafts = false, bool $show_removed = false): array { // Alias pro fetch_rows
+		return $this->fetch_rows($where, $order_by, $ignore_drafts, $show_removed); // Delegování na fetch_rows
 	}
 
 	/**
