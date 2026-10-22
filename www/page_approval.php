@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-18 18:15
+ * Verze: 2026-10-22 16:15
  * Soubor: page_approval.php
  * Třída: page_approval
  * Účel: Univerzální schvalovací obrazovka (SSC) pro porovnání původních
@@ -24,6 +24,11 @@
  *   ve specializovaných modulech `page_org_users` a `page_change_user_context`.
  *
  * Změny:
+ * 2026-10-22 16:15 - Doplněna striktní kontrola vlastníka (object_owner) a jazyka
+ *                    v render_detail() a format_comparison_value() (ochrana proti IDOR).
+ *                  - Podpora schvalování návrhů v tabulce organization (kde object_owner = original)
+ *                    pro přihlášeného Sysadmina/Developera v kontextu 0x00.
+ *                  - Odstraněn duplicitní JS listener pro #master-filter (řeší předek).
  * 2026-10-18 18:15 - Převedení všech dotazů z sqlrun/fetch na sqlarray_simple()
  *                    a sqlfirstrow() kvůli globálnímu $dbquery v OsirisLib.php.
  * 2026-10-18 12:55 - Vyčlenění tabulky `user_organization_access` z obecného
@@ -94,6 +99,23 @@ class page_approval extends abstract_page_master_detail {
 	}
 
 	/**
+	 * Sestaví SQL podmínku vlastnictví návrhu pro zadanou fyzickou tabulku.
+	 * Zohledňuje výjimku tabulky `organization`, kde záznamy vlastní samy sebe (`object_owner = original`).
+	 */
+	private function get_owner_filter_sql(string $table_name, string $alias = ''): string { // Podmínka vlastníka návrhu
+		global $dbsession;                                                   // Globální kontext relace schvalovatele
+		$org_raw = (string)($dbsession['organization'] ?? '0x00');           // Surové UUID organizace v relaci
+		$org_sql = guidliteral($org_raw);                                    // SQL literál organizace
+		$is_sys_org = ($org_raw === '0x00' OR $org_raw === '00000000-0000-0000-0000-000000000000'); // Zda je schvalovatel v 0x00
+		$pfx = ($alias !== '') ? "{$alias}." : '';                           // Volitelný prefix tabulkového aliasu
+
+		if ($table_name === 'organization' AND $is_sys_org) {                // V tabulce organization vlastní záznamy samy sebe
+			return "({$pfx}object_owner = {$org_sql} OR {$pfx}object_owner = {$pfx}original)"; // Povolení všech organizací v 0x00
+		}
+		return "{$pfx}object_owner = {$org_sql}";                            // Standardní izolace podle aktivního tenanta
+	}
+
+	/**
 	 * Načte seznam logických tříd (vázaných na fyzické RAC tabulky) a k nim
 	 * všechny čekající návrhy (`record_type = 'D'`, `approval_status = 'F'`)
 	 * pro aktuálního tenanta a aktuální jazyk relace.
@@ -102,7 +124,6 @@ class page_approval extends abstract_page_master_detail {
 	 */
 	private function load_pending_proposals(): array {
 		global $dbsession;                                                   // Globální kontext relace schvalovatele
-		$org_sql = guidliteral((string)($dbsession['organization'] ?? '0x00')); // SQL literál organizace
 		$lang_sql = charliteral((string)($dbsession['language'] ?? 'cs'), 2); // SQL literál jazyka relace
 
 		$classes = [];                                                       // Mapa dostupných tříd: [class_name => caption]
@@ -145,13 +166,16 @@ class page_approval extends abstract_page_master_detail {
 			}
 
 			$tab = $cr['table_name'];                                        // Fyzická tabulka třídy
+			$owner_cond_cnt = $this->get_owner_filter_sql($tab, '');         // Podmínka vlastníka bez aliasu
+			$owner_cond_d = $this->get_owner_filter_sql($tab, 'd');          // Podmínka vlastníka s aliasem d
+
 			$r_cnt = sqlfirstrow("
 				SELECT COUNT(1) AS cnt
 				FROM [{$tab}]
 				WHERE record_type = 'D'
 				  AND approval_status = 'F'
 				  AND removed = 0
-				  AND object_owner = {$org_sql}
+				  AND {$owner_cond_cnt}
 				  AND [language] = {$lang_sql}
 			");                                                              // Rychlý dotaz na počet čekajících návrhů
 
@@ -178,7 +202,7 @@ class page_approval extends abstract_page_master_detail {
 				WHERE d.record_type = 'D'
 				  AND d.approval_status = 'F'
 				  AND d.removed = 0
-				  AND d.object_owner = {$org_sql}
+				  AND {$owner_cond_d}
 				  AND d.[language] = {$lang_sql}
 				ORDER BY d.original, d.date_modified DESC
 			");                                                              // Načtení čekajících návrhů v tabulce do pole
@@ -216,14 +240,19 @@ class page_approval extends abstract_page_master_detail {
 
 	/**
 	 * Převede databázovou hodnotu sloupce na čitelný řetězec pro porovnávací tabulku
-	 * (překlad checkboxů 0/1, položek z meta_codetable a vazeb referenced_class).
+	 * (překlad checkboxů 0/1, úrovně licence, položek z meta_codetable a vazeb referenced_class).
 	 */
 	private function format_comparison_value(array $meta, string $raw_val): string { // Formátování hodnoty pro porovnání
 		if ($raw_val === '') {                                               // Prázdná hodnota zůstává prázdná
 			return '';                                                       // Vrácení prázdného řetězce
 		}
 
+		global $dbsession;                                                   // Globální kontext relace
+		$org_sql = guidliteral((string)($dbsession['organization'] ?? '0x00')); // SQL literál aktivní organizace
+
+		$col_name = (string)($meta['column_name'] ?? '');                    // Technický název sloupce
 		$type = (string)($meta['input_type'] ?? 'text');                     // Typ formulářového prvku sloupce
+
 		if ($type === 'checkbox') {                                          // Překlad bitové hodnoty checkboxu
 			$is_true = ($raw_val === '1' OR strtolower($raw_val) === 'true'); // Vyhodnocení pravdivostní hodnoty
 			$yes_txt = $this->phrase('val_checkbox_yes', [], 'Ano');         // Lokalizované Ano
@@ -231,10 +260,27 @@ class page_approval extends abstract_page_master_detail {
 			return $is_true ? "{$yes_txt} (1)" : "{$no_txt} (0)";            // Čitelný výpis stavu checkboxu
 		}
 
+		if ($col_name === 'licence_level' AND is_numeric($raw_val)) {        // Překlad číselníku úrovní licencí
+			$lvl_int = (int)$raw_val;                                        // Číselná hodnota úrovně licence
+			$r_lvl = sqlfirstrow("SELECT TOP 1 name FROM licence_level WHERE licence_level = {$lvl_int}"); // Dotaz na název úrovně
+			if (!empty($r_lvl) AND (string)$r_lvl['name'] !== '') {          // Pokud byl název úrovně nalezen
+				return (string)$r_lvl['name'] . " [{$lvl_int}]";             // Výpis názvu i číselného kódu
+			}
+		}
+
 		if (!empty($meta['referenced_codetable'])) {                         // Překlad kódu z číselníku meta_codetable
 			$safe_ct = charliteral((string)$meta['referenced_codetable']);   // SQL literál názvu číselníku
 			$safe_val = charliteral($raw_val);                               // SQL literál hodnoty číselníku
-			$r_ct = sqlfirstrow("SELECT TOP 1 caption FROM meta_codetable WHERE codetable_name = {$safe_ct} AND value_code = {$safe_val} AND record_type = 'A' AND removed = 0"); // Dotaz na popisek číselníku
+			$r_ct = sqlfirstrow("
+				SELECT TOP 1 caption
+				FROM meta_codetable
+				WHERE codetable_name = {$safe_ct}
+				  AND value_code = {$safe_val}
+				  AND object_owner IN ({$org_sql}, 0x00)
+				  AND record_type = 'A'
+				  AND removed = 0
+				ORDER BY CASE WHEN object_owner = {$org_sql} THEN 0 ELSE 1 END
+			");                                                              // Dotaz na popisek číselníku s izolací tenanta
 			if (!empty($r_ct) AND (string)$r_ct['caption'] !== '') {         // Pokud byl nalezen popisek v číselníku
 				return (string)$r_ct['caption'] . " [{$raw_val}]";           // Výpis popisku i kódu
 			}
@@ -252,7 +298,15 @@ class page_approval extends abstract_page_master_detail {
 
 			if (!empty($r_rc) AND !empty($r_rc['ref_table'])) {              // Pokud cílová tabulka existuje
 				$ref_tab = (string)$r_rc['ref_table'];                       // Název odkazované tabulky
-				$t_row = sqlfirstrow("SELECT TOP 1 * FROM [{$ref_tab}] WHERE original = {$target_sql} AND record_type = 'A' AND removed = 0 ORDER BY object_owner DESC"); // Načtení cílového řádku
+				$t_row = sqlfirstrow("
+					SELECT TOP 1 *
+					FROM [{$ref_tab}]
+					WHERE original = {$target_sql}
+					  AND (object_owner IN ({$org_sql}, 0x00) OR object_owner = original)
+					  AND record_type = 'A'
+					  AND removed = 0
+					ORDER BY CASE WHEN object_owner = {$org_sql} THEN 0 ELSE 1 END
+				");                                                          // Načtení cílového řádku s izolací tenanta
 				if (!empty($t_row)) {                                        // Sestavení čitelného popisku cílového záznamu
 					foreach (['class_name', 'builtin_code', 'column_name', 'caption'] as $c_col) { // Hledání vhodného sloupce
 						if (!empty($t_row[$c_col])) {                        // Pokud sloupec obsahuje hodnotu
@@ -366,15 +420,6 @@ HTML;
 				</tbody>
 			</table>
 		</div>
-		<script>
-			document.getElementById('master-filter').addEventListener('input', function() {
-				const term = this.value.toLowerCase();
-				const rows = document.getElementById('master-list').querySelectorAll('tr');
-				rows.forEach(row => {
-					row.style.display = row.textContent.toLowerCase().includes(term) ? '' : 'none';
-				});
-			});
-		</script>
 HTML;
 	}
 
@@ -397,16 +442,23 @@ HTML;
 			return;                                                          // Ukončení
 		}
 
+		global $dbsession;                                                   // Globální kontext relace schvalovatele
+		$sess_lang_sql = charliteral((string)($dbsession['language'] ?? 'cs'), 2); // SQL literál jazyka relace
+		$owner_cond_d = $this->get_owner_filter_sql($table, 'd');            // Striktní podmínka vlastnictví návrhu
+
 		$draft_uuid_sql = guidliteral($this->draft_uuid);                    // SQL literál UUID návrhu
 		$draft_row = sqlfirstrow("
 			SELECT d.*, dbo.f_get_user_info(d.who_modified) AS author_info
 			FROM [{$table}] d
 			WHERE d.uuid = {$draft_uuid_sql}
 			  AND d.record_type = 'D'
+			  AND d.approval_status = 'F'
 			  AND d.removed = 0
-		");                                                                  // Načtení vybraného návrhu přes sqlfirstrow()
+			  AND {$owner_cond_d}
+			  AND d.[language] = {$sess_lang_sql}
+		");                                                                  // Načtení vybraného návrhu s kontrolou tenanta a jazyka
 
-		if (empty($draft_row)) {                                             // Pokud návrh v DB již neexistuje
+		if (empty($draft_row)) {                                             // Pokud návrh v DB již neexistuje nebo nepatří tenantovi
 			$msg_nf = htmlspecialchars($this->phrase('msg_proposal_not_found', [], 'Návrh nebyl nalezen nebo již byl zpracován.')); // Hláška
 			echo "<div class='msg-err'>{$msg_nf}</div>";                     // Výpis chyby
 			return;                                                          // Ukončení
@@ -489,7 +541,7 @@ HTML;
 				</div>
 HTML;
 
-		// Upozornění na souběžné návrhhy jiných autorů k témuž záznamu
+		// Upozornění na souběžné návrhy jiných autorů k témuž záznamu
 		if (is_array($competing_list) AND !empty($competing_list)) {         // Pokud existují další souběžné návrhy
 			$warn_comp = htmlspecialchars($this->phrase('msg_competing_proposals_warning', [], 'Upozornění: K tomuto záznamu existují i další souběžné návrhy. Schválením tohoto návrhu budou ostatní souběžné návrhy automaticky odmítnuty:')); // Varování
 			echo "<div class=\"msg-err\" style=\"margin-bottom: 15px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e;\"><div>{$warn_comp}</div><ul style=\"margin: 6px 0 0 20px; padding: 0; font-weight: normal; font-size: 12px;\">"; // Začátek seznamu

@@ -1,14 +1,15 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-18 12:35
+ * Verze: 2026-10-22 16:30
  * Soubor: page_google_callback.php
  * Účel: Zpracování návratu uživatele ze SSO Google autentizace.
- * Vazby: Vyžaduje config.php (kde se inicializuje Composer, klíče i DB)
- *        a volá uloženou proceduru p_set_login pro přihlášení do poslední
- *        navštívené organizace (last_login_organization).
+ * Vazby: Volán z centrálního routeru index.php (kde se načítá config.php,
+ *        Composer, klíče i DB) a volá uloženou proceduru p_set_login pro
+ *        přihlášení do poslední navštívené organizace (last_login_organization).
  *
  * Změny:
+ * 2026-10-22 16:30 - Odstraněno duplicitní volání require_once 'config.php'.
  * 2026-10-18 12:35 - Upřesněno řazení účtů při neunikátním e-mailu (účty se
  *                    skutečným last_login_date mají přednost před NULL hodnotami).
  *                  - Striktní aplikace Anti-LaTeX pravidel (AND/OR místo &&/||,
@@ -18,7 +19,7 @@
 
 declare(strict_types=1);
 
-require_once 'config.php';
+global $google_client_id, $google_client_secret, $google_redirect_uri, $dbconnection, $SID; // Globální proměnné z config.php
 
 // Zpracování chybného přístupu (chybí parametr code z přesměrování)
 if (!isset($_GET['code'])) {                                             // Kontrola přítomnosti autorizačního kódu

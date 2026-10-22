@@ -99,46 +99,4 @@ BEGIN
 	);
 END
 GO
-
-/* =============================================================================
- * Tabulka: password_reset_request
- * Popis:	Uchovává jednorázové tokeny pro obnovu hesla a inicializaci.
- *			Abychom tokeny chránili, ukládáme pouze jejich SHA-256 hash.
- * ============================================================================= */
-
-IF OBJECT_ID('password_reset_request') IS NULL
-BEGIN
-	CREATE TABLE password_reset_request (
-		uuid uuid NOT NULL,
-		
-		-- Identifikace, pro koho token je (0x00 znamená systémový break-glass admin)
-		target_account_uuid uuid NOT NULL, 
-		
-		-- Ukládáme pouze HASH tokenu (např. SHA-256), nikoliv token samotný
-		token_hash varchar(64) NOT NULL,
-		
-		-- Platnost tokenu (např. 1 hodina od vygenerování)
-		expires_at datetime NOT NULL,
-		
-		-- Příznak, zda už byl token použit
-		is_used bit NOT NULL DEFAULT 0,
-		
-		-- Sledovací sloupce
-		date_created datetime NOT NULL DEFAULT getdate(),
-		
-		CONSTRAINT pk_password_reset_request PRIMARY KEY (uuid)
-	);
-	PRINT 'Tabulka password_reset_request byla vytvorena.';
-END
-GO
-
--- -----------------------------------------------------------------------------
--- Indexy (idempotentní založení)
--- -----------------------------------------------------------------------------
-EXEC sp_create_index 
-	@tname = 'password_reset_request', 
-	@iname = 'ix_password_reset_request_token', 
-	@colnames = 'token_hash', 
-	@uni = '', 
-	@options = 'WHERE is_used = 0';
-GO
+O

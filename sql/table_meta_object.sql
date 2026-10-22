@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-21 15:05
+ * Verze: 2026-10-22 16:15
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
@@ -31,6 +31,8 @@
  *            PHP třídou 'global_phrase' a původní záznam '' idempotentně odstraněn.
  *          - 2026-10-21 15:05: Zaregistrována samostatná stránka page_xlsx_export_meta
  *            pro zpětný export systémových metadat do Excelu.
+ *          - 2026-10-22 16:15: Zaregistrována stránka page_organization pro správu
+ *            a editaci existujících organizací (system_role = 'S').
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -166,6 +168,7 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_meta_column', 'Sloupce metadat', 'Správa definic sloupců, formulářových prvků a překladů', 'U'),
 ('page_meta_phrase', 'Textové fráze a překlady', 'Správa textových frází, tlačítek a jazykových mutací', 'U'),
 ('page_approval', 'Schvalování změn', 'Přehled, porovnání a schvalování navržených záznamů napříč třídami', 'U'),
+('page_organization', 'Správa organizací', 'Přehled a editace klientských organizací a jejich nastavení', 'S'),
 ('page_organization_licence', 'Správa licencí organizací', 'Evidence a aktivace licencí pro jednotlivé tenanty', 'S'),
 ('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
 ('page_excel_reader', 'Import dat z Excelu', 'Nástroj pro hromadný import a distribuci datových struktur z Excelu', 'S'),

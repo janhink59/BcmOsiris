@@ -480,8 +480,10 @@ function fatal_error($usr = '', $x = "Unspecified error", $deadlock = 0) {  // Z
 	global $debugmode, $dbsession, $error_mailto, $SID, $ORIGINAL_REMOTE_ADDR, $dbserver, $use_dbname; // Globální proměnné
 
 	$get = to_string($_GET);                                                // Serializace GET parametrů
-	if (array_key_exists('pwd', $_POST)) {                                  // Ochrana hesla před zalogováním v čitelné podobě
-		$_POST['pwd'] = '*** Password is hidden from security reasons ***'; // Maskování hesla v POSTu
+	foreach (['pwd', 'password', 'new_password', 'new_password_confirm'] as $pwd_key) { // Seznam citlivých klíčů hesel
+		if (isset($_POST) AND array_key_exists($pwd_key, $_POST)) {         // Ochrana hesla před zalogováním v čitelné podobě
+			$_POST[$pwd_key] = '*** Password is hidden for security reasons ***'; // Maskování hesla v POSTu
+		}
 	}
 	$post = (isset($_POST)) ? "\r\nPOST=" . to_string($_POST) : "";         // Serializace POST parametrů
 	$sess = (isset($_SESSION)) ? "\r\nSESSION=" . to_string($_SESSION) : ""; // Serializace SESSION dat

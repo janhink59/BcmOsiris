@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-21 14:25
+ * Verze: 2026-10-22 16:30
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -20,24 +20,16 @@ GO
  *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
  *
  * Změny:
- * - Doplněno automatické generování caption z názvu třídy.
- * - Přidán class_name a source_code do #list_order pro zobrazení v Master panelu.
- * - Zefektivněno mazání duplicit přímým využitím CTE.
- * - 2026-10-15: Doplněn filtr tabname NOT LIKE '%$' při čtení z v_syscolumns
- *   a cleanup případných uvízlých staging tabulek XLSX_*$. Rozšířen seznam
- *   překládaných sloupců (translate = 1) v globálním slovníku.
- * - 2026-10-16: Doplněno automatické nastavení vazby referenced_class pro
- *   sloupce parent_class, ancestor_class, referenced_class, storage_object
- *   a ancestor v globálním slovníku pro automatické generování <select> prvků.
- * - 2026-10-17 00:50: Doplněno automatické idempotentní vytvoření sloupců
- *   draft_author, approval_note a import_origin + unikátního indexu uq_*_draft
- *   pro record_type = 'D' nad všemi RAC tabulkami a skrytí technických SSC sloupců.
- * - 2026-10-20 15:00: Pro sloupce svg_icon a svg_code v globálním slovníku
- *   nastaveno hidden = 0 a is_protected = 1, aby se v detailu vykreslil
- *   neredigovatelný vizuální náhled ikony přes entity_manager.
+ * - 2026-10-22 16:30: Přidán sloupec shortname do #list_order (pro přehledné zobrazení
+ *   zkratky v levém panelu organizací a tříd aktiv) a skryty interní sloupce loga
+ *   (logo_data, logo_filename, logo_mime_type) v sys_global_columns.
  * - 2026-10-21 14:25: Odstraněny opuštěné záznamy sloupců iconname, svg_code a svg_name
  *   z meta_column (sjednoceno na svg_icon). Odstraněna trojitá duplicita výpočtu
  *   vlastností sloupců z v_syscolumns pomocí dočasné tabulky #syscol_attr.
+ * - 2026-10-20 15:00: Pro sloupec svg_icon v globálním slovníku nastaveno hidden = 0
+ *   a is_protected = 1 pro neredigovatelný vizuální náhled ikony.
+ * - 2026-10-17 00:50: Doplněno automatické idempotentní vytvoření sloupců
+ *   draft_author, approval_note a import_origin + unikátního indexu uq_*_draft.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -375,10 +367,10 @@ BEGIN
 	  AND mc.object_owner = 0x00 
 	  AND mc.ancestor IS NULL;
 
-	-- Výchozí nastavení hodnoty translate pro některé názvy sloupců
+	-- Výchozí nastavení hodnoty list_order pro sloupce zobrazované v levém Master panelu
 	create table #list_order(column_name varchar(80) collate database_default, list_order int identity primary key)
 	insert into #list_order(column_name)
-	values('source_code'), ('builtin_code'), ('column_name'), ('class_name'), ('caption'), ('title')
+	values('source_code'), ('builtin_code'), ('column_name'), ('class_name'), ('caption'), ('shortname'), ('title')
 
 	-- Nastavení položky "list_order" dle výše uvedeného seznamu
 	update meta_column
@@ -397,8 +389,7 @@ BEGIN
 			'caption_forward', 'caption_backward', 'note'
 		)
 
-	-- Skrytí čistě technických RAC a SSC sloupců z automaticky generovaných formulářů
-	-- (Pozn.: sloupec removed je zde hidden = 1, protože se vykresluje dedikovanou metodou render_removed_section na konci formuláře)
+	-- Skrytí čistě technických RAC/SSC a binárních sloupců z automaticky generovaných formulářů
 	UPDATE meta_column
 	SET hidden = 1
 	WHERE parent_class = @c_class
@@ -407,7 +398,8 @@ BEGIN
 	  AND column_name IN (
 		'uuid', 'object_owner', 'original', 'record_type', 'approval_status',
 		'draft_author', 'approval_note', 'import_origin', 'removed',
-		'date_created', 'who_created', 'date_modified', 'who_modified'
+		'date_created', 'who_created', 'date_modified', 'who_modified',
+		'logo_data', 'logo_filename', 'logo_mime_type'
 	  );
 
 	-- Sloupec vektorových ikon (svg_icon) necháme ve formuláři viditelný (hidden = 0) a chráněný (is_protected = 1),

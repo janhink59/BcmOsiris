@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-21 15:00
+ * Verze: 2026-10-22 16:15
  * Soubor: page_meta_class.php
  * Účel: Editace metadat logických tříd (STI architektura).
  * Nahrazuje původní page_meta_object.php.
@@ -15,6 +15,7 @@
  *   do podřízené stránky `page_meta_column`.
  * 
  * Změny:
+ * 2026-10-22 16:15 - Opraveny chybějící mezery před znakem $ a nastaveno $allow_insert = false.
  * 2026-10-21 15:00 - Sloupec iconname ve $form_groups nahrazen sjednoceným svg_icon.
  *                  - Čtení počtu sloupců převedeno ze sqlrun/fetch na sqlfirstrow().
  * 2026-10-18 17:15 - Doplněn sloupec editor_note do prezentační sekce formuláře.
@@ -32,10 +33,11 @@ class page_meta_class extends abstract_page_master_detail {
 		parent::__construct();                                               // Inicializace frází a kontroly přístupu
 
 		$this->class_name = 'meta_class';                                    // Logická třída pro entity_manager
-		$this->page_title =$this->phrase('page_title', [], 'Správa metadat logických tříd'); // Lokalizovaný titulek stránky
+		$this->allow_insert = false;                                         // Třídy vznikají synchronizací DB nebo XLSX importem
+		$this->page_title = $this->phrase('page_title', [], 'Správa metadat logických tříd'); // Lokalizovaný titulek stránky
 
-		$grp_pres =$this->phrase('grp_presentation', [], 'Prezentační texty a nápověda'); // Nadpis prezentační sekce
-		$grp_tech =$this->phrase('grp_technical', [], 'Dědičnost, vzhled a ochrana třídy'); // Nadpis technické sekce
+		$grp_pres = $this->phrase('grp_presentation', [], 'Prezentační texty a nápověda'); // Nadpis prezentační sekce
+		$grp_tech = $this->phrase('grp_technical', [], 'Dědičnost, vzhled a ochrana třídy'); // Nadpis technické sekce
 
 		$this->form_groups = [                                               // Rozdělení polí do sekcí formuláře
 			$grp_pres => ['caption', 'caption_plural', 'description', 'helptext', 'editor_note'], // Překládané popisky třídy a AI kontext
@@ -51,7 +53,7 @@ class page_meta_class extends abstract_page_master_detail {
 	}
 
 	protected function render_detail_header_buttons(string $update_guid): string { // Vykreslení tlačítka správy sloupců
-		if ($update_guid === '' OR$update_guid === 'NEW') {                 // U nového záznamu sloupce ještě nejsou
+		if ($update_guid === '' OR $update_guid === 'NEW') {                 // U nového záznamu sloupce ještě nejsou
 			return '';                                                       // Nevykreslujeme tlačítko sloupců
 		}
 
@@ -67,7 +69,7 @@ class page_meta_class extends abstract_page_master_detail {
 			'',                                                              // Výchozí ikona (prázdná)
 			'btn-secondary'                                                  // Výchozí CSS třída tlačítka
 		);
-		$btn_cols->set_href($columns_url)->set_vars(['count' =>$col_count]); // Nastavení odkazu a proměnné {$count}
+		$btn_cols->set_href($columns_url)->set_vars(['count' => $col_count]); // Nastavení odkazu a proměnné {$count}
 
 		return $btn_cols->render();                                          // Vrácení HTML kódu tlačítka
 	}

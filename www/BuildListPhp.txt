@@ -1,8 +1,9 @@
 config.php
 OsirisLib.php
 a*.php
-e*.php
+b*.php
 output=BcmOsirisPhp2.txt
+e*.php
 g*.php
 html_classes.php
 i*.php

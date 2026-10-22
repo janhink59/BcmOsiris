@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-21 15:05
+ * Verze: 2026-10-22 15:45
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -37,11 +37,13 @@
  *      a `md-detail`), což umožňuje fixní hlavičky a rolovatelný obsah.
  *    - Tabulky v obou panelech drží záhlaví vizuálně připnutá přes `position: sticky`.
  *
- * 4. Automatizované skupiny ve formuláři ($form_groups) a Readonly režim ($is_readonly):
+ * 4. Automatizované skupiny ve formuláři ($form_groups), Readonly ($is_readonly) a vkládání ($allow_insert):
  *    - Potomek může v konstruktoru definovat pole `$this->form_groups`,
  *      čímž se formulář dynamicky rozdělí do vizuálních sekcí s vlastními nadpisy.
  *    - Vlastnost `$this->is_readonly` umožňuje přepnout celý detailní panel do režimu
  *      pouze pro čtení (příprava na budoucí vyčlenění `abstract_detail_panel`).
+ *    - Vlastnost `$this->allow_insert` určuje, zda je na stránce povoleno zakládání
+ *      nových záznamů (`update_guid=NEW`).
  *
  * 5. Hook metody pro customizaci (Rozšiřitelnost bez přepisování jádra):
  *    - `render_master_top()`: Pro vložení tlačítek a HTML nad vyhledávací pole vlevo.
@@ -50,6 +52,9 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-22 15:45 - Opraveny chybějící mezery před znakem $ (AND/OR) způsobující Parse Error.
+ *                  - Přidána vlastnost $allow_insert pro striktní zákaz vkládání nových
+ *                    záznamů (update_guid=NEW) u vybraných tříd (např. page_organization).
  * 2026-10-21 15:05 - Klientské filtrování #master-filter přesunuto do centrálního
  *                    delegovaného listeneru v render_body() (funguje pro všechny potomky
  *                    i po AJAX obnově levého panelu bez duplikace <script> bloku).
@@ -84,6 +89,9 @@ abstract class abstract_page_master_detail extends abstract_page {
 
 	/** Příznak režimu pouze pro čtení v detailním panelu */
 	protected bool $is_readonly = false;                                     // Uzamčení celého detailního panelu
+
+	/** Příznak, zda stránka povoluje vkládání nových záznamů (update_guid=NEW) */
+	protected bool $allow_insert = true;                                     // Povolení vkládání nových záznamů
 	
 	/** Instance dynamického správce objektů řídící čtení a zápis */
 	protected ?entity_manager $em = null;                                    // Instance správce entit
@@ -98,7 +106,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 		}
 		$page = basename($page, '.php');                                     // Očištění názvu stránky
 		if (!str_starts_with($page, 'page_')) {                              // Kontrola přítomnosti předpony page_
-			$page = 'page_' .$page;                                         // Sjednocení na předponu page_
+			$page = 'page_' . $page;                                         // Sjednocení na předponu page_
 		}
 		return $page;                                                        // Vrácení plného názvu stránky
 	}
@@ -147,11 +155,11 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;                                                          // Ukončení zpracování
 		}
 
-		if ($this->class_name !== '' AND$this->em === null) {               // Kontrola potřeby inicializace správce
+		if ($this->class_name !== '' AND $this->em === null) {               // Kontrola potřeby inicializace správce
 			$this->em = new entity_manager($this->class_name);               // Vytvoření instance entity_manageru
 		}
 
-		if (isset($_GET['ajax_panel']) AND$_GET['ajax_panel'] === 'master') { // Detekce AJAX požadavku pro levý panel
+		if (isset($_GET['ajax_panel']) AND $_GET['ajax_panel'] === 'master') { // Detekce AJAX požadavku pro levý panel
 			$this->render_master();                                          // Vykreslení pouze levého panelu
 			exit;                                                            // Okamžité ukončení skriptu
 		}
@@ -163,7 +171,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 * Zajišťuje zpracování POST dat z formuláře (včetně SSC stavů a mazání konceptu) a následný redirect.
 	 */
 	protected function process_save(): void {
-		if ($this->is_readonly OR$this->em === null) {                      // Kontrola readonly režimu a správce entit
+		if ($this->is_readonly OR $this->em === null) {                      // Kontrola readonly režimu a správce entit
 			return;                                                          // V readonly režimu nebo bez správce neukládáme
 		}
 
@@ -172,8 +180,12 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;                                                          // Bez vybraného záznamu ani NEW neukládáme
 		}
 
+		if ($update_guid === 'NEW' AND !$this->allow_insert) {               // Ochrana proti vkládání nových záznamů při zákazu
+			return;                                                          // Vkládání nových záznamů není na této stránce povoleno
+		}
+
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název aktuální stránky
-		$url_suffix =$this->get_context_url_suffix();                       // Kontextové parametry URL
+		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL
 
 		if (isset($_POST['btn_delete_draft'])) {                             // Detekce stisku tlačítka Smazat koncept
 			if ($update_guid !== 'NEW') {                                    // Pouze pro již uložený záznam
@@ -196,15 +208,15 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;                                                          // Ukončení bez uložení
 		}
 
-		$save_guid = ($update_guid === 'NEW') ? '' :$update_guid;           // Pro nový záznam předáme prázdný řetězec
+		$save_guid = ($update_guid === 'NEW') ? '' : $update_guid;           // Pro nový záznam předáme prázdný řetězec
 		$was_marked_removed = (isset($_POST['removed']) AND (string)$_POST['removed'] === '1'); // Zda uživatel zaškrtl zrušení
 		
-		$saved_orig =$this->em->save_post_data($save_guid,$target_status); // Autonomní uložení dat s cílovým stavem SSC
+		$saved_orig = $this->em->save_post_data($save_guid, $target_status); // Autonomní uložení dat s cílovým stavem SSC
 		
 		$show_rem_active = ((string)getinput('show_removed') === '1');       // Zda je zapnuto zobrazování zrušených záznamů
-		if ($was_marked_removed AND !$show_rem_active AND$target_status === 'A') { // Pokud byl záznam zrušen a zrušené se nezobrazují
+		if ($was_marked_removed AND !$show_rem_active AND $target_status === 'A') { // Pokud byl záznam zrušen a zrušené se nezobrazují
 			autoredirect("index.php?page={$page_param}{$url_suffix}");       // Přesměrování na čistý seznam bez detailu
-		} elseif ($saved_orig !== '' AND$saved_orig !== 'NEW') {            // Pokud máme platný originál uloženého záznamu
+		} elseif ($saved_orig !== '' AND $saved_orig !== 'NEW') {            // Pokud máme platný originál uloženého záznamu
 			autoredirect("index.php?page={$page_param}{$url_suffix}&update_guid=" . urlencode($saved_orig)); // Přesměrování na uložený záznam
 		} else {
 			autoredirect("index.php?page={$page_param}{$url_suffix}");       // Fallback na výchozí seznam
@@ -414,7 +426,7 @@ HTML;
 			foreach ($rows as $row) {                                        // Průchod jednotlivými řádky seznamu
 				$uuid = (string)$row['original'];                            // Originální UUID řádku
 				$is_rem = (!empty($row['removed']) OR !empty($row['l_removed'])); // Zda je zrušen hlavní záznam nebo překlad
-				$is_act = ($uuid === $update_guid);                          // Zda jde o právě vybraný řádek
+				$is_act = (strcasecmp($uuid, $update_guid) === 0);           // Zda jde o právě vybraný řádek
 				if ($is_act AND $is_rem) {                                   // Aktivní zrušený řádek
 					$rowClass = 'md-row-active md-row-Active-removed';       // Kombinovaná třída aktivního zrušeného řádku
 				} elseif ($is_act) {                                         // Aktivní platný řádek
@@ -424,7 +436,7 @@ HTML;
 				} else {
 					$rowClass = '';                                          // Standardní platný řádek
 				}
-				$rowIdAttr =$is_act ? 'id="active-row"' : '';               // Atribut id pro aktivní řádek
+				$rowIdAttr = $is_act ? 'id="active-row"' : '';               // Atribut id pro aktivní řádek
 
 				$rec_type = (string)($row['record_type'] ?? 'A');            // Typ záznamu ('A' nebo 'D')
 				$app_status = (string)($row['approval_status'] ?? 'A');      // Stav schválení ('A', 'D', 'F', 'R')
@@ -446,7 +458,7 @@ HTML;
 				echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">\n"; // Otevření řádku
 				
 				$first_col = true;                                           // Příznak prvního sloupce pro vložení štítku
-				foreach ($list_columns as $col =>$header) {                 // Výpis hodnot buněk aktuálního řádku
+				foreach ($list_columns as $col => $header) {                 // Výpis hodnot buněk aktuálního řádku
 					$val = htmlspecialchars((string)($row[$col] ?? ''));     // Hodnota buňky v seznamu
 					$badge_out = $first_col ? $ssc_badge : '';               // Štítek připojíme k první buňce řádku
 					$first_col = false;                                      // Další sloupce již štítek nedostanou
@@ -530,6 +542,12 @@ HTML;
 		if ($update_guid === '') {                                           // Kontrola prázdného výběru
 			$msg_sel = htmlspecialchars($this->phrase('msg_select_from_left', [], 'Vyberte záznam z levého panelu.')); // Výzva k výběru
 			echo "<div class='msg-info'>{$msg_sel}</div>";                   // Výpis informační výzvy
+			return;                                                          // Ukončení vykreslování detailu
+		}
+
+		if ($update_guid === 'NEW' AND !$this->allow_insert) {               // Ochrana při zákazu vkládání nových záznamů
+			$msg_no_ins = htmlspecialchars($this->phrase('msg_insert_not_allowed', [], 'Vkládání nových záznamů není v tomto modulu povoleno.')); // Chybová hláška
+			echo "<div class='msg-err'>{$msg_no_ins}</div>";                 // Výpis chyby
 			return;                                                          // Ukončení vykreslování detailu
 		}
 

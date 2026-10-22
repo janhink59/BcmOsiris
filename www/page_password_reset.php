@@ -1,18 +1,24 @@
 <?php
 /**
  * =============================================================================
+ * Verze: 2026-10-22 16:15
  * Stránka: page_password_reset.php
  * Účel: Univerzální stránka pro vyžádání obnovy hesla (Fáze 1) 
  *       a následné nastavení nového hesla na základě tokenu (Fáze 2).
  * 
- * Opravy a úpravy:
- * - Fáze 1 nyní striktně vyžaduje přihlašovací jméno (login_name) i e-mail.
- *   Tím je zamezeno kolizím v multi-tenantním prostředí (stejný e-mail u více tenantů).
- * - Vyřešeno zastínění System Admina (0x00) lokálním adminem (0x01).
- * - Odkazy a akce formulářů plně respektují centrální router (index.php?page=...).
- * - Zajištěna ochrana proti brute-force a nechráněnému přenosu (HTTP blokace).
- * - NOVĚ: Ve fázi 2 (obnova přes token) je uživateli jasně zobrazeno, 
- *   pro jaký účet heslo mění (jméno, login a e-mail).
+ * Vazby na okolí:
+ * - Volána z centrálního routeru index.php při ?page=page_password_reset.
+ * - Využívá language_manager pro volbu jazyka v pravém horním rohu.
+ * - Pracuje s tabulkami activation_token, user_account a system_constant.
+ * - Odesílá odkaz pro obnovu hesla pomocí funkce send_global_mail().
+ * 
+ * Změny:
+ * 2026-10-22 16:15 - Sjednocení všech URL na prefix page_ (page_password_reset, page_login).
+ *                  - Odstraněno duplicitní volání require_once "config.php".
+ *                  - Doplněna podpora vyhledání účtu i při zadání e-mailu do pole loginu
+ *                    (výběr naposledy přihlášeného účtu dle last_login_date DESC).
+ *                  - Zapojen language_manager a striktně aplikována Anti-LaTeX pravidla
+ *                    (OR/AND místo ||/&&, komentáře s českou diakritikou u všech řádků s $).
  * =============================================================================
  */
 
@@ -21,238 +27,248 @@ declare(strict_types=1);
 // Vynucení UTF-8 kódování hlavičkou
 header('Content-Type: text/html; charset=utf-8');
 
-// 1. Načtení konfigurace
-require_once "config.php";
+global $http_allowed;                                                    // Globální příznak povolení nezabezpečeného HTTP
 
-$messageHtml = '';
-$isPost = ($_SERVER['REQUEST_METHOD'] === 'POST');
+// Inicializace správce jazyků a ošetření přepnutí jazyka
+$requested_lang = (isset($_GET['set_lang']) AND is_string($_GET['set_lang'])) ? $_GET['set_lang'] : null; // Požadovaný jazyk z URL
+$lang_manager = new language_manager($requested_lang);                   // Inicializace správce jazyků
+$token_in_url = trim((string)getinput('token'));                         // Případný token v URL při přepnutí jazyka
+
+if ($requested_lang !== null) {                                          // PRG přesměrování po změně jazyka
+	$tok_suffix = ($token_in_url !== '') ? '&token=' . urlencode($token_in_url) : ''; // Zachování tokenu v URL
+	header('Location: index.php?page=page_password_reset' . $tok_suffix); // Přesměrování na čistou URL adresu
+	exit;                                                                // Ukončení běhu skriptu
+}
+
+$current_lang = $lang_manager->get_current_language();                   // Kód aktuálního jazyka
+$messageHtml = '';                                                       // HTML chybové nebo potvrzovací zprávy
+$isPost = (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST');               // Příznak odeslání formuláře metodou POST
 
 // =========================================================================
 // KONTROLA BEZPEČNOSTI (HTTP vs HTTPS)
 // =========================================================================
-global $http_allowed;
-$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $_SERVER['SERVER_PORT'] == 443;
-$protocol = $isHttps ? "https://" : "http://";
+$isHttps = ((!empty($_SERVER['HTTPS']) AND $_SERVER['HTTPS'] !== 'off') OR ($_SERVER['SERVER_PORT'] ?? 80) == 443); // Detekce HTTPS
+$protocol = $isHttps ? "https://" : "http://";                           // Schéma protokolu pro sestavení odkazu
 
-$securityWarningHtml = '';
-$blockAction = false;
+$securityWarningHtml = '';                                               // HTML varování při nezabezpečeném protokolu
+$blockAction = false;                                                    // Příznak zablokování odeslání formuláře
 
 // Pokud běžíme na HTTP a vývojář to v config.php explicitně nepovolil
-if (!$isHttps && empty($http_allowed)) {
+if (!$isHttps AND empty($http_allowed)) {                                // Kontrola povolení HTTP v konfiguraci
 	$securityWarningHtml = "
 		<div class='msg-err' style='margin-bottom: 25px;'>
 			<strong>Kritické bezpečnostní riziko:</strong> Komunikace probíhá přes nezabezpečený protokol HTTP. 
 			Zadávaná hesla a citlivá data mohou být odposlechnuta a vyzrazena! Akce byla z bezpečnostních důvodů zablokována.
 			<br><br>
-			<em>(Pro ladění na lokálním PC nastavte proměnnou <code>\$http_allowed = 1;</code> v souboru config.php)</em>
-		</div>";
-	$blockAction = true;
+			<em>(Pro ladění na lokálním PC nastavte proměnnou <code>&#36;http_allowed = 1;</code> v souboru config.php)</em>
+		</div>";                                                         // Chybová hláška při nezabezpečeném HTTP
+	$blockAction = true;                                                 // Zablokování akce
 }
 
 // Zablokujeme POST, pokud hrozí vyzrazení
-if ($isPost && $blockAction) {
-	$isPost = false;
+if ($isPost AND $blockAction) {                                          // Zahození POST požadavku při blokaci
+	$isPost = false;                                                     // Vypnutí zpracování POSTu
 }
 
-$token = trim((string)getinput('token'));
-$tokenValid = false;
-$userIdForReset = '';
-$tokenUuidForReset = '';
-$displayUserInfo = ''; // Proměnná pro uložení informací o uživateli pro zobrazení ve formuláři
+$token = $token_in_url;                                                  // Aktivní token z požadavku
+$tokenValid = false;                                                     // Příznak platnosti tokenu
+$userIdForReset = '';                                                    // UUID účtu, kterému se mění heslo
+$tokenUuidForReset = '';                                                 // UUID záznamu tokenu v activation_token
+$displayUserInfo = '';                                                   // Informace o uživateli pro zobrazení ve formuláři
 
-if (!empty($token)) {
+if ($token !== '') {                                                     // Rozlišení Fáze 2 (s tokenem) a Fáze 1 (bez tokenu)
 	// =========================================================================
 	// FÁZE 2: UŽIVATEL PŘIŠEL Z E-MAILU S TOKENEM A CHCE NASTAVIT NOVÉ HESLO
 	// =========================================================================
 
-	$hashedToken = hash('sha256', $token);
-	$safeTokenHash = charliteral($hashedToken, 255);
-	$safePurpose = charliteral('PASSWORD_RESET', 50);
+	$hashedToken = hash('sha256', $token);                               // SHA-256 hash přijatého tokenu
+	$safeTokenHash = charliteral($hashedToken, 255);                     // SQL literál hashe tokenu
+	$safePurpose = charliteral('PASSWORD_RESET', 50);                    // SQL literál účelu tokenu
 
 	// Kontrola platnosti tokenu v databázi (musí být nepoužitý a neexpirovaný)
 	$sqlToken = "
 		SELECT uuid, user_account, expires_at 
 		FROM activation_token 
-		WHERE token_hash = $safeTokenHash 
-			AND token_purpose = $safePurpose 
+		WHERE token_hash = {$safeTokenHash} 
+			AND token_purpose = {$safePurpose} 
 			AND is_used = 0 
 			AND removed = 0 
 			AND expires_at > GETDATE()
-	";
+	";                                                                   // Dotaz na platný token v databázi
 	
-	$tokenRow = sqlfirstrow($sqlToken);
+	$tokenRow = sqlfirstrow($sqlToken);                                  // Načtení tokenu přes sqlfirstrow()
 
-	if ($tokenRow) {
-		$tokenValid = true;
-		$userIdForReset = trim((string)$tokenRow['user_account']);
-		$tokenUuidForReset = trim((string)$tokenRow['uuid']);
+	if (!empty($tokenRow)) {                                             // Pokud je token platný a neexpirovaný
+		$tokenValid = true;                                              // Označení tokenu jako platného
+		$userIdForReset = trim((string)$tokenRow['user_account']);       // UUID cílového uživatelského účtu
+		$tokenUuidForReset = trim((string)$tokenRow['uuid']);            // Primární klíč tokenu
 		
-		// ---------------------------------------------------------------------
-		// NOVÉ: Zjištění informací o uživateli pro UI (UX vylepšení)
-		// ---------------------------------------------------------------------
-		$isSysAdmin = ($userIdForReset === '0x00' || $userIdForReset === '00000000-0000-0000-0000-000000000000');
-		if ($isSysAdmin) {
-			$displayUserInfo = "Systémový administrátor (admin)";
+		// Zjištění informací o uživateli pro UI (UX vylepšení)
+		$isSysAdmin = ($userIdForReset === '0x00' OR $userIdForReset === '00000000-0000-0000-0000-000000000000'); // Zda jde o účet admin
+		if ($isSysAdmin) {                                               // Nouzový systémový administrátor
+			$displayUserInfo = "Systémový administrátor (admin)";        // Popisek pro systémového administrátora
 		} else {
-			$safeUserIdForResetInfo = guidliteral($userIdForReset);
+			$safeUserIdForResetInfo = guidliteral($userIdForReset);      // SQL literál UUID uživatele
 			$sqlUserInfo = "
 				SELECT login_name, first_name, last_name, email 
 				FROM user_account 
-				WHERE original = $safeUserIdForResetInfo 
+				WHERE original = {$safeUserIdForResetInfo} 
 					AND record_type = 'A'
-			";
-			$userInfoRow = sqlfirstrow($sqlUserInfo);
+			";                                                           // Dotaz na identitu uživatele
+			$userInfoRow = sqlfirstrow($sqlUserInfo);                    // Načtení údajů uživatele
 			
-			if ($userInfoRow) {
-				$uLogin = htmlspecialchars(trim((string)$userInfoRow['login_name']));
-				$uEmail = htmlspecialchars(trim((string)$userInfoRow['email']));
-				$uFirst = htmlspecialchars(trim((string)$userInfoRow['first_name']));
-				$uLast = htmlspecialchars(trim((string)$userInfoRow['last_name']));
+			if (!empty($userInfoRow)) {                                  // Pokud byl uživatel nalezen
+				$uLogin = htmlspecialchars(trim((string)$userInfoRow['login_name'])); // Ošetřený login
+				$uEmail = htmlspecialchars(trim((string)$userInfoRow['email']));      // Ošetřený e-mail
+				$uFirst = htmlspecialchars(trim((string)$userInfoRow['first_name'])); // Ošetřené jméno
+				$uLast = htmlspecialchars(trim((string)$userInfoRow['last_name']));   // Ošetřené příjmení
 				
-				// Sestavení řetězce; pokud uživatel nemá vyplněné jméno a příjmení, zobrazí se alespoň login a e-mail
-				if (!empty($uFirst) || !empty($uLast)) {
-					$displayUserInfo = "$uFirst $uLast ($uLogin) &lt;$uEmail&gt;";
+				if ($uFirst !== '' OR $uLast !== '') {                   // Pokud má vyplněné jméno nebo příjmení
+					$displayUserInfo = "{$uFirst} {$uLast} ({$uLogin}) &lt;{$uEmail}&gt;"; // Jméno, login a e-mail
 				} else {
-					$displayUserInfo = "$uLogin &lt;$uEmail&gt;";
+					$displayUserInfo = "{$uLogin} &lt;{$uEmail}&gt;";    // Login a e-mail
 				}
 			} else {
-				$displayUserInfo = "Neznámý uživatel (ID: " . htmlspecialchars($userIdForReset) . ")";
+				$displayUserInfo = "Neznámý uživatel (ID: " . htmlspecialchars($userIdForReset) . ")"; // Fallback
 			}
 		}
-		// ---------------------------------------------------------------------
 
-		if ($isPost) {
-			$newPwd = (string)getinput('new_password', 'raw');
-			$newPwdConfirm = (string)getinput('new_password_confirm', 'raw');
+		if ($isPost) {                                                   // Zpracování odeslaného nového hesla
+			$newPwd = (string)getinput('new_password', 'raw');           // Nové heslo v surovém tvaru
+			$newPwdConfirm = (string)getinput('new_password_confirm', 'raw'); // Potvrzení nového hesla
 
-			if (strlen($newPwd) < 8) {
-				$messageHtml = "<div class='msg-err'>Heslo musí mít alespoň 8 znaků.</div>";
-			} elseif ($newPwd !== $newPwdConfirm) {
-				$messageHtml = "<div class='msg-err'>Zadaná hesla se neshodují.</div>";
+			if (strlen($newPwd) < 8) {                                   // Kontrola minimální délky hesla
+				$messageHtml = "<div class='msg-err'>Heslo musí mít alespoň 8 znaků.</div>"; // Chyba krátkého hesla
+			} elseif ($newPwd !== $newPwdConfirm) {                      // Kontrola shody obou hesel
+				$messageHtml = "<div class='msg-err'>Zadaná hesla se neshodují.</div>"; // Chyba neshody hesel
 			} else {
-				$pwdHash = password_hash($newPwd, PASSWORD_DEFAULT);
-				$safePwdHash = charliteral($pwdHash, 255);
-				$safeTokenUuid = guidliteral($tokenUuidForReset);
+				$pwdHash = password_hash($newPwd, PASSWORD_DEFAULT);     // Выpočet bcrypt/argon2 hashe hesla
+				$safePwdHash = charliteral($pwdHash, 255);               // SQL literál hashe hesla
+				$safeTokenUuid = guidliteral($tokenUuidForReset);        // SQL literál UUID tokenu
 
-				sqlrun("BEGIN TRAN");
-				$updateSuccess = false;
+				sqlrun("BEGIN TRAN");                                    // Zahájení transakce uložení hesla
+				$updateSuccess = false;                                  // Výchozí stav uložení
 
-				if ($isSysAdmin) {
-					// Aktualizace hesla pro Break-glass administrátora
+				if ($isSysAdmin) {                                       // Aktualizace hesla pro Break-glass administrátora
 					$updateSql = "
 						UPDATE system_constant 
-						SET system_admin_pwd = $safePwdHash, 
+						SET system_admin_pwd = {$safePwdHash}, 
 							date_modified = GETDATE()
-					";
-					$updateSuccess = sqlrun($updateSql);
+					";                                                   // SQL příkaz pro system_constant
+					$updateSuccess = (bool)sqlrun($updateSql);           // Provedení aktualizace
 				} else {
 					// Aktualizace hesla pro běžného uživatele a reset chybových stavů
-					$safeUserIdForUpdate = guidliteral($userIdForReset);
+					$safeUserIdForUpdate = guidliteral($userIdForReset); // SQL literál UUID uživatele
 					$updateSql = "
 						UPDATE user_account 
-						SET password_hash = $safePwdHash, 
+						SET password_hash = {$safePwdHash}, 
 							failed_login_attempts = 0, 
 							locked_until = NULL, 
 							require_password_change = 0,
+							last_password_change = GETDATE(),
 							date_modified = GETDATE()
-						WHERE original = $safeUserIdForUpdate 
+						WHERE original = {$safeUserIdForUpdate} 
 							AND record_type = 'A'
-					";
-					$updateSuccess = sqlrun($updateSql);
+					";                                                   // SQL příkaz pro user_account
+					$updateSuccess = (bool)sqlrun($updateSql);           // Provedení aktualizace účtu
 				}
 
-				if ($updateSuccess) {
-					// Zneplatnění použitého tokenu
-					sqlrun("UPDATE activation_token SET is_used = 1, date_modified = GETDATE() WHERE uuid = $safeTokenUuid");
-					sqlrun("COMMIT");
+				if ($updateSuccess) {                                    // Pokud uložení hesla proběhlo úspěšně
+					sqlrun("UPDATE activation_token SET is_used = 1, date_modified = GETDATE() WHERE uuid = {$safeTokenUuid}"); // Zneplatnění tokenu
+					sqlrun("COMMIT");                                    // Potvrzení transakce
 					
-					$messageHtml = "<div class='msg-ok'>Heslo bylo úspěšně změněno. Nyní se můžete přihlásit do systému.</div>";
-					$tokenValid = false; 
+					$messageHtml = "<div class='msg-ok'>Heslo bylo úspěšně změněno. Nyní se můžete přihlásit do systému.</div>"; // Potvrzení
+					$tokenValid = false;                                 // Skrytí formuláře po změně
 				} else {
-					sqlrun("ROLLBACK");
-					$messageHtml = "<div class='msg-err'>Kritická chyba: Uložení nového hesla do databáze selhalo.</div>";
+					sqlrun("ROLLBACK");                                  // Stornování transakce při chybě
+					$messageHtml = "<div class='msg-err'>Kritická chyba: Uložení nového hesla do databáze selhalo.</div>"; // Chybová zpráva
 				}
 			}
 		}
 	} else {
-		$messageHtml = "<div class='msg-err'>Tento odkaz pro obnovu hesla je neplatný nebo již vypršel. Vyžádejte si prosím nový.</div>";
+		$messageHtml = "<div class='msg-err'>Tento odkaz pro obnovu hesla je neplatný nebo již vypršel. Vyžádejte si prosím nový.</div>"; // Neplatný token
 	}
 
 } else {
 	// =========================================================================
-	// FÁZE 1: VYŽÁDÁNÍ ODKAZU (ZADÁNÍ LOGINU A E-MAILU)
+	// FÁZE 1: VYŽÁDÁNÍ ODKAZU (ZADÁNÍ E-MAILU A VOLITELNĚ PŘIHLAŠOVACÍHO JMÉNA)
 	// =========================================================================
 	
-	if ($isPost) {
-		$rawLogin = trim((string)getinput('login_name', 'raw'));
-		$rawEmail = trim((string)getinput('email', 'raw'));
+	if ($isPost) {                                                       // Zpracování žádosti o zaslání odkazu
+		$rawLogin = trim((string)getinput('login_name', 'raw'));         // Volitelně zadané přihlašovací jméno
+		$rawEmail = trim((string)getinput('email', 'raw'));              // Zadaná e-mailová adresa
 		
-		if (empty($rawLogin) || empty($rawEmail)) {
-			$messageHtml = "<div class='msg-err'>Prosím, zadejte přihlašovací jméno i e-mail.</div>";
+		if ($rawEmail === '') {                                          // E-mail musí být vždy vyplněn
+			$messageHtml = "<div class='msg-err'>Prosím, zadejte e-mailovou adresu účtu.</div>"; // Chybová hláška
 		} else {
-			$safeLogin = charliteral($rawLogin, 200);
-			$safeEmail = charliteral($rawEmail, 200);
+			$safeLogin = charliteral($rawLogin, 200);                    // SQL literál přihlašovacího jména
+			$safeEmail = charliteral($rawEmail, 200);                    // SQL literál e-mailu
 
-			$sysadminEmail = '';
-			$sqlSysAdmin = "SELECT sysadmin_email FROM system_constant";
-			$sysAdminRow = sqlfirstrow($sqlSysAdmin);
-			if ($sysAdminRow && !empty(trim((string)$sysAdminRow['sysadmin_email']))) {
-				$sysadminEmail = trim((string)$sysAdminRow['sysadmin_email']);
+			$sysadminEmail = '';                                         // E-mail systémového správce
+			$sysAdminRow = sqlfirstrow("SELECT sysadmin_email FROM system_constant"); // Načtení e-mailu ze system_constant
+			if (!empty($sysAdminRow) AND trim((string)$sysAdminRow['sysadmin_email']) !== '') { // Pokud je e-mail nastaven
+				$sysadminEmail = trim((string)$sysAdminRow['sysadmin_email']); // Uložení e-mailu správce
 			}
 
-			$userEmail = '';
-			$loginName = '';
-			$userId = '';
+			$userEmail = '';                                             // Nalezený e-mail cílového účtu
+			$loginName = '';                                             // Nalezené přihlašovací jméno účtu
+			$userId = '';                                                // Nalezené UUID účtu
 
 			// 1. Zjištění, zda se nejedná o vyžádání hesla pro System Admina (0x00)
-			if (strtolower($rawLogin) === 'admin' && !empty($sysadminEmail) && strcasecmp($rawEmail, $sysadminEmail) === 0) {
-				$userId = '0x00';
-				$loginName = 'admin';
-				$userEmail = $sysadminEmail;
-			} 
-			// 2. Pokud ne, hledáme standardního uživatele
-			else {
+			if (strtolower($rawLogin) === 'admin' AND $sysadminEmail !== '' AND strcasecmp($rawEmail, $sysadminEmail) === 0) { // Účet admin
+				$userId = '0x00';                                        // Identifikátor systémového admina
+				$loginName = 'admin';                                    // Login systémového admina
+				$userEmail = $sysadminEmail;                             // E-mail systémového admina
+			} else {
+				// 2. Hledání standardního uživatele (pokud zadal login odlišný od e-mailu, filtrujeme i dle login_name,
+				//    jinak vybereme naposledy přihlášený aktivní účet s tímto e-mailem stejně jako v page_login.php)
+				$loginCond = ($rawLogin !== '' AND strcasecmp($rawLogin, $rawEmail) !== 0)
+					? "AND login_name = {$safeLogin}"
+					: "";                                                // Volitelná podmínka na přihlašovací jméno
+
 				$sqlUser = "
-					SELECT original, login_name, first_name, last_name, email 
+					SELECT TOP 1 original, login_name, first_name, last_name, email 
 					FROM user_account 
-					WHERE login_name = $safeLogin 
-						AND email = $safeEmail
+					WHERE email = {$safeEmail}
+						AND email <> ''
+						{$loginCond}
 						AND record_type = 'A' 
 						AND inactive = 0 
 						AND removed = 0
-				";
+					ORDER BY
+						CASE WHEN last_login_date IS NULL THEN 1 ELSE 0 END ASC,
+						last_login_date DESC,
+						date_created DESC
+				";                                                       // Dotaz na nejnověji používaný aktivní účet
 				
-				// Nyní již nehrozí kolize z multi-tenantního prostředí, 
-				// kombinace loginu a konkrétního e-mailu je unikátní identifikátor
-				$userRow = sqlfirstrow($sqlUser);
+				$userRow = sqlfirstrow($sqlUser);                        // Načtení nalezeného účtu
 
-				if ($userRow) {
-					$userId = trim((string)$userRow['original']);
-					$loginName = trim((string)$userRow['login_name']);
-					$userEmail = trim((string)$userRow['email']);
+				if (!empty($userRow)) {                                  // Pokud byl aktivní účet nalezen
+					$userId = trim((string)$userRow['original']);        // Originální UUID účtu
+					$loginName = trim((string)$userRow['login_name']);   // Přihlašovací jméno účtu
+					$userEmail = trim((string)$userRow['email']);        // E-mail účtu
 				}
 			}
 
-			if (empty($userEmail)) {
-				// Bezpečnostní zpráva neprozrazuje, co přesně bylo špatně (prevence enumerace)
-				$messageHtml = "<div class='msg-err'>Účet s touto kombinací jména a e-mailu nebyl nalezen, nebo je deaktivován.</div>";
+			if ($userEmail === '') {                                     // Pokud žádný odpovídající účet neexistuje
+				$messageHtml = "<div class='msg-err'>Účet s těmito údaji nebyl nalezen nebo je deaktivován.</div>"; // Obecná hláška
 			} else {
 				try {
-					$plainToken = bin2hex(random_bytes(32));
-				} catch (\Exception $e) {
-					fatal_error("Chyba krypto-generátoru", $e->getMessage());
+					$plainToken = bin2hex(random_bytes(32));             // Vygenerování kryptografického tokenu
+				} catch (\Exception $e) {                                // Zachycení chyby generátoru
+					fatal_error("Chyba krypto-generátoru", $e->getMessage()); // Fatální chyba
 				}
 
-				$tokenHash = hash('sha256', $plainToken);
-				$expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours'));
-				$tokenUuid = newid(); 
+				$tokenHash = hash('sha256', $plainToken);                // SHA-256 hash tokenu pro uložení v DB
+				$expiresAt = date('Y-m-d H:i:s', strtotime('+24 hours')); // Platnost tokenu 24 hodin
+				$tokenUuid = newid();                                    // Nové UUID pro záznam tokenu
 
-				$safeTokenUuid = guidliteral($tokenUuid);
-				$safeHash = charliteral($tokenHash, 255);
-				$safePurpose = charliteral('PASSWORD_RESET', 50); 
-				$safeExpires = dateliteral($expiresAt);
-				$safeIp = charliteral(get_client_ip_path(), 200);
-				$safeUserIdForInsert = ($userId === '0x00' || $userId === '00000000-0000-0000-0000-000000000000') ? '0x00' : guidliteral($userId);
+				$safeTokenUuid = guidliteral($tokenUuid);                // SQL literál UUID tokenu
+				$safeHash = charliteral($tokenHash, 255);                // SQL literál hashe tokenu
+				$safePurpose = charliteral('PASSWORD_RESET', 50);        // SQL literál účelu tokenu
+				$safeExpires = dateliteral($expiresAt);                  // SQL literál času expirace
+				$safeIp = charliteral(get_client_ip_path(), 45);         // SQL literál IP adresy žadatele
+				$safeUserIdForInsert = ($userId === '0x00' OR $userId === '00000000-0000-0000-0000-000000000000') ? '0x00' : guidliteral($userId); // UUID účtu
 
 				$sqlInsert = "
 					INSERT INTO activation_token (
@@ -260,52 +276,59 @@ if (!empty($token)) {
 						expires_at, is_used, request_ip, 
 						date_created, date_modified, removed
 					) VALUES (
-						$safeTokenUuid, $safeHash, $safePurpose, $safeUserIdForInsert, 
-						$safeExpires, 0, $safeIp, 
+						{$safeTokenUuid}, {$safeHash}, {$safePurpose}, {$safeUserIdForInsert}, 
+						{$safeExpires}, 0, {$safeIp}, 
 						GETDATE(), GETDATE(), 0
 					)
-				";
+				";                                                       // Sestavení příkazu INSERT pro token
 
-				if (!sqlrun($sqlInsert)) {
-					fatal_error("Chyba DB", "Uložení tokenu selhalo.");
+				if (!sqlrun($sqlInsert)) {                               // Uložení tokenu do databáze
+					fatal_error("Chyba DB", "Uložení tokenu selhalo.");  // Chyba při zápisu tokenu
 				}
 
-				$baseUrl = $protocol . $_SERVER['HTTP_HOST'] . rtrim(dirname($_SERVER['REQUEST_URI']), '/\\') . '/';
-				// URL nyní směřuje korektně přes centrální router index.php
-				$activationLink = $baseUrl . "index.php?page=password_reset&token=" . urlencode($plainToken);
+				$reqUriDir = rtrim(dirname((string)($_SERVER['REQUEST_URI'] ?? '')), '/\\'); // Adresář aplikace z URI
+				$baseUrl = $protocol . ($_SERVER['HTTP_HOST'] ?? 'localhost') . $reqUriDir . '/'; // Základní URL adresa
+				$activationLink = $baseUrl . "index.php?page=page_password_reset&token=" . urlencode($plainToken); // Odkaz pro obnovu
+				$safeLink = htmlspecialchars($activationLink);           // Ošetřený odkaz pro HTML tělo e-mailu
+				$safeLoginName = htmlspecialchars($loginName);           // Ošetřené přihlašovací jméno pro e-mail
 
-				$mailSubject = "Obnova hesla v systému RAMSES";
+				$mailSubject = "Obnova hesla v systému RAMSES";          // Předmět odesílaného e-mailu
 				$mailBody = "
 					<div style='font-family: Arial, sans-serif;'>
 						<p>Dobrý den,</p>
-						<p>byl vyžádán odkaz pro nastavení nového hesla k vašemu účtu <strong>" . htmlspecialchars($loginName) . "</strong>.</p>
+						<p>byl vyžádán odkaz pro nastavení nového hesla k vašemu účtu <strong>{$safeLoginName}</strong>.</p>
 						<p>Pro nastavení hesla klikněte na odkaz níže:</p>
-						<p><a href='" . htmlspecialchars($activationLink) . "'>" . htmlspecialchars($activationLink) . "</a></p>
+						<p><a href='{$safeLink}'>{$safeLink}</a></p>
 						<p>Odkaz platí 24 hodin.</p>
 						<p>Pokud jste akci nevyžádali, ignorujte prosím tento e-mail.</p>
 					</div>
-				";
+				";                                                       // HTML tělo e-mailu s odkazem
 
-				if (send_global_mail($userEmail, $mailSubject, $mailBody, true)) {
-					$messageHtml = "<div class='msg-ok'>E-mail s instrukcemi pro obnovu hesla byl úspěšně odeslán. Zkontrolujte svou schránku.</div>";
+				if (send_global_mail($userEmail, $mailSubject, $mailBody, true)) { // Odeslání e-mailu přes PHPMailer
+					$messageHtml = "<div class='msg-ok'>E-mail s instrukcemi pro obnovu hesla byl úspěšně odeslán. Zkontrolujte svou schránku.</div>"; // Úspěch
 				} else {
-					$messageHtml = "<div class='msg-err'>Chyba při odesílání e-mailu. Kontaktujte administrátora.</div>";
+					$messageHtml = "<div class='msg-err'>Chyba při odesílání e-mailu. Kontaktujte administrátora.</div>"; // Chyba SMTP
 				}
 			}
 		}
 	}
 }
 
-// Proměnná pro případné vypnutí prvků na frontendu, pokud hrozí riziko úniku dat
-$disabledAttr = $blockAction ? 'disabled' : '';
+$disabledAttr = $blockAction ? 'disabled' : '';                          // HTML atribut pro deaktivaci prvků při HTTP
+$safeCurrentLang = htmlspecialchars($current_lang);                      // Ošetřený kód jazyka pro tag html
+$retUrl = 'index.php?page=page_password_reset' . ($token !== '' ? '&token=' . urlencode($token) : ''); // Návratová URL pro jazyk
+$langSelectorHtml = $lang_manager->render_language_selector($retUrl);    // Vykreslení přepínače jazyků
+$safeTokenVal = htmlspecialchars($token);                                // Ošetřený token do skrytého pole
+$safePostLogin = htmlspecialchars((string)($_POST['login_name'] ?? '')); // Ošetřený předvyplněný login
+$safePostEmail = htmlspecialchars((string)($_POST['email'] ?? ''));      // Ošetřený předvyplněný e-mail
 ?>
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="<?php echo $safeCurrentLang; // Výpis kódu jazyka dokumentu ?>">
 <head>
 	<meta charset="utf-8">
 	<title>Obnova hesla - BCM Osiris</title>
 	<style>
-		body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 50px; }
+		body { font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 50px; position: relative; }
 		.container { background-color: #fff; padding: 30px; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.1); max-width: 450px; margin: auto; }
 		h1 { font-size: 22px; color: #333; margin-top: 0; }
 		label { display: block; margin-top: 15px; margin-bottom: 5px; color: #666; font-weight: bold; }
@@ -319,63 +342,62 @@ $disabledAttr = $blockAction ? 'disabled' : '';
 		.msg-ok { color: #1b5e20; font-weight: bold; padding: 10px; border-left: 4px solid #1b5e20; background-color: #e8f5e9; }
 		.back-link { display: block; text-align: center; margin-top: 20px; font-size: 14px; color: #004488; text-decoration: none; }
 		.back-link:hover { text-decoration: underline; }
-		
-		/* Nová třída pro zobrazení identity uživatele */
 		.user-identity-box { background-color: #e9f2fa; border-left: 4px solid #004488; padding: 12px; margin-top: 10px; margin-bottom: 20px; font-weight: bold; color: #004488; border-radius: 0 3px 3px 0; word-break: break-all; }
+		.lang-switcher-wrapper { position: absolute; top: 15px; right: 20px; }
 	</style>
 </head>
 <body>
+	<div class="lang-switcher-wrapper">
+		<?php echo $langSelectorHtml; // Vykreslení přepínače jazyků ?>
+	</div>
+
 	<div class="container">
 		
-		<?php if ($securityWarningHtml): ?>
-			<?php echo $securityWarningHtml; ?>
+		<?php if ($securityWarningHtml !== ''): // Kontrola přítomnosti bezpečnostního varování ?>
+			<?php echo $securityWarningHtml; // Výpis bezpečnostního varování ?>
 		<?php endif; ?>
 
-		<?php if ($messageHtml): ?>
-			<div class="message"><?php echo $messageHtml; ?></div>
+		<?php if ($messageHtml !== ''): // Kontrola přítomnosti stavové zprávy ?>
+			<div class="message"><?php echo $messageHtml; // Výpis stavové zprávy ?></div>
 		<?php endif; ?>
 
-		<?php if (!empty($token) && $tokenValid): ?>
-			<!-- FÁZE 2: FORMULÁŘ PRO NOVÉ HESLO -->
+		<?php if ($token !== '' AND $tokenValid): // Fáze 2: Formulář pro zadání nového hesla ?>
 			<h1>Nastavení nového hesla</h1>
 			
 			<p style="color: #555; font-size: 14px; margin-bottom: 5px;">Měníte heslo pro účet:</p>
 			<div class="user-identity-box">
-				<?php echo $displayUserInfo; ?>
+				<?php echo $displayUserInfo; // Výpis identifikace účtu ?>
 			</div>
 
 			<p style="color: #555; font-size: 14px;">Zadejte své nové heslo. Z bezpečnostních důvodů musí obsahovat minimálně 8 znaků.</p>
 			
-			<!-- Akce nyní směřuje přes centrální router -->
-			<form method="POST" action="index.php?page=password_reset">
-				<input type="hidden" name="token" value="<?php echo htmlspecialchars($token); ?>">
+			<form method="POST" action="index.php?page=page_password_reset">
+				<input type="hidden" name="token" value="<?php echo $safeTokenVal; // Skrytý token pro Fázi 2 ?>">
 				
 				<label for="new_password">Nové heslo:</label>
-				<input type="password" id="new_password" name="new_password" required minlength="8" <?php echo $disabledAttr; ?>>
+				<input type="password" id="new_password" name="new_password" required minlength="8" <?php echo $disabledAttr; // Případná blokace ?>>
 				
 				<label for="new_password_confirm">Potvrzení nového hesla:</label>
-				<input type="password" id="new_password_confirm" name="new_password_confirm" required minlength="8" <?php echo $disabledAttr; ?>>
+				<input type="password" id="new_password_confirm" name="new_password_confirm" required minlength="8" <?php echo $disabledAttr; // Případná blokace ?>>
 				
-				<button type="submit" <?php echo $disabledAttr; ?>>Uložit heslo</button>
+				<button type="submit" <?php echo $disabledAttr; // Případná blokace tlačítka ?>>Uložit heslo</button>
 			</form>
 
-		<?php elseif (empty($token)): ?>
-			<!-- FÁZE 1: FORMULÁŘ PRO VYŽÁDÁNÍ ODKAZU -->
+		<?php elseif ($token === ''): // Fáze 1: Formulář pro vyžádání odkazu ?>
 			<h1>Obnova zapomenutého hesla</h1>
-			<p style="color: #555; font-size: 14px;">Zadejte své přihlašovací jméno a e-mail. Na příslušnou e-mailovou adresu vám bude zaslán odkaz k nastavení nového hesla.</p>
-			<!-- Akce nyní směřuje přes centrální router -->
-			<form method="POST" action="index.php?page=password_reset">
-				<label for="login_name">Uživatelské jméno:</label>
-				<input type="text" id="login_name" name="login_name" required value="<?php echo htmlspecialchars($_POST['login_name'] ?? ''); ?>" <?php echo $disabledAttr; ?>>
+			<p style="color: #555; font-size: 14px;">Zadejte svou e-mailovou adresu (a volitelně uživatelské jméno). Na e-mail vám bude zaslán odkaz k nastavení nového hesla.</p>
+			<form method="POST" action="index.php?page=page_password_reset">
+				<label for="email">E-mailová adresa: *</label>
+				<input type="email" id="email" name="email" required value="<?php echo $safePostEmail; // Předvyplněný e-mail ?>" <?php echo $disabledAttr; // Případná blokace ?>>
+
+				<label for="login_name">Uživatelské jméno (volitelné):</label>
+				<input type="text" id="login_name" name="login_name" value="<?php echo $safePostLogin; // Předvyplněný login ?>" <?php echo $disabledAttr; // Případná blokace ?>>
 				
-				<label for="email">E-mailová adresa:</label>
-				<input type="email" id="email" name="email" required value="<?php echo htmlspecialchars($_POST['email'] ?? ''); ?>" <?php echo $disabledAttr; ?>>
-				
-				<button type="submit" <?php echo $disabledAttr; ?>>Odeslat odkaz</button>
+				<button type="submit" <?php echo $disabledAttr; // Případná blokace tlačítka ?>>Odeslat odkaz</button>
 			</form>
 		<?php endif; ?>
 		
-		<a href="index.php?page=login" class="back-link">Zpět na úvodní obrazovku (Přihlášení)</a>
+		<a href="index.php?page=page_login" class="back-link">Zpět na úvodní obrazovku (Přihlášení)</a>
 	</div>
 </body>
 </html>

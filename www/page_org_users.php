@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-18 18:15
+ * Verze: 2026-10-22 16:15
  * Soubor: page_org_users.php
  * Stránka: page_org_users.php
  * Účel: Master-Detail rozhraní pro správu uživatelů aktuálního tenanta.
@@ -10,12 +10,15 @@
  *       obousměrné schvalování přístupu mezi organizacemi (žádosti a pozvánky).
  *
  * Vazby na okolí:
- * - Dědí z abstract_page_master_detail (využívá $this->phrase(), render_audit_trail()).
+ * - Dědí z abstract_page_master_detail (využívá $this->phrase(), render_audit_trail()
+ *   a centrální JS filtrování levého panelu).
  * - Využívá abstract_button pro vykreslení akčních tlačítek.
  * - Volá uložené procedury page_org_users (čtení seznamu i detailu přes
  *   sqlarray_simple a sqlfirstrow) a form_org_users (zápis).
  *
  * Změny:
+ * 2026-10-22 16:15 - Odstraněn duplicitní inline <script> pro #master-filter
+ *                    v render_master() (filtrování řeší centrálně předek).
  * 2026-10-18 18:15 - Oprava kolize otevřeného SQLSRV statementu ($dbquery v OsirisLib.php)
  *                    při vnořeném auto-discovery zápisu frází: čtení seznamu uživatelů
  *                    převedeno na sqlarray_simple() a čtení detailu na sqlfirstrow().
@@ -34,11 +37,6 @@
  *                    v process_save() proti nechtěnému zacyklení redirectu.
  *                  - Sjednoceny obalové kontejnery .md-master-header/.md-master-content
  *                    a .md-detail-header/.md-detail-content.
- * 2026-10-09 - Odstraněna redundantní kontrola $access_denied (řeší rodič).
- *            - Odstraněn anti-pattern odchytávání POST dat v konstruktoru.
- *              Nyní se plně využívá PRG cyklus rodiče přepsáním process_save().
- *            - Oprava vyhodnocení oprávnění (přechod z right_sysadmin/right_orgadmin na active_role).
- *            - Oprava klíče relace z user_access_uuid na login_session_uuid.
  * =============================================================================
  */
 
@@ -294,15 +292,6 @@ HTML;
 				</tbody>
 			</table>
 		</div>
-		<script>
-			document.getElementById('master-filter').addEventListener('input', function() {
-				const term = this.value.toLowerCase();
-				const rows = document.getElementById('master-list').querySelectorAll('tr');
-				rows.forEach(row => {
-					row.style.display = row.textContent.toLowerCase().includes(term) ? '' : 'none';
-				});
-			});
-		</script>
 HTML;
 	}
 
