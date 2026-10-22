@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 16:15
+ * Verze: 2026-10-22 17:45
  * Soubor: page_meta_column.php
  * Účel: Detailní editace metadat konkrétního sloupce (tenant override nebo překlad).
  *       Funguje jako podřízená stránka editoru logických tříd (page_meta_class)
@@ -13,8 +13,8 @@
  *   a `$this->phrase()` pro lokalizaci všech nadpisů, sekcí a upozornění.
  *
  * Změny:
- * 2026-10-22 16:15 - Opraveny chybějící mezery před znakem $ (as $cls, AND $c_cap)
- *                    a nastaveno $allow_insert = false.
+ * 2026-10-22 17:45 - Načtení nadřízené třídy v konstruktoru napojeno na $em_parent->fetch_records().
+ *                  - Opraveny chybějící mezery před znakem $ a nastaveno $allow_insert = false.
  * 2026-10-21 15:00 - Všechna čtení z databáze převedena ze sqlrun/fetch na
  *                    sqlfirstrow() a sqlarray_simple() (ochrana globálního $dbquery
  *                    při vnořeném volání $this->phrase()).
@@ -66,9 +66,13 @@ class page_meta_column extends abstract_page_master_detail {
 		if ($this->parent_class !== '') {                                    // Pokud máme platnou nadřízenou třídu
 			$this->master_where = "m.parent_class = " . guidliteral($this->parent_class); // Podmínka pro levý panel
 			
-			// Zjištění názvu nadřízeného objektu pro titulek přes sqlfirstrow()
+			// Zjištění názvu nadřízeného objektu pro titulek přes entity_manager
 			$em_parent = new entity_manager('meta_class');                   // Správce pro načtení nadřízené třídy
-			$row = sqlfirstrow($em_parent->build_select_query("m.original = " . guidliteral($this->parent_class))); // Načtení nadřízené třídy
+			$where_par = "m.original = " . guidliteral($this->parent_class); // Podmínka pro vyhledání nadřízené třídy
+			$par_rows = method_exists($em_parent, 'fetch_records')
+				? $em_parent->fetch_records($where_par)
+				: sqlarray_simple($em_parent->build_select_query($where_par)); // Načtení nadřízené třídy
+			$row = !empty($par_rows) ? reset($par_rows) : [];                // První nalezený záznam třídy
 			
 			if (!empty($row)) {                                              // Pokud byla nadřízená třída nalezena
 				$this->parent_name = (string)$row['caption'] !== '' ? (string)$row['caption'] : (string)$row['class_name']; // Určení názvu třídy

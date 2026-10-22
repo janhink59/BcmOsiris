@@ -2,20 +2,24 @@
 GO
 
 /* =============================================================================
+ * Verze: 2026-10-22 18:30
  * Procedura: p_process_organization_licence
  * Účel: Dávkové zpracování schválené licence (APPROVED) a aktivace nového tenanta.
  * 
  * Byznys proces a RAC vazby:
  * - Je volána automaticky z modulu page_organization_licence při uložení žádosti.
- * - Spolehlivě zprostředkuje zápis nové organizace (s vlastní object_owner linií),
- *   založí účet pro lokálního administrátora a spáruje je přístupovými právy 
- *   přes user_organization_access.
- * - Obsahuje reaktivační UPDATE větev pro bezbolestnou opravu poškozených dat
- *   (dokáže zaktualizovat caption u chybné instalace bez zásahu do uuid).
+ * - Spolehlivě zprostředkuje zápis nové organizace (s vlastní object_owner linií
+ *   a symetrickým 'L' záznamem), založí účet pro lokálního administrátora a spáruje
+ *   je přístupovými právy přes user_organization_access.
+ * - Obsahuje reaktivační UPDATE větev pro bezbolestnou opravu poškozených dat.
  * - Zápis auditních stop (who_created, who_modified) přebírá UUID přístupové vazby
- *   automaticky z tabulky dbsession pro aktuální @@SPID. Nevyžaduje parametr.
+ *   automaticky z tabulky dbsession pro aktuální @@SPID.
  * 
  * Změny:
+ * - 2026-10-22 18:30: Oprava pořadí klauzulí FROM user_account a WHERE při
+ *   dohledání globálního účtu administrátora.
+ * - 2026-10-22 17:45: Doplněno zakládání a aktualizace symetrického 'L' záznamu
+ *   v tabulce organization při aktivaci licence.
  * - Oprava názvu sloupce z user_access_uuid na login_session_uuid pro načtení 
  *   ze session.
  * ============================================================================= */
@@ -31,6 +35,7 @@ BEGIN
 	DECLARE @org_name varchar(200);
 	DECLARE @login_domain varchar(200);
 	DECLARE @licence_level tinyint;
+	DECLARE @pref_lang varchar(2) = 'cs';
 	
 	DECLARE @admin_login varchar(200);
 	DECLARE @admin_first_name varchar(200);
@@ -60,6 +65,7 @@ BEGIN
 		@org_name = caption,
 		@login_domain = login_domain,
 		@licence_level = licence_level,
+		@pref_lang = ISNULL(NULLIF(LTRIM(RTRIM(preferred_language)), ''), 'cs'),
 		@admin_login = admin_login,
 		@admin_first_name = admin_first_name,
 		@admin_last_name = admin_last_name,
@@ -81,11 +87,22 @@ BEGIN
 		SET @org_uuid = NEWID();
 		
 		INSERT INTO organization (
-			uuid, object_owner, original, record_type, approval_status,
+			uuid, object_owner, original, record_type, approval_status, [language],
 			caption, shortname, login_domain, licence_level,
 			who_created, who_modified
 		) VALUES (
-			@org_uuid, @org_uuid, @org_uuid, 'A', 'A',
+			@org_uuid, @org_uuid, @org_uuid, 'A', 'A', @pref_lang,
+			@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @licence_level,
+			@login_session_uuid, @login_session_uuid
+		);
+
+		-- Symetrický 'L' záznam pro výchozí jazyk organizace
+		INSERT INTO organization (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			caption, shortname, login_domain, licence_level,
+			who_created, who_modified
+		) VALUES (
+			NEWID(), @org_uuid, @org_uuid, 'L', 'A', @pref_lang,
 			@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @licence_level,
 			@login_session_uuid, @login_session_uuid
 		);
@@ -101,6 +118,31 @@ BEGIN
 			date_modified = GETDATE(),
 			who_modified = @login_session_uuid
 		WHERE original = @org_uuid AND record_type = 'A';
+
+		IF EXISTS (
+			SELECT 1 FROM organization
+			WHERE original = @org_uuid AND object_owner = @org_uuid AND record_type = 'L' AND [language] = @pref_lang AND removed = 0
+		)
+		BEGIN
+			UPDATE organization
+			SET caption = @org_name,
+				shortname = SUBSTRING(@org_name, 1, 40),
+				date_modified = GETDATE(),
+				who_modified = @login_session_uuid
+			WHERE original = @org_uuid AND object_owner = @org_uuid AND record_type = 'L' AND [language] = @pref_lang AND removed = 0;
+		END
+		ELSE
+		BEGIN
+			INSERT INTO organization (
+				uuid, object_owner, original, record_type, approval_status, [language],
+				caption, shortname, login_domain, licence_level,
+				who_created, who_modified
+			) VALUES (
+				NEWID(), @org_uuid, @org_uuid, 'L', 'A', @pref_lang,
+				@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @licence_level,
+				@login_session_uuid, @login_session_uuid
+			);
+		END
 	END
 
 	-- Dohledání globálního účtu organizátora na základě loginu

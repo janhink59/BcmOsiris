@@ -1,9 +1,14 @@
 -- =============================================================================
+-- Verze: 2026-10-22 17:45
+-- Soubor: table_organization.sql
 -- Tabulka: organization (Organizace)
 -- Popis:	Základní kámen multi-tenantní architektury CRMM. Definuje jednotlivé 
 --			klienty (tenanty) v systému. Vlastníkem (object_owner) systémového 
 --			záznamu je 0x00, ostatní záznamy organizací vlastní samy sebe.
 -- Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
+-- Změny:
+-- - 2026-10-22 17:45: Doplněno idempotentní dotvoření chybějících symetrických
+--   'L' záznamů pro všechny existující organizace (včetně 0x00).
 -- =============================================================================
 
 -- Podmíněné odstranění tabulky, pokud v ní nejsou poslední změny
@@ -21,6 +26,8 @@ CREATE TABLE organization (
 	original uuid NOT NULL DEFAULT 0x00,
 	record_type varchar(1) NOT NULL DEFAULT 'A',
 	approval_status varchar(1) NOT NULL DEFAULT 'A',
+	draft_author uuid NOT NULL DEFAULT 0x00,
+	approval_note varchar(max) NOT NULL DEFAULT '',
 	inactive bit NOT NULL DEFAULT 0,
 	removed bit NOT NULL DEFAULT 0,
 	language varchar(2) NOT NULL DEFAULT 'cs',
@@ -28,6 +35,7 @@ CREATE TABLE organization (
 	valid_to date NULL,
 	is_template bit NOT NULL DEFAULT 0,
 	template uuid NULL,
+	import_origin varchar(255) NULL,
 	
 	-- -------------------------------------------------------------------------
 	-- Společné textové vlastnosti (vždy varchar s plnou podporou UTF-8)
@@ -80,7 +88,6 @@ GO
 
 -- -----------------------------------------------------------------------------
 -- Indexy pro zajištění RAC architektury
--- (Upraveno: Volání sp_create_index pro idempotentní zakládání)
 -- -----------------------------------------------------------------------------
 
 -- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál
@@ -126,4 +133,27 @@ BEGIN
 		'Systémová master organizace.'
 	);
 END
+GO
+
+-- Idempotentní doplnění chybějících symetrických 'L' záznamů pro všechny existující organizace
+INSERT INTO organization (
+	uuid, object_owner, original, record_type, approval_status, [language],
+	caption, shortname, description_text, help_text, note,
+	login_domain, licence_level, who_created, who_modified
+)
+SELECT
+	NEWID(), a.object_owner, a.original, 'L', 'A', a.[language],
+	a.caption, a.shortname, a.description_text, a.help_text, a.note,
+	a.login_domain, a.licence_level, a.who_created, a.who_modified
+FROM organization a
+WHERE a.record_type = 'A'
+  AND a.removed = 0
+  AND NOT EXISTS (
+	SELECT 1 FROM organization l
+	WHERE l.original = a.original
+	  AND l.object_owner = a.object_owner
+	  AND l.record_type = 'L'
+	  AND l.[language] = a.[language]
+	  AND l.removed = 0
+  );
 GO

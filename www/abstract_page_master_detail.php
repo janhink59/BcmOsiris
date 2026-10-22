@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 15:45
+ * Verze: 2026-10-22 17:45
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -13,9 +13,8 @@
  * - Zpracování POST dat a PRG vzor (Post-Redirect-Get) volá globální funkci 
  *   `autoredirect()` z `OsirisLib.php`.
  * - Bezpečné načítání parametrů z URL zajišťuje funkce `getinput()`.
- * - Databázové dotazy se načítají do pole pomocí `sqlarray_simple()` a `sqlfirstrow()`.
- * - Generování UI prvků, SQL dotazů a zápis je plně delegován na instanci
- *   `entity_manager`, kterou tato třída inicializuje v metodě `render()`.
+ * - Databázové dotazy a překlady podle `fallback_order` jsou delegovány na instanci
+ *   `entity_manager` (`fetch_records()`), kterou tato třída inicializuje v metodě `render()`.
  * - Vykreslování akčních tlačítek využívá komponentu `abstract_button`
  *   a lokalizaci textů zajišťuje `$this->phrase()` přes `phrase_manager`.
  *
@@ -52,9 +51,11 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
- * 2026-10-22 15:45 - Opraveny chybějící mezery před znakem $ (AND/OR) způsobující Parse Error.
- *                  - Přidána vlastnost $allow_insert pro striktní zákaz vkládání nových
+ * 2026-10-22 17:45 - Napojení render_master() a render_detail() na metodu
+ *                    $this->em->fetch_records() vyhodnocující jazykové verze v PHP.
+ *                  - Přidána vlastnost $allow_insert pro zákaz vkládání nových
  *                    záznamů (update_guid=NEW) u vybraných tříd (např. page_organization).
+ *                  - Opraveny všechny chybějící mezery před znakem $.
  * 2026-10-21 15:05 - Klientské filtrování #master-filter přesunuto do centrálního
  *                    delegovaného listeneru v render_body() (funguje pro všechny potomky
  *                    i po AJAX obnově levého panelu bez duplikace <script> bloku).
@@ -90,7 +91,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 	/** Příznak režimu pouze pro čtení v detailním panelu */
 	protected bool $is_readonly = false;                                     // Uzamčení celého detailního panelu
 
-	/** Příznak, zda stránka povoluje vkládání nových záznamů (update_guid=NEW) */
+	/** Příznak povolení zakládání nových záznamů (update_guid=NEW) */
 	protected bool $allow_insert = true;                                     // Povolení vkládání nových záznamů
 	
 	/** Instance dynamického správce objektů řídící čtení a zápis */
@@ -180,8 +181,8 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;                                                          // Bez vybraného záznamu ani NEW neukládáme
 		}
 
-		if ($update_guid === 'NEW' AND !$this->allow_insert) {               // Ochrana proti vkládání nových záznamů při zákazu
-			return;                                                          // Vkládání nových záznamů není na této stránce povoleno
+		if ($update_guid === 'NEW' AND !$this->allow_insert) {               // Ochrana proti zakázanému vkládání nových záznamů
+			return;                                                          // Zákaz uložení nového záznamu
 		}
 
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název aktuální stránky
@@ -416,8 +417,9 @@ HTML;
 				<tbody id="master-list">
 HTML;
 
-		$sql = $this->em->build_select_query($this->master_where, '', false, $show_removed); // Sestavení SELECT dotazu
-		$rows = sqlarray_simple($sql);                                       // Načtení všech řádků do pole v paměti
+		$rows = method_exists($this->em, 'fetch_records')
+			? $this->em->fetch_records($this->master_where, '', false, $show_removed)
+			: sqlarray_simple($this->em->build_select_query($this->master_where, '', false, $show_removed)); // Načtení záznamů s překlady
 		
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název stránky do URL
 		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL
@@ -545,8 +547,8 @@ HTML;
 			return;                                                          // Ukončení vykreslování detailu
 		}
 
-		if ($update_guid === 'NEW' AND !$this->allow_insert) {               // Ochrana při zákazu vkládání nových záznamů
-			$msg_no_ins = htmlspecialchars($this->phrase('msg_insert_not_allowed', [], 'Vkládání nových záznamů není v tomto modulu povoleno.')); // Chybová hláška
+		if ($update_guid === 'NEW' AND !$this->allow_insert) {               // Ochrana proti podvržení update_guid=NEW v URL
+			$msg_no_ins = htmlspecialchars($this->phrase('msg_insert_not_allowed', [], 'Zakládání nových záznamů není v této úloze povoleno.')); // Chybová hláška
 			echo "<div class='msg-err'>{$msg_no_ins}</div>";                 // Výpis chyby
 			return;                                                          // Ukončení vykreslování detailu
 		}
@@ -565,8 +567,14 @@ HTML;
 			$datarow['object_is_mine'] = 1;                                  // Nový záznam patří vždy uživateli
 			$is_mine = true;                                                 // Příznak vlastnictví záznamu
 		} else {
-			$sql = $this->em->build_select_query("m.original = " . guidliteral($update_guid), '', false, true); // Dotaz na detail záznamu
-			$datarow = sqlfirstrow($sql);                                    // Načtení řádku detailu a uzavření statementu
+			$where_detail = "m.original = " . guidliteral($update_guid);     // Podmínka pro vyhledání konkrétního záznamu
+			if (method_exists($this->em, 'fetch_records')) {                 // Použití dvoupolového vyhodnocení v PHP
+				$det_rows = $this->em->fetch_records($where_detail, '', false, true); // Načtení záznamu s překlady
+				$datarow = !empty($det_rows) ? reset($det_rows) : [];        // První nalezený záznam
+			} else {
+				$sql = $this->em->build_select_query($where_detail, '', false, true); // Fallback na SQL dotaz
+				$datarow = sqlfirstrow($sql);                                // Načtení řádku detailu
+			}
 			
 			if (empty($datarow)) {                                           // Kontrola existence načteného záznamu
 				$msg_nf = htmlspecialchars($this->phrase('msg_record_not_found', [], 'Záznam nebyl nalezen.')); // Chybová hláška

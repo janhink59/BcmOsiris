@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 16:15
+ * Verze: 2026-10-22 17:45
  * Soubor: page_approval.php
  * Třída: page_approval
  * Účel: Univerzální schvalovací obrazovka (SSC) pro porovnání původních
@@ -13,7 +13,7 @@
  *   layout (`.md-master` a `.md-detail`) bez duplicity CSS a JS kódu.
  * - Využívá `entity_manager` (inicializovaný v `abstract_page_master_detail::render()`
  *   přes `$this->class_name`) pro načtení metadat cílové logické třídy, získání
- *   původních schválených hodnot (`build_select_query(..., true)`) a spuštění
+ *   původních schválených hodnot (`fetch_records(..., true)`) a spuštění
  *   transakčního schválení (`approve_draft()`) nebo vrácení (`reject_draft()`).
  * - Využívá `abstract_button` a `$this->phrase()` pro plnou lokalizaci.
  * - Načítá pouze návrhy ve stavu `approval_status = 'F'` (`record_type = 'D'`),
@@ -24,21 +24,14 @@
  *   ve specializovaných modulech `page_org_users` a `page_change_user_context`.
  *
  * Změny:
- * 2026-10-22 16:15 - Doplněna striktní kontrola vlastníka (object_owner) a jazyka
- *                    v render_detail() a format_comparison_value() (ochrana proti IDOR).
- *                  - Podpora schvalování návrhů v tabulce organization (kde object_owner = original)
- *                    pro přihlášeného Sysadmina/Developera v kontextu 0x00.
- *                  - Odstraněn duplicitní JS listener pro #master-filter (řeší předek).
+ * 2026-10-22 17:45 - Načtení původního schváleného stavu v render_detail() napojeno
+ *                    na $em->fetch_records(..., true).
+ *                  - Doplněna striktní kontrola vlastníka (object_owner) a jazyka
+ *                    a odstraněn duplicitní JS listener pro #master-filter.
  * 2026-10-18 18:15 - Převedení všech dotazů z sqlrun/fetch na sqlarray_simple()
  *                    a sqlfirstrow() kvůli globálnímu $dbquery v OsirisLib.php.
  * 2026-10-18 12:55 - Vyčlenění tabulky `user_organization_access` z obecného
- *                    schvalovacího seznamu (zabraňuje tomu, aby orgadmin schválil
- *                    vlastní pozvánku bez souhlasu zvaného uživatele).
- * 2026-10-17 01:40 - Nastavení `$this->class_name = $this->target_class` v konstruktoru,
- *                    aby se `$this->em` inicializoval v předkovi před odesláním HTML hlaviček.
- *                  - Doplněna metoda `format_comparison_value()` pro čitelný překlad
- *                    hodnot checkboxů, číselníků a relačních vazeb v porovnávací tabulce.
- * 2026-10-17 01:05 - První verze univerzální schvalovací stránky.
+ *                    schvalovacího seznamu.
  * =============================================================================
  */
 
@@ -130,7 +123,6 @@ class page_approval extends abstract_page_master_detail {
 		$items = [];                                                         // Seznam nalezených návrhů ke schválení
 
 		// 1. Zjištění všech logických tříd, jejichž fyzická tabulka má sloupec draft_author
-		//    (vynecháme user_organization_access, která má vlastní obousměrné schvalování v page_org_users / page_change_user_context)
 		$raw_cls = sqlarray_simple("
 			SELECT mc.class_name, mc.caption, mo.builtin_code AS table_name
 			FROM meta_class mc
@@ -209,7 +201,6 @@ class page_approval extends abstract_page_master_detail {
 
 			if (is_array($dr_list)) {                                        // Kontrola platného pole návrhů
 				foreach ($dr_list as $dr) {                                  // Průchod nalezenými návrhy
-					// Určení čitelného označení záznamu z nejvhodnějšího sloupce
 					$rec_label = '';                                         // Označení záznamu v seznamu
 					foreach (['caption', 'builtin_code', 'class_name', 'column_name', 'login_name', 'value_code'] as $cand) { // Kandidáti popisku
 						if (!empty($dr[$cand])) {                            // Pokud je kandidátní sloupec neprázdný
@@ -470,8 +461,14 @@ HTML;
 		$lang_sql = charliteral((string)$draft_row['language'], 2);          // SQL literál jazyka návrhu
 
 		// Načtení současného schváleného stavu ('A'/'L') se zapnutým $ignore_drafts = true
-		$sql_approved = $em->build_select_query("m.original = {$orig_sql}", '', true); // Dotaz na schválený stav
-		$approved_row = sqlfirstrow($sql_approved);                          // Načtení schválených hodnot přes sqlfirstrow()
+		$where_app = "m.original = {$orig_sql}";                             // Podmínka pro načtení schváleného stavu
+		if (method_exists($em, 'fetch_records')) {                           // Použití dvoupolového vyhodnocení v PHP
+			$app_rows = $em->fetch_records($where_app, '', true);            // Načtení schváleného záznamu bez konceptů
+			$approved_row = !empty($app_rows) ? reset($app_rows) : [];       // První nalezený schválený řádek
+		} else {
+			$sql_approved = $em->build_select_query($where_app, '', true);   // Fallback na SQL dotaz
+			$approved_row = sqlfirstrow($sql_approved);                      // Načtení schválených hodnot
+		}
 
 		$is_new_record = empty($approved_row);                               // Zda jde o návrh zcela nového záznamu
 
@@ -587,7 +584,6 @@ HTML;
 			$label = htmlspecialchars((string)($meta['label'] ?: $meta['caption'] ?: $colname)); // Popisek pole
 			$old_val = $is_new_record ? '' : (string)($approved_row[$colname] ?? ''); // Původní schválená hodnota
 
-			// Pokud je v konceptu hodnota NULL (kvůli dědění ze systémového originálu), zobrazíme výslednou efektivní hodnotu
 			$raw_draft_val = $draft_row[$colname] ?? null;                   // Surová hodnota v řádku konceptu
 			$new_val = ($raw_draft_val === null AND !$is_new_record) ? $old_val : (string)$raw_draft_val; // Efektivní nová hodnota
 

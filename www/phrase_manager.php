@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 16:00
+ * Verze: 2026-10-22 17:45
  * Soubor: phrase_manager.php
  * Třída: phrase_manager
  * Účel: Centralizovaný správce pro dávkové načítání, kešování, lokalizaci
@@ -10,25 +10,25 @@
  * ARCHITEKTONICKÉ VAZBY:
  * - Instancován v `abstract_page` (a uložen v `$GLOBALS['phrase_manager']`)
  *   nebo prostřednictvím třídy `global_phrase` (`global_phrase.php`).
- * - Využívá `language_manager` (`language_manager.php`) pro získání fallback řetězce jazyků.
+ * - Využívá `language_manager` (`language_manager.php`) a databázovou funkci
+ *   `dbo.f_language_list()` s filtrem `fallback_order < 1000`.
  * - Využívá globální pole `$dbsession` (inicializované v `OsirisLib.php`).
  * - Čte a při auto-discovery zapisuje do tabulky `meta_phrase` (`table_meta_phrase.sql`)
  *   a zajišťuje registraci zdrojového objektu typu 'P' v `meta_object`.
- * - Globální fráze jsou uloženy pod pevným `source_code = 'global_phrase'`
- *   (namísto dřívějšího bezejmenného `''`).
+ * - Globální fráze jsou uloženy pod pevným `source_code = 'global_phrase'`.
  * - Poskytuje kompletní metadata frází (včetně `svg_icon`, `css_class` a `helptext`)
  *   pro vykreslování tlačítek ve třídě `abstract_button`.
  *
  * Změny:
- * 2026-10-22 16:00 - Opraveny chybějící mezery před znakem $ v deklaracích parametrů,
- *                    smyčkách foreach (as $row) a podmínkách (AND $default_caption).
+ * 2026-10-22 17:45 - Přepracováno načítání frází v load_sources(): odstraněny dynamické
+ *                    LEFT JOINy pro jazyky; záznamy 'A' a 'L' (s fallback_order < 1000
+ *                    z dbo.f_language_list) se načtou jedním dotazem do dvou polí v PHP
+ *                    (pole originálů 'A' a podřízené pole 'L' seřazené dle fallback_order).
+ *                  - Opraveny všechny chybějící mezery před znakem $.
  * 2026-10-20 11:35 - Nahrazení bezejmenného source_code = '' pevným identifikátorem
- *                    'global_phrase' v lookup_chain, load_sources i auto_register_phrase
- *                    (soulad se zákazem bezejmenných frází na záložce phrase).
+ *                    'global_phrase' v lookup_chain, load_sources i auto_register_phrase.
  * 2026-10-19 14:45 - Čtení z DB v check_table_exists() a load_sources() převedeno
  *                    na sqlfirstrow() a sqlarray_simple() kvůli ochraně $dbquery.
- * 2026-10-18 12:35 - V auto_register_phrase() doplněno vložení symetrického 'L' záznamu
- *                    i pro automaticky registrovaný objekt typu 'P' v meta_object.
  * =============================================================================
  */
 
@@ -110,8 +110,6 @@ class phrase_manager {
 			}
 		}
 
-		// Reflexe vlastností třídy: pokud má třída typované vlastnosti odkazující na jiné komponenty,
-		// zařadíme jejich třídy rovněž do dávkového načtení.
 		$ref = new ReflectionClass($class_name);                             // Reflexe cílové třídy
 		foreach ($ref->getProperties() as $prop) {                           // Průchod vlastnostmi třídy
 			$type = $prop->getType();                                        // Získání datového typu vlastnosti
@@ -127,8 +125,9 @@ class phrase_manager {
 	}
 
 	/**
-	 * Načte jedním SQL dotazem všechny fráze pro zadané zdrojové třídy (source_code)
-	 * včetně vyhodnocení kaskádového COALESCE pro jazyky a tenant overrides.
+	 * Načte jedním jednoduchým SQL dotazem všechny 'A' a 'L' záznamy (s fallback_order < 1000)
+	 * pro zadané zdrojové třídy (source_code), uloží je do dvou polí v PHP (pole 'A' podle original
+	 * a podřízené pole 'L' podle jazyka seřazené dle fallback_order) a vyhodnotí překlady.
 	 *
 	 * @param array<int, string> $sources Seznam identifikátorů source_code
 	 */
@@ -157,46 +156,26 @@ class phrase_manager {
 		}
 
 		$in_clause = implode(', ', $new_sources);                            // Složení klauzule IN (...)
-		$lang_chain = $this->lang_manager->get_fallback_chain();             // Fallback řetězec jazyků
-
-		$coal_caption = [];                                                  // Kaskáda pro sloupec caption
-		$coal_helptext = [];                                                 // Kaskáda pro sloupec helptext
-		$joins = "";                                                         // Dynamické LEFT JOINy pro jazyky
-
-		foreach ($lang_chain as $lang) {                                     // Sestavení COALESCE a JOINů pro jazyky
-			$coal_caption[] = "NULLIF(CAST(v_{$lang}.caption AS NVARCHAR(MAX)), '')"; // Překlad tenanta (caption)
-			$coal_caption[] = "NULLIF(CAST(l_{$lang}.caption AS NVARCHAR(MAX)), '')"; // Systémový překlad (caption)
-
-			$coal_helptext[] = "NULLIF(CAST(v_{$lang}.helptext AS NVARCHAR(MAX)), '')"; // Překlad tenanta (helptext)
-			$coal_helptext[] = "NULLIF(CAST(l_{$lang}.helptext AS NVARCHAR(MAX)), '')"; // Systémový překlad (helptext)
-
-			$joins .= "\n\t\tLEFT JOIN meta_phrase l_{$lang} ON l_{$lang}.original = m.original AND l_{$lang}.object_owner = 0x00 AND l_{$lang}.language = '{$lang}' AND l_{$lang}.record_type = 'L' AND l_{$lang}.removed = 0"; // Systémový L JOIN
-			$joins .= "\n\t\tLEFT JOIN meta_phrase v_{$lang} ON v_{$lang}.original = m.original AND v_{$lang}.object_owner = s.organization_uuid AND v_{$lang}.language = '{$lang}' AND v_{$lang}.record_type = 'L' AND v_{$lang}.removed = 0"; // Tenantův L JOIN
-		}
-
-		$coal_caption[] = "NULLIF(CAST(m.caption AS NVARCHAR(MAX)), '')";    // Fallback na aktivní záznam tenanta
-		$coal_caption[] = "NULLIF(CAST(o.caption AS NVARCHAR(MAX)), '')";    // Fallback na systémový originál
-		$coal_caption[] = "''";                                              // Nouzový prázdný řetězec pro caption
-
-		$coal_helptext[] = "NULLIF(CAST(m.helptext AS NVARCHAR(MAX)), '')";  // Fallback na aktivní helptext tenanta
-		$coal_helptext[] = "NULLIF(CAST(o.helptext AS NVARCHAR(MAX)), '')";  // Fallback na systémový helptext
-		$coal_helptext[] = "''";                                             // Nouzový prázdný řetězec pro helptext
-
-		$caption_expr = "COALESCE(" . implode(', ', $coal_caption) . ")";    // Výsledný SQL výraz pro caption
-		$helptext_expr = "COALESCE(" . implode(', ', $coal_helptext) . ")";  // Výsledný SQL výraz pro helptext
+		$curr_lang = $this->lang_manager->get_current_language();            // Aktuální jazyk relace
+		$safe_lang = charliteral($curr_lang, 2);                             // SQL literál aktuálního jazyka
 
 		$sql = "
 		WITH s AS (
-			SELECT organization AS organization_uuid FROM dbsession WHERE spid = @@SPID
+			SELECT ISNULL((SELECT TOP 1 organization FROM dbsession WHERE spid = @@SPID), 0x00) AS organization_uuid
+		),
+		fl AS (
+			SELECT [language], fallback_order
+			FROM dbo.f_language_list({$safe_lang})
+			WHERE fallback_order < 1000
 		),
 		sy AS (
 			SELECT rc.*
-			FROM s JOIN meta_phrase rc ON rc.object_owner = 0x00 AND rc.record_type = 'A'
-			WHERE rc.removed = 0 AND rc.inactive = 0 AND rc.source_code IN ({$in_clause})
+			FROM meta_phrase rc
+			WHERE rc.object_owner = 0x00 AND rc.record_type = 'A' AND rc.removed = 0 AND rc.inactive = 0 AND rc.source_code IN ({$in_clause})
 		),
 		my AS (
 			SELECT rc.*
-			FROM s JOIN meta_phrase rc ON rc.object_owner = s.organization_uuid AND rc.record_type = 'A'
+			FROM s JOIN meta_phrase rc ON rc.object_owner = s.organization_uuid AND rc.object_owner <> 0x00 AND rc.record_type = 'A'
 			WHERE rc.removed = 0 AND rc.inactive = 0 AND rc.source_code IN ({$in_clause})
 		),
 		mix AS (
@@ -205,33 +184,118 @@ class phrase_manager {
 			SELECT * FROM my
 		)
 		SELECT
+			'A' AS row_kind,
+			m.original,
 			m.source_code,
 			m.builtin_code,
-			{$caption_expr} AS caption,
-			{$helptext_expr} AS helptext,
+			m.[language],
+			CASE WHEN m.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant,
+			ISNULL(fl.fallback_order, 1000) AS fallback_order,
+			COALESCE(NULLIF(CAST(m.caption AS NVARCHAR(MAX)), ''), CAST(o.caption AS NVARCHAR(MAX)), '') AS caption,
+			COALESCE(NULLIF(CAST(m.helptext AS NVARCHAR(MAX)), ''), CAST(o.helptext AS NVARCHAR(MAX)), '') AS helptext,
 			COALESCE(NULLIF(CAST(m.svg_icon AS NVARCHAR(MAX)), ''), CAST(o.svg_icon AS NVARCHAR(MAX)), '') AS svg_icon,
 			COALESCE(NULLIF(m.css_class, ''), o.css_class, '') AS css_class
+		FROM mix m
+		LEFT JOIN sy o ON o.original = m.original
+		LEFT JOIN fl ON fl.[language] = m.[language]
+
+		UNION ALL
+
+		SELECT
+			'L' AS row_kind,
+			l.original,
+			m.source_code,
+			m.builtin_code,
+			l.[language],
+			CASE WHEN l.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant,
+			fl.fallback_order,
+			CAST(l.caption AS NVARCHAR(MAX)) AS caption,
+			CAST(l.helptext AS NVARCHAR(MAX)) AS helptext,
+			'' AS svg_icon,
+			'' AS css_class
 		FROM s
 		CROSS JOIN mix m
-		LEFT JOIN meta_phrase o ON o.original = m.original AND o.object_owner = 0x00 AND o.record_type = 'A'
-		{$joins}
-		";                                                                   // Sestavený dávkový SQL dotaz frází
+		JOIN meta_phrase l ON l.original = m.original AND l.record_type = 'L' AND l.removed = 0 AND (l.object_owner = 0x00 OR l.object_owner = s.organization_uuid)
+		JOIN fl ON fl.[language] = l.[language]
+		ORDER BY row_kind ASC, fallback_order ASC, is_tenant DESC
+		";                                                                   // Jednotný dotaz pro 'A' i 'L' záznamy frází
 
-		$rows = sqlarray_simple($sql);                                       // Načtení všech frází do pole přes sqlarray_simple
-		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
-			foreach ($rows as $row) {                                        // Průchod načtenými frázemi v paměti
-				$src = trim((string)$row['source_code']);                    // Zdrojová třída fráze
-				if ($src === '') {                                           // Pojistka pro případ starého záznamu v DB
-					$src = self::GLOBAL_SOURCE;                              // Mapování na global_phrase
+		$rows = sqlarray_simple($sql);                                       // Načtení všech řádků do paměti
+		if (!is_array($rows)) {                                              // Kontrola platného výsledku
+			return;                                                          // Ukončení při prázdném výsledku
+		}
+
+		// 1. Rozdělení na pole 'A' (indexované podle original) a podřízené 2D pole 'L' ([original][language])
+		$a_rows = [];                                                        // Pole 'A' záznamů: [original => data]
+		$l_rows = [];                                                        // Podřízené pole 'L' záznamů: [original][language => data]
+		$lang_chain = $this->lang_manager->get_fallback_chain();             // Posloupnost jazyků dle fallback_order
+
+		foreach ($rows as $row) {                                            // Průchod načtenými řádky v paměti
+			$orig = (string)$row['original'];                                // Originální UUID fráze
+			if ($row['row_kind'] === 'A') {                                  // Hlavní záznam 'A'
+				$a_rows[$orig] = $row;                                       // Uložení do hlavního pole
+			} else {
+				$lang = (string)$row['language'];                            // Kód jazyka 'L' záznamu
+				if (!isset($l_rows[$orig][$lang])) {                         // První záznam pro daný jazyk (tenant má přednost díky ORDER BY)
+					$l_rows[$orig][$lang] = [                                // Inicializace položky podřízeného pole
+						'caption'   => (string)$row['caption'],              // Text překladu
+						'helptext'  => (string)$row['helptext'],             // Nápověda překladu
+						'is_tenant' => (int)$row['is_tenant']                // Příznak překladu tenanta
+					];                                                       // Konec položky 'L'
+				} else {
+					if ($l_rows[$orig][$lang]['caption'] === '' AND (string)$row['caption'] !== '') { // Doplnění prázdného caption ze systému
+						$l_rows[$orig][$lang]['caption'] = (string)$row['caption']; // Převzetí systémového caption
+					}
+					if ($l_rows[$orig][$lang]['helptext'] === '' AND (string)$row['helptext'] !== '') { // Doplnění prázdného helptext ze systému
+						$l_rows[$orig][$lang]['helptext'] = (string)$row['helptext']; // Převzetí systémového helptext
+					}
 				}
-				$code = (string)$row['builtin_code'];                        // Kód konkrétní fráze
-				$this->phrases[$src][$code] = [                              // Uložení atributů fráze do keše
-					'caption'   => (string)$row['caption'],                  // Přeložený text fráze
-					'helptext'  => (string)$row['helptext'],                 // Přeložená nápověda / tooltip
-					'svg_icon'  => (string)$row['svg_icon'],                 // Kód vektorové ikony SVG
-					'css_class' => (string)$row['css_class']                 // Doplňková CSS třída
-				];                                                           // Konec položky keše
 			}
+		}
+
+		// 2. Vyhodnocení výsledné jazykové verze pro každý 'original' typu 'A'
+		foreach ($a_rows as $orig => $a_row) {                               // Průchod všemi 'A' záznamy
+			$src = trim((string)$a_row['source_code']);                      // Zdrojová třída fráze
+			if ($src === '') {                                               // Pojistka pro prázdný zdroj
+				$src = self::GLOBAL_SOURCE;                                  // Mapování na global_phrase
+			}
+			$code = (string)$a_row['builtin_code'];                          // Kód konkrétní fráze
+			$a_lang = (string)$a_row['language'];                            // Jazyk 'A' záznamu
+
+			$final_vals = ['caption' => '', 'helptext' => ''];               // Výsledné přeložené texty
+			foreach (['caption', 'helptext'] as $field) {                    // Vyhodnocení pro caption a helptext
+				$a_val = (string)($a_row[$field] ?? '');                     // Hodnota v 'A' záznamu
+				$has_tenant_l_curr = (!empty($l_rows[$orig][$curr_lang]['is_tenant']) AND $l_rows[$orig][$curr_lang][$field] !== ''); // Zda má tenant vlastní L
+
+				// Pravidlo 1: Je-li jazyk 'A' shodný s aktuálním jazykem (a tenant nemá vlastní L override), bereme rovnou 'A'
+				if ($a_lang === $curr_lang AND $a_val !== '' AND !$has_tenant_l_curr) { // Shoda jazyka 'A' s aktuálním
+					$final_vals[$field] = $a_val;                            // Přímé použití hodnoty z 'A'
+					continue;                                                // Není třeba hledat v podřízeném poli
+				}
+
+				// Pravidlo 2: Průchod podřízeným polem seřazeným podle fallback_order
+				$found = '';                                                 // Nalezená hodnota ve fallback řetězci
+				foreach ($lang_chain as $fl_lang) {                          // Průchod jazyky dle fallback_order
+					if (isset($l_rows[$orig][$fl_lang]) AND $l_rows[$orig][$fl_lang][$field] !== '') { // Nalezena neprázdná hodnota v 'L'
+						$found = $l_rows[$orig][$fl_lang][$field];           // Převzetí hodnoty z podřízeného pole
+						break;                                               // Ukončení hledání
+					}
+					if ($a_lang === $fl_lang AND $a_val !== '') {            // Pokud je 'A' záznam v tomto fallback jazyce
+						$found = $a_val;                                     // Použijeme hodnotu z 'A' na této úrovni fallbacku
+						break;                                               // Ukončení hledání
+					}
+				}
+
+				// Pravidlo 3: Pokud se v podřízeném poli nic nenašlo, vezmeme hodnotu z 'A' (i v neznámém jazyce)
+				$final_vals[$field] = ($found !== '') ? $found : $a_val;     // Výsledná hodnota pole
+			}
+
+			$this->phrases[$src][$code] = [                                  // Uložení vyhodnocené fráze do keše
+				'caption'   => $final_vals['caption'],                       // Přeložený text fráze
+				'helptext'  => $final_vals['helptext'],                      // Přeložený tooltip
+				'svg_icon'  => (string)$a_row['svg_icon'],                   // Kód vektorové ikony SVG
+				'css_class' => (string)$a_row['css_class']                   // Doplňková CSS třída
+			];                                                               // Konec položky keše
 		}
 	}
 
@@ -290,10 +354,8 @@ class phrase_manager {
 			'css_class' => $default_css                                      // Výchozí CSS třída
 		];                                                                   // Konec výchozí struktury
 
-		// Uložíme do paměti pro tento request, abychom neprováděli opakované INSERTy
 		$this->phrases[$target_source][$builtin_code] = $meta;               // Zápis do lokální keše
 
-		// Pokud máme smysluplný výchozí text a tabulka existuje, zapíšeme chybějící frázi do DB
 		if ($this->table_exists AND $default_caption !== '') {               // Podmínka pro auto-discovery zápis
 			$this->auto_register_phrase($target_source, $builtin_code, $default_caption, $default_svg, $default_css); // Zápis do DB
 		}
@@ -321,7 +383,7 @@ class phrase_manager {
 	}
 
 	/**
-	 * Bezpečně nahradí zástupné symboly {$var} v textu hodnotami z pole $vars nebo $GLOBALS.
+	 * Bezpečně nahradí zástupné symboly {$var} v textu hodnotami z pole $vars nebo$GLOBALS.
 	 * Nepoužívá nebezpečný eval().
 	 *
 	 * @param string               $text Text šablony obsahující {$promenne}
