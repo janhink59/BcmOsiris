@@ -1,10 +1,13 @@
 /* =============================================================================
+ * Verze: 2026-10-23 11:00
  * Soubor: table_meta_link_def.sql
  * Tabulka: meta_link_def
  * Popis:   Definiční tabulka pro vazby mezi logickými třídami (meta_class).
  *          Nahrazuje původní hardcodované sloupce v repo_class a umožňuje 
  *          dynamicky řídit, jaké entity lze mezi sebou propojovat.
  * Vazby:   - from_class a to_class (UUID) ukazují na meta_class.original.
+ * Změny:   - 2026-10-23 11:00: Doplněny SSC sloupce draft_author, approval_note,
+ *            import_origin a unikátní index uq_meta_link_def_draft.
  * ============================================================================= */
 
 IF OBJECT_ID('meta_link_def') IS NULL
@@ -15,8 +18,10 @@ CREATE TABLE meta_link_def(
 	uuid uuid NOT NULL,
 	object_owner uuid NOT NULL DEFAULT 0x00,           -- Vlastník záznamu (0x00 pro systémové definice vazeb)
 	original uuid NOT NULL DEFAULT 0x00,               -- Logický identifikátor definice vazby napříč overridy
-	record_type varchar(1) NOT NULL DEFAULT 'A',       -- Stav verze (A, L, H)
-	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stav schválení
+	record_type varchar(1) NOT NULL DEFAULT 'A',       -- Stav verze (A, L, D, H)
+	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stav schválení (A, D, F, R)
+	draft_author uuid NOT NULL DEFAULT 0x00,           -- Autor konceptu (user_account.original)
+	approval_note varchar(max) NOT NULL DEFAULT '',    -- Poznámka schvalovatele / důvod vrácení
 	inactive bit NOT NULL DEFAULT 0,
 	removed bit NOT NULL DEFAULT 0,
 	language varchar(2) NOT NULL DEFAULT 'cs',
@@ -24,6 +29,7 @@ CREATE TABLE meta_link_def(
 	valid_to date NULL,
 	is_template bit NOT NULL DEFAULT 0,
 	template uuid NULL,
+	import_origin varchar(255) NULL,                   -- Původ záznamu z importu (Měkký audit)
 
 	-- -------------------------------------------------------------------------
 	-- Auditní stopy
@@ -64,7 +70,15 @@ CREATE TABLE meta_link_def(
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajištění RAC architektury a rychlého hledání definic
+-- Zajištění chybějících sloupců pro existující databáze
+-- -----------------------------------------------------------------------------
+EXEC p_create_missing_column 'meta_link_def', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'meta_link_def', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'meta_link_def', 'import_origin', 'varchar(255) NULL';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC a SSC architektury a rychlého hledání definic
 -- -----------------------------------------------------------------------------
 
 -- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka
@@ -83,6 +97,15 @@ EXEC sp_create_index
 	@colnames = 'original, object_owner, language', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''L'' AND removed = 0';
+GO
+
+-- Zajištění unikátnosti konceptu (Draft)
+EXEC sp_create_index 
+	@tname = 'meta_link_def', 
+	@iname = 'uq_meta_link_def_draft', 
+	@colnames = 'original, object_owner, language, draft_author', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''D'' AND removed = 0';
 GO
 
 -- Optimalizace pro vyhledávání dostupných vazeb pro konkrétní třídu

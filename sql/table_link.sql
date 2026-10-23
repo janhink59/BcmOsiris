@@ -1,4 +1,5 @@
 /* =============================================================================
+ * Verze: 2026-10-23 11:00
  * Soubor: table_link.sql
  * Tabulka: link
  * Popis:   Univerzální transakční tabulka pro uživatelské vazby mezi záznamy.
@@ -6,6 +7,8 @@
  *          vazby (např. 1:N, M:N) diktuje definiční tabulka "meta_link_def".
  * Vazby:   - link_def (UUID) ukazuje na definici vazby (meta_link_def.original)
  *          - from_object a to_object (UUID) ukazují na originály cílových záznamů.
+ * Změny:   - 2026-10-23 11:00: Doplněny SSC sloupce draft_author, approval_note,
+ *            import_origin a unikátní index uq_link_draft.
  * ============================================================================= */
 
 IF OBJECT_ID('link') IS NULL
@@ -16,8 +19,10 @@ CREATE TABLE link(
 	uuid uuid NOT NULL,
 	object_owner uuid NOT NULL DEFAULT 0x00,           -- Vlastník záznamu vazby (organizace)
 	original uuid NOT NULL DEFAULT 0x00,               -- Logický identifikátor vazby
-	record_type varchar(1) NOT NULL DEFAULT 'A',       -- Stav verze (A, H) - 'L' (jazyková) zde nedává smysl
-	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stav schválení
+	record_type varchar(1) NOT NULL DEFAULT 'A',       -- Stav verze (A, D, H) - 'L' (jazyková) zde nedává smysl
+	approval_status varchar(1) NOT NULL DEFAULT 'A',   -- Stav schválení (A, D, F, R)
+	draft_author uuid NOT NULL DEFAULT 0x00,           -- Autor konceptu (user_account.original)
+	approval_note varchar(max) NOT NULL DEFAULT '',    -- Poznámka schvalovatele / důvod vrácení
 	inactive bit NOT NULL DEFAULT 0,
 	removed bit NOT NULL DEFAULT 0,
 	language varchar(2) NOT NULL DEFAULT 'cs',         -- Ponecháno pro kompatibilitu s RAC, ačkoliv se nepoužije k překladu
@@ -25,6 +30,7 @@ CREATE TABLE link(
 	valid_to date NULL,
 	is_template bit NOT NULL DEFAULT 0,
 	template uuid NULL,
+	import_origin varchar(255) NULL,                   -- Původ záznamu z importu (Měkký audit)
 
 	-- -------------------------------------------------------------------------
 	-- Auditní stopy
@@ -55,7 +61,15 @@ CREATE TABLE link(
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajištění RAC architektury
+-- Zajištění chybějících sloupců pro existující databáze
+-- -----------------------------------------------------------------------------
+EXEC p_create_missing_column 'link', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'link', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'link', 'import_origin', 'varchar(255) NULL';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC a SSC architektury
 -- -----------------------------------------------------------------------------
 
 -- Zajištění unikátnosti vazby (Active) pro daného vlastníka a konkrétní definici
@@ -68,13 +82,22 @@ EXEC sp_create_index
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
 GO
 
--- Zajištění původního logického omezení pro originál (pro vrepo views)
+-- Zajištění původního logického omezení pro originál
 EXEC sp_create_index 
 	@tname = 'link', 
 	@iname = 'uq_link_active_original', 
 	@colnames = 'original, object_owner', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- Zajištění unikátnosti konceptu (Draft)
+EXEC sp_create_index 
+	@tname = 'link', 
+	@iname = 'uq_link_draft', 
+	@colnames = 'original, object_owner, language, draft_author', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''D'' AND removed = 0';
 GO
 
 -- -----------------------------------------------------------------------------

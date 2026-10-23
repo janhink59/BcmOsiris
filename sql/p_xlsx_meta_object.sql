@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-21 15:40
+ * Verze: 2026-10-23 15:35
  * Soubor: p_xlsx_meta_object.sql
  * Procedura: p_xlsx_meta_object
  * Účel: Hromadný import systémových stránek a tříd (page), textových frází (phrase),
@@ -20,50 +20,33 @@
  * - Využívá funkci dbo.f_xlsx_clean pro odstranění stříšek <...> u zděděných hodnot.
  * - Zapisuje průběžné a chybové zprávy přes proceduru insert_request_message.
  *
- * Architektura dvou režimů (Jádro vs. Překlady), dědičnosti (<do stříšek>), svg_icon a removed:
+ * Architektura dvou režimů (Jádro vs. Překlady), Delta kontroly, dědičnosti (<do stříšek>), svg_icon a removed:
  * - Upravuje výhradně systémové záznamy (object_owner = 0x00).
  * - Sloupce svg_icon se z Excelu vůbec neimportují ani neaktualizují (jejich nastavení
  *   v tabulkách meta_phrase, meta_menu a meta_class zůstává nedotčené a řeší se výhradně
  *   idempotentními databázovými skripty).
+ * - DELTA KONTROLA ZMĚN (EXCEPT):
+ *   Všechny příkazy UPDATE nad existujícími 'A' i 'L' záznamy obsahují podmínku
+ *   EXISTS (SELECT ... EXCEPT SELECT ...), takže se dotknou výhradně těch řádků,
+ *   kde skutečně došlo ke změně dat. U nezměněných záznamů zůstává původní
+ *   date_modified a who_modified. Normalizace zděděných hodnot na NULL probíhá
+ *   přímo v #clean_class a #clean_column ještě před porovnáním s databází.
  * - REŽIM 1: Import jádra a základního jazyka (když second_language = ''):
  *   Zapisuje hlavní 'A' záznamy a symetrické 'L' záznamy pro základní jazyk (@lang).
  * - REŽIM 2: Import překladů druhého jazyka (když second_language <> ''):
- *   Nijak nemodifikuje 'A' záznamy ani primární jazyk (@lang)! Zpracovává výhradně
- *   'L' záznamy druhého jazyka (@sec_lang) ze sloupců s příponou *_l.
- * - Zděděné hodnoty uzavřené <do stříšek>:
- *   U primárních sloupců záložek class a column se stříšky <...> odstraní a při shodě
- *   s předkem (ancestor_class / sys_global_columns) se uloží NULL.
- *   U překladových sloupců *_l na VŠECH záložkách platí, že hodnota ponechaná
- *   <ve stříškách> představuje nepřeloženou zděděnou hodnotu a při importu se
- *   převede na '' (u page, phrase, menu) resp. NULL (u class, column).
- * - Replikace odstranění (removed = 1) a propustná kontrola storage_code:
- *   * Neexistující úložný objekt (storage_code) na záložce class je propustná chyba
- *     (severity = 2); třída a její sloupce se přeskočí a zapíše se varování.
- *   * Pokud je v Excelu removed = 0 a v databázi je objekt neplatný (removed = 1
- *     v 'A' nebo v 'L' pro @sec_lang, příp. neexistující storage_code), zapíše se
- *     varování do protokolu (severity = 2).
- *   * Pokud je v Excelu removed = 1 a v databázi je objekt platný (removed = 0),
- *     replikuje se jeho zrušení (nastavením removed = 1 u jazykových verzí a u metadat,
- *     která nejsou pevně svázána s existujícím fyzickým objektem v databázi).
+ *   Nijak nemodifikuje věcné atributy 'A' záznamů ani primární jazyk (@lang)! Zpracovává
+ *   'L' záznamy druhého jazyka (@sec_lang) ze sloupců s příponou *_l (a při skutečné
+ *   změně překladu aktualizuje auditní stopu date_modified/who_modified na 'A' záznamu).
  *
  * Změny:
- * - 2026-10-15: Přesměrování importu záložky phrase (XLSX_phrase$) z tabulky
- *   meta_object (typ 'G') do dedikované tabulky meta_phrase.
- * - 2026-10-18 17:30: Doplněno zpracování záložek class (XLSX_class$ -> meta_class)
- *   a column (XLSX_column$ -> meta_column) s odstraněním stříšek <...>
- *   a automatickým ukládáním NULL při shodě s hodnotou předka.
- * - 2026-10-19 23:40: Odstraněn fallback na primární jazyk při zápisu 'L' záznamů
- *   druhého jazyka (@sec_lang) na záložkách page, phrase, menu, class a column.
- * - 2026-10-20 11:25: Striktní oddělení režimu jádra (@sec_lang = '') od režimu
- *   překladů (@sec_lang <> ''), zákaz bezejmenného source_code = '' na záložce phrase,
- *   zpracování sloupce removed a propustná kontrola chybějícího storage_code.
- * - 2026-10-20 15:00: Doplněn propis sloupce inactive na záložce phrase do meta_phrase
- *   a rozšířena kontrola removed = 0 v Excelu vs. removed = 1 v DB i pro 'L' záznamy
- *   v překladovém režimu (@is_trans_mode = 1).
- * - 2026-10-21 14:25: Opakující se výrazy pro odstranění stříšek <...> nahrazeny
- *   funkcí dbo.f_xlsx_clean.
+ * - 2026-10-23 15:35: Doplněna Delta kontrola změn pomocí operátoru EXCEPT do všech
+ *   UPDATE dotazů (zamezení přepisu date_modified a who_modified u nezměněných řádků).
+ *   Přesunuta normalizace zděděných hodnot (NULL při shodě s předkem) přímo do
+ *   dočasných tabulek #clean_class a #clean_column před samotný UPDATE/INSERT.
  * - 2026-10-21 15:40: Vyřazeno čtení a přepisování sloupce svg_icon ze záložek
  *   phrase, menu a class (hodnoty svg_icon v DB zůstávají při importu z Excelu nedotčeny).
+ * - 2026-10-21 14:25: Opakující se výrazy pro odstranění stříšek <...> nahrazeny
+ *   funkcí dbo.f_xlsx_clean.
  * ============================================================================= */
 
 EXECUTE dropni 'p_xlsx_meta_object', 'P'
@@ -82,8 +65,8 @@ BEGIN
 	DECLARE @sec_lang varchar(2) = '';                                    -- Volitelný druhý jazyk z CONTENT_INFO
 	DECLARE @is_trans_mode bit = 0;                                       -- 1 = Režim překladu (@sec_lang <> ''), 0 = Režim jádra
 	DECLARE @import_origin varchar(255) = NULL;                           -- Původ importu (měkký audit)
-	DECLARE @cnt_a int = 0;                                               -- Počitadlo zpracovaných 'A' záznamů
-	DECLARE @cnt_l int = 0;                                               -- Počitadlo zpracovaných 'L' záznamů
+	DECLARE @cnt_a int = 0;                                               -- Počitadlo změněných/vložených 'A' záznamů
+	DECLARE @cnt_l int = 0;                                               -- Počitadlo změněných/vložených 'L' záznamů
 	DECLARE @cnt_rem int = 0;                                             -- Počitadlo zreplikovaných odstranění (removed=1)
 	DECLARE @bad_code varchar(200);                                       -- Pomocná proměnná pro výpis chybných vazeb
 
@@ -147,12 +130,12 @@ BEGIN
 		END
 
 		SET @is_trans_mode = 1;
-		EXEC insert_request_message 'Režim importu jazykové mutace (ukládají se pouze překlady druhého jazyka)', 0, @obj_type = 'Jazyk', @obj_name = @sec_lang;
+		EXEC insert_request_message 'Režim importu jazykové mutace (ukládají se pouze změněné překlady druhého jazyka)', 0, @obj_type = 'Jazyk', @obj_name = @sec_lang;
 	END
 	ELSE
 	BEGIN
 		SET @is_trans_mode = 0;
-		EXEC insert_request_message 'Režim importu jádra a základního jazyka', 0, @obj_type = 'Jazyk', @obj_name = @lang;
+		EXEC insert_request_message 'Režim importu jádra a základního jazyka (Delta kontrola změn)', 0, @obj_type = 'Jazyk', @obj_name = @lang;
 	END
 
 	-- =========================================================================
@@ -239,7 +222,7 @@ BEGIN
 			IF @cnt_rem > 0
 				EXEC insert_request_message 'Zreplikováno odstranění objektů (removed=1) na záložce page', 1, @intvalue = @cnt_rem, @obj_type = 'meta_object (P)', @obj_name = 'page';
 
-			-- 1.B) REŽIM JÁDRA: Zpracování platných 'A' záznamů (removed = 0)
+			-- 1.B) REŽIM JÁDRA: Delta UPDATE platných 'A' záznamů (pouze při skutečné změně hodnot)
 			UPDATE t
 			SET
 				t.[language] = @lang,
@@ -258,7 +241,12 @@ BEGIN
 			WHERE s.removed = 0
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'A'
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.[language], t.system_role, t.module, t.inactive, t.editor_note, t.caption, t.description, t.helptext
+				EXCEPT
+				SELECT @lang, s.system_role, s.module, s.inactive, s.editor_note, s.caption, s.description, s.helptext
+			  );
 
 			SET @cnt_a = @@ROWCOUNT;
 
@@ -286,7 +274,7 @@ BEGIN
 
 			SET @cnt_a = @cnt_a + @@ROWCOUNT;
 
-			-- Symetrické 'L' záznamy pro primární jazyk (@lang)
+			-- Symetrické 'L' záznamy pro primární jazyk (@lang) s Delta kontrolou
 			UPDATE t
 			SET
 				t.system_role = s.system_role,
@@ -304,7 +292,12 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.system_role, t.module, t.inactive, t.caption, t.description, t.helptext
+				EXCEPT
+				SELECT s.system_role, s.module, s.inactive, s.caption, s.description, s.helptext
+			  );
 
 			INSERT INTO meta_object (
 				uuid, object_owner, original, record_type, approval_status, [language],
@@ -334,11 +327,11 @@ BEGIN
 				  AND t.removed = 0
 			  );
 
-			EXEC insert_request_message 'Záložka page (jádro) byla úspěšně zpracována', 1, @intvalue = @cnt_a, @obj_type = 'meta_object (P)', @obj_name = 'page';
+			EXEC insert_request_message 'Záložka page (jádro - změněné/nové záznamy)', 1, @intvalue = @cnt_a, @obj_type = 'meta_object (P)', @obj_name = 'page';
 		END
 		ELSE
 		BEGIN
-			-- 1.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně 'L' záznamy pro @sec_lang
+			-- 1.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně změněné 'L' záznamy pro @sec_lang
 			UPDATE t
 			SET t.removed = 1,
 				t.date_modified = GETDATE(),
@@ -370,7 +363,12 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @sec_lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.caption, t.description, t.helptext
+				EXCEPT
+				SELECT s.caption_l, s.description_l, s.helptext_l
+			  );
 
 			SET @cnt_l = @@ROWCOUNT;
 
@@ -390,6 +388,7 @@ BEGIN
 			FROM #clean_page s
 			JOIN meta_object a ON a.original = s.orig_uuid AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
 			WHERE s.removed = 0
+			  AND (s.caption_l <> '' OR s.description_l <> '' OR s.helptext_l <> '')
 			  AND NOT EXISTS (
 				SELECT 1 FROM meta_object t
 				WHERE t.original = a.original
@@ -399,7 +398,18 @@ BEGIN
 			  );
 
 			SET @cnt_l = @cnt_l + @@ROWCOUNT;
-			EXEC insert_request_message 'Záložka page (překlady) byla úspěšně zpracována', 1, @intvalue = @cnt_l, @obj_type = 'meta_object (L)', @obj_name = @sec_lang;
+
+			-- Jednotná auditní stopa na 'A' záznamu, pokud byl překlad 'L' právě změněn
+			UPDATE a
+			SET a.date_modified = l.date_modified,
+				a.who_modified = l.who_modified
+			FROM meta_object a
+			JOIN meta_object l ON l.original = a.original AND l.object_owner = @sys_owner AND l.record_type = 'L' AND l.[language] = @sec_lang
+			WHERE a.object_owner = @sys_owner
+			  AND a.record_type = 'A'
+			  AND l.date_modified > a.date_modified;
+
+			EXEC insert_request_message 'Záložka page (překlady - změněné/nové záznamy)', 1, @intvalue = @cnt_l, @obj_type = 'meta_object (L)', @obj_name = @sec_lang;
 		END
 
 		DROP TABLE #clean_page;
@@ -520,7 +530,7 @@ BEGIN
 			IF @cnt_rem > 0
 				EXEC insert_request_message 'Zreplikováno odstranění frází (removed=1) na záložce phrase', 1, @intvalue = @cnt_rem, @obj_type = 'meta_phrase', @obj_name = 'phrase';
 
-			-- 2.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_phrase (svg_icon v DB zůstává nedotčeno!)
+			-- 2.B) REŽIM JÁDRA: Delta UPDATE hlavních záznamů ('A') v meta_phrase (svg_icon v DB zůstává nedotčeno!)
 			UPDATE t
 			SET
 				t.[language] = @lang,
@@ -540,7 +550,12 @@ BEGIN
 			WHERE s.removed = 0
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'A'
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.[language], t.source_code, t.builtin_code, t.module, t.css_class, t.inactive, t.editor_note, t.caption, t.helptext
+				EXCEPT
+				SELECT @lang, s.source_code, s.builtin_code, s.module, s.css_class, s.inactive, s.editor_note, s.caption, s.helptext
+			  );
 
 			SET @cnt_a = @@ROWCOUNT;
 
@@ -572,7 +587,7 @@ BEGIN
 
 			SET @cnt_a = @cnt_a + @@ROWCOUNT;
 
-			-- Symetrické 'L' záznamy v meta_phrase pro primární jazyk (@lang) – svg_icon se přebírá z 'A' záznamu v DB
+			-- Symetrické 'L' záznamy v meta_phrase pro primární jazyk (@lang) s Delta kontrolou
 			UPDATE t
 			SET
 				t.source_code = a.source_code,
@@ -593,7 +608,12 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.source_code, t.builtin_code, t.module, t.svg_icon, t.css_class, t.inactive, t.caption, t.helptext
+				EXCEPT
+				SELECT a.source_code, a.builtin_code, a.module, a.svg_icon, a.css_class, a.inactive, a.caption, a.helptext
+			  );
 
 			INSERT INTO meta_phrase (
 				uuid, object_owner, original, record_type, approval_status, [language],
@@ -627,11 +647,11 @@ BEGIN
 				  AND t.removed = 0
 			  );
 
-			EXEC insert_request_message 'Záložka phrase (jádro) byla úspěšně zpracována', 1, @intvalue = @cnt_a, @obj_type = 'meta_phrase', @obj_name = 'phrase';
+			EXEC insert_request_message 'Záložka phrase (jádro - změněné/nové záznamy)', 1, @intvalue = @cnt_a, @obj_type = 'meta_phrase', @obj_name = 'phrase';
 		END
 		ELSE
 		BEGIN
-			-- 2.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně 'L' záznamy pro @sec_lang
+			-- 2.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně změněné 'L' záznamy pro @sec_lang
 			UPDATE t
 			SET t.removed = 1,
 				t.date_modified = GETDATE(),
@@ -662,7 +682,12 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @sec_lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.caption, t.helptext
+				EXCEPT
+				SELECT s.caption_l, s.helptext_l
+			  );
 
 			SET @cnt_l = @@ROWCOUNT;
 
@@ -686,6 +711,7 @@ BEGIN
 			FROM #clean_phrase s
 			JOIN meta_phrase a ON a.original = s.orig_uuid AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
 			WHERE s.removed = 0
+			  AND (s.caption_l <> '' OR s.helptext_l <> '')
 			  AND NOT EXISTS (
 				SELECT 1 FROM meta_phrase t
 				WHERE t.original = a.original
@@ -695,7 +721,18 @@ BEGIN
 			  );
 
 			SET @cnt_l = @cnt_l + @@ROWCOUNT;
-			EXEC insert_request_message 'Záložka phrase (překlady) byla úspěšně zpracována', 1, @intvalue = @cnt_l, @obj_type = 'meta_phrase (L)', @obj_name = @sec_lang;
+
+			-- Jednotná auditní stopa na 'A' záznamu při změně překladu
+			UPDATE a
+			SET a.date_modified = l.date_modified,
+				a.who_modified = l.who_modified
+			FROM meta_phrase a
+			JOIN meta_phrase l ON l.original = a.original AND l.object_owner = @sys_owner AND l.record_type = 'L' AND l.[language] = @sec_lang
+			WHERE a.object_owner = @sys_owner
+			  AND a.record_type = 'A'
+			  AND l.date_modified > a.date_modified;
+
+			EXEC insert_request_message 'Záložka phrase (překlady - změněné/nové záznamy)', 1, @intvalue = @cnt_l, @obj_type = 'meta_phrase (L)', @obj_name = @sec_lang;
 		END
 
 		DROP TABLE #clean_phrase;
@@ -787,7 +824,7 @@ BEGIN
 			IF @cnt_rem > 0
 				EXEC insert_request_message 'Zreplikováno odstranění položek menu (removed=1)', 1, @intvalue = @cnt_rem, @obj_type = 'meta_menu', @obj_name = 'menu';
 
-			-- 3.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_menu (svg_icon v DB zůstává nedotčeno!)
+			-- 3.B) REŽIM JÁDRA: Delta UPDATE hlavních záznamů ('A') v meta_menu (svg_icon v DB zůstává nedotčeno!)
 			UPDATE t
 			SET
 				t.[language] = @lang,
@@ -812,7 +849,12 @@ BEGIN
 			WHERE s.removed = 0
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'A'
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.[language], t.parent_uuid, t.sort_code, t.target_object, t.url_parameters, t.target_url, t.target_window, t.system_role, t.permanent, t.css_class, t.editor_note, t.caption, t.description, t.helptext
+				EXCEPT
+				SELECT @lang, s.calc_parent_uuid, s.sort_code, s.calc_target_object, s.url_parameters, s.target_url, s.target_window, s.system_role, s.permanent, s.css_class, s.editor_note, s.caption, s.description, s.helptext
+			  );
 
 			SET @cnt_a = @@ROWCOUNT;
 
@@ -886,7 +928,7 @@ BEGIN
 				RETURN;
 			END
 
-			-- Symetrické 'L' záznamy v meta_menu pro primární jazyk (@lang) – svg_icon se přebírá z 'A' záznamu v DB
+			-- Symetrické 'L' záznamy v meta_menu pro primární jazyk (@lang) s Delta kontrolou
 			UPDATE t
 			SET
 				t.parent_uuid = a.parent_uuid,
@@ -912,7 +954,12 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.parent_uuid, t.sort_code, t.target_object, t.url_parameters, t.target_url, t.target_window, t.system_role, t.permanent, t.svg_icon, t.css_class, t.caption, t.description, t.helptext
+				EXCEPT
+				SELECT a.parent_uuid, a.sort_code, a.target_object, a.url_parameters, a.target_url, a.target_window, a.system_role, a.permanent, a.svg_icon, a.css_class, a.caption, a.description, a.helptext
+			  );
 
 			INSERT INTO meta_menu (
 				uuid, object_owner, original, record_type, approval_status, [language],
@@ -948,11 +995,11 @@ BEGIN
 				  AND t.removed = 0
 			  );
 
-			EXEC insert_request_message 'Záložka menu (jádro) byla úspěšně zpracována', 1, @intvalue = @cnt_a, @obj_type = 'meta_menu', @obj_name = 'menu';
+			EXEC insert_request_message 'Záložka menu (jádro - změněné/nové záznamy)', 1, @intvalue = @cnt_a, @obj_type = 'meta_menu', @obj_name = 'menu';
 		END
 		ELSE
 		BEGIN
-			-- 3.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně 'L' záznamy pro @sec_lang
+			-- 3.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně změněné 'L' záznamy pro @sec_lang
 			UPDATE t
 			SET t.removed = 1,
 				t.date_modified = GETDATE(),
@@ -984,7 +1031,12 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @sec_lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.caption, t.description, t.helptext
+				EXCEPT
+				SELECT s.caption_l, s.description_l, s.helptext_l
+			  );
 
 			SET @cnt_l = @@ROWCOUNT;
 
@@ -1010,6 +1062,7 @@ BEGIN
 			FROM #clean_menu s
 			JOIN meta_menu a ON a.original = s.orig_uuid AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
 			WHERE s.removed = 0
+			  AND (s.caption_l <> '' OR s.description_l <> '' OR s.helptext_l <> '')
 			  AND NOT EXISTS (
 				SELECT 1 FROM meta_menu t
 				WHERE t.original = a.original
@@ -1019,7 +1072,18 @@ BEGIN
 			  );
 
 			SET @cnt_l = @cnt_l + @@ROWCOUNT;
-			EXEC insert_request_message 'Záložka menu (překlady) byla úspěšně zpracována', 1, @intvalue = @cnt_l, @obj_type = 'meta_menu (L)', @obj_name = @sec_lang;
+
+			-- Jednotná auditní stopa na 'A' záznamu při změně překladu
+			UPDATE a
+			SET a.date_modified = l.date_modified,
+				a.who_modified = l.who_modified
+			FROM meta_menu a
+			JOIN meta_menu l ON l.original = a.original AND l.object_owner = @sys_owner AND l.record_type = 'L' AND l.[language] = @sec_lang
+			WHERE a.object_owner = @sys_owner
+			  AND a.record_type = 'A'
+			  AND l.date_modified > a.date_modified;
+
+			EXEC insert_request_message 'Záložka menu (překlady - změněné/nové záznamy)', 1, @intvalue = @cnt_l, @obj_type = 'meta_menu (L)', @obj_name = @sec_lang;
 		END
 
 		DROP TABLE #clean_menu;
@@ -1051,7 +1115,6 @@ BEGIN
 		END
 
 		-- Očištění hodnot uzavřených <do stříšek> do pomocné tabulky #clean_class pomocí dbo.f_xlsx_clean (bez svg_icon)
-		-- U *_l sloupců platí, že hodnota ponechaná <ve stříškách> je zděděná a nepřeložená -> ukládá se jako '' (NULL)
 		IF OBJECT_ID('tempdb..#clean_class') IS NOT NULL DROP TABLE #clean_class;
 
 		SELECT
@@ -1067,15 +1130,15 @@ BEGIN
 			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.is_protected, 0) AS bit), 0) AS is_protected,
 			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.inactive, 0) AS bit), 0) AS inactive,
 			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.removed, 0) AS bit), 0) AS removed,
-			dbo.f_xlsx_clean(s.editor_note, 0) AS editor_note,
-			dbo.f_xlsx_clean(s.caption, 0) AS caption,
-			dbo.f_xlsx_clean(s.caption_plural, 0) AS caption_plural,
-			dbo.f_xlsx_clean(s.description, 0) AS description,
-			dbo.f_xlsx_clean(s.helptext, 0) AS helptext,
-			dbo.f_xlsx_clean(s.caption_l, 1) AS caption_l,
-			dbo.f_xlsx_clean(s.caption_plural_l, 1) AS caption_plural_l,
-			dbo.f_xlsx_clean(s.description_l, 1) AS description_l,
-			dbo.f_xlsx_clean(s.helptext_l, 1) AS helptext_l,
+			NULLIF(dbo.f_xlsx_clean(s.editor_note, 0), '') AS editor_note,
+			NULLIF(dbo.f_xlsx_clean(s.caption, 0), '') AS caption,
+			NULLIF(dbo.f_xlsx_clean(s.caption_plural, 0), '') AS caption_plural,
+			NULLIF(dbo.f_xlsx_clean(s.description, 0), '') AS description,
+			NULLIF(dbo.f_xlsx_clean(s.helptext, 0), '') AS helptext,
+			NULLIF(dbo.f_xlsx_clean(s.caption_l, 1), '') AS caption_l,
+			NULLIF(dbo.f_xlsx_clean(s.caption_plural_l, 1), '') AS caption_plural_l,
+			NULLIF(dbo.f_xlsx_clean(s.description_l, 1), '') AS description_l,
+			NULLIF(dbo.f_xlsx_clean(s.helptext_l, 1), '') AS helptext_l,
 			CAST(1 AS bit) AS storage_valid
 		INTO #clean_class
 		FROM XLSX_class$ s;
@@ -1116,10 +1179,26 @@ BEGIN
 			)
 		  );
 
+		-- Normalizace zděděných hodnot přímo v #clean_class před porovnáním s DB (při shodě s předkem uložíme NULL)
+		UPDATE s
+		SET
+			s.caption = CASE WHEN ISNULL(s.caption, '') = ISNULL(COALESCE(anc_s.caption, anc_db.caption), '') THEN NULL ELSE s.caption END,
+			s.caption_plural = CASE WHEN ISNULL(s.caption_plural, '') = ISNULL(COALESCE(anc_s.caption_plural, anc_db.caption_plural), '') THEN NULL ELSE s.caption_plural END,
+			s.description = CASE WHEN ISNULL(s.description, '') = ISNULL(COALESCE(anc_s.description, anc_db.description), '') THEN NULL ELSE s.description END,
+			s.helptext = CASE WHEN ISNULL(s.helptext, '') = ISNULL(COALESCE(anc_s.helptext, anc_db.helptext), '') THEN NULL ELSE s.helptext END,
+			s.caption_l = CASE WHEN ISNULL(s.caption_l, '') = ISNULL(COALESCE(anc_s.caption_l, anc_l.caption), '') THEN NULL ELSE s.caption_l END,
+			s.caption_plural_l = CASE WHEN ISNULL(s.caption_plural_l, '') = ISNULL(COALESCE(anc_s.caption_plural_l, anc_l.caption_plural), '') THEN NULL ELSE s.caption_plural_l END,
+			s.description_l = CASE WHEN ISNULL(s.description_l, '') = ISNULL(COALESCE(anc_s.description_l, anc_l.description), '') THEN NULL ELSE s.description_l END,
+			s.helptext_l = CASE WHEN ISNULL(s.helptext_l, '') = ISNULL(COALESCE(anc_s.helptext_l, anc_l.helptext), '') THEN NULL ELSE s.helptext_l END
+		FROM #clean_class s
+		LEFT JOIN #clean_class anc_s ON anc_s.orig_uuid = s.calc_ancestor_uuid AND anc_s.removed = 0 AND anc_s.storage_valid = 1
+		LEFT JOIN meta_class anc_db ON anc_db.original = s.calc_ancestor_uuid AND anc_db.object_owner = @sys_owner AND anc_db.record_type = 'A' AND anc_db.removed = 0
+		LEFT JOIN meta_class anc_l ON anc_l.original = s.calc_ancestor_uuid AND anc_l.object_owner = @sys_owner AND anc_l.record_type = 'L' AND anc_l.[language] = @sec_lang AND anc_l.removed = 0 AND @is_trans_mode = 1
+		WHERE s.calc_ancestor_uuid IS NOT NULL;
+
 		IF @is_trans_mode = 0
 		BEGIN
 			-- 4.A) REŽIM JÁDRA: Replikace zrušení třídy (removed = 1)
-			-- Primitivní třídu (class_name = storage_code) nelze zrušit, pokud její fyzický objekt v DB stále platí
 			INSERT INTO request_message (spid, severity, msgtext, obj_type, obj_name)
 			SELECT @@SPID, 2, 'Primitivní třídu svázanou s existujícím fyzickým objektem nelze odstranit (removed=1 ignorováno)', 'meta_class', s.class_name
 			FROM #clean_class s
@@ -1131,7 +1210,6 @@ BEGIN
 				WHERE t.original = s.orig_uuid AND t.object_owner = @sys_owner AND t.record_type = 'A' AND t.removed = 0
 			  );
 
-			-- Odstranění odvozených logických tříd (nebo tříd, jejichž fyzický objekt již neexistuje)
 			UPDATE t
 			SET t.removed = 1,
 				t.date_modified = GETDATE(),
@@ -1147,7 +1225,7 @@ BEGIN
 			IF @cnt_rem > 0
 				EXEC insert_request_message 'Zreplikováno odstranění logických tříd (removed=1)', 1, @intvalue = @cnt_rem, @obj_type = 'meta_class', @obj_name = 'class';
 
-			-- 4.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_class (svg_icon v DB zůstává nedotčeno!)
+			-- 4.B) REŽIM JÁDRA: Delta UPDATE hlavních záznamů ('A') v meta_class (svg_icon v DB zůstává nedotčeno!)
 			UPDATE t
 			SET
 				t.[language] = @lang,
@@ -1157,11 +1235,11 @@ BEGIN
 				t.is_final = s.is_final,
 				t.is_protected = s.is_protected,
 				t.inactive = s.inactive,
-				t.editor_note = NULLIF(s.editor_note, ''),
-				t.caption = NULLIF(s.caption, ''),
-				t.caption_plural = NULLIF(s.caption_plural, ''),
-				t.description = NULLIF(s.description, ''),
-				t.helptext = NULLIF(s.helptext, ''),
+				t.editor_note = s.editor_note,
+				t.caption = s.caption,
+				t.caption_plural = s.caption_plural,
+				t.description = s.description,
+				t.helptext = s.helptext,
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
@@ -1171,7 +1249,12 @@ BEGIN
 			  AND s.storage_valid = 1
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'A'
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.[language], t.storage_object, t.ancestor_class, t.sort_code, t.is_final, t.is_protected, t.inactive, t.editor_note, t.caption, t.caption_plural, t.description, t.helptext
+				EXCEPT
+				SELECT @lang, s.calc_storage_uuid, s.calc_ancestor_uuid, s.sort_code, s.is_final, s.is_protected, s.inactive, s.editor_note, s.caption, s.caption_plural, s.description, s.helptext
+			  );
 
 			SET @cnt_a = @@ROWCOUNT;
 
@@ -1188,7 +1271,7 @@ BEGIN
 				s.inactive, 0, @import_origin,
 				s.class_name, s.calc_storage_uuid, s.calc_ancestor_uuid, s.sort_code,
 				s.is_final, s.is_protected,
-				NULLIF(s.editor_note, ''), NULLIF(s.caption, ''), NULLIF(s.caption_plural, ''), NULLIF(s.description, ''), NULLIF(s.helptext, ''),
+				s.editor_note, s.caption, s.caption_plural, s.description, s.helptext,
 				GETDATE(), @user_session, GETDATE(), @user_session
 			FROM #clean_class s
 			WHERE s.removed = 0
@@ -1223,20 +1306,7 @@ BEGIN
 				RETURN;
 			END
 
-			-- Pokud je hodnota na třídě shodná s předkem (ancestor_class), uložíme NULL pro zachování dědičnosti
-			UPDATE c
-			SET
-				c.caption = CASE WHEN ISNULL(c.caption, '') = ISNULL(anc.caption, '') THEN NULL ELSE c.caption END,
-				c.caption_plural = CASE WHEN ISNULL(c.caption_plural, '') = ISNULL(anc.caption_plural, '') THEN NULL ELSE c.caption_plural END,
-				c.description = CASE WHEN ISNULL(c.description, '') = ISNULL(anc.description, '') THEN NULL ELSE c.description END,
-				c.helptext = CASE WHEN ISNULL(c.helptext, '') = ISNULL(anc.helptext, '') THEN NULL ELSE c.helptext END
-			FROM meta_class c
-			JOIN meta_class anc ON anc.original = c.ancestor_class AND anc.object_owner = @sys_owner AND anc.record_type = 'A' AND anc.removed = 0
-			WHERE c.object_owner = @sys_owner
-			  AND c.record_type = 'A'
-			  AND c.removed = 0;
-
-			-- Symetrické 'L' záznamy v meta_class pro primární jazyk (@lang) – svg_icon se přebírá z 'A' záznamu v DB
+			-- Symetrické 'L' záznamy v meta_class pro primární jazyk (@lang) s Delta kontrolou
 			UPDATE t
 			SET
 				t.storage_object = a.storage_object,
@@ -1261,7 +1331,12 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.storage_object, t.ancestor_class, t.sort_code, t.svg_icon, t.is_final, t.is_protected, t.inactive, t.caption, t.caption_plural, t.description, t.helptext
+				EXCEPT
+				SELECT a.storage_object, a.ancestor_class, a.sort_code, a.svg_icon, a.is_final, a.is_protected, a.inactive, a.caption, a.caption_plural, a.description, a.helptext
+			  );
 
 			INSERT INTO meta_class (
 				uuid, object_owner, original, record_type, approval_status, [language],
@@ -1294,11 +1369,11 @@ BEGIN
 				  AND t.removed = 0
 			  );
 
-			EXEC insert_request_message 'Záložka class (jádro) byla úspěšně zpracována', 1, @intvalue = @cnt_a, @obj_type = 'meta_class', @obj_name = 'class';
+			EXEC insert_request_message 'Záložka class (jádro - změněné/nové záznamy)', 1, @intvalue = @cnt_a, @obj_type = 'meta_class', @obj_name = 'class';
 		END
 		ELSE
 		BEGIN
-			-- 4.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně 'L' záznamy pro @sec_lang
+			-- 4.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně změněné 'L' záznamy pro @sec_lang
 			UPDATE t
 			SET t.removed = 1,
 				t.date_modified = GETDATE(),
@@ -1317,10 +1392,10 @@ BEGIN
 
 			UPDATE t
 			SET
-				t.caption = NULLIF(s.caption_l, ''),
-				t.caption_plural = NULLIF(s.caption_plural_l, ''),
-				t.description = NULLIF(s.description_l, ''),
-				t.helptext = NULLIF(s.helptext_l, ''),
+				t.caption = s.caption_l,
+				t.caption_plural = s.caption_plural_l,
+				t.description = s.description_l,
+				t.helptext = s.helptext_l,
 				t.import_origin = ISNULL(@import_origin, t.import_origin),
 				t.date_modified = GETDATE(),
 				t.who_modified = @user_session
@@ -1331,7 +1406,12 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @sec_lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.caption, t.caption_plural, t.description, t.helptext
+				EXCEPT
+				SELECT s.caption_l, s.caption_plural_l, s.description_l, s.helptext_l
+			  );
 
 			SET @cnt_l = @@ROWCOUNT;
 
@@ -1348,17 +1428,15 @@ BEGIN
 				a.inactive, 0, @import_origin,
 				a.class_name, a.storage_object, a.ancestor_class, a.sort_code, a.svg_icon,
 				a.is_final, a.is_protected,
-				NULLIF(s.caption_l, ''),
-				NULLIF(s.caption_plural_l, ''),
-				NULLIF(s.description_l, ''),
-				NULLIF(s.helptext_l, ''),
+				s.caption_l,
+				s.caption_plural_l,
+				s.description_l,
+				s.helptext_l,
 				GETDATE(), @user_session, GETDATE(), @user_session
-			FROM meta_class a
-			JOIN #clean_class s ON s.orig_uuid = a.original
+			FROM #clean_class s
+			JOIN meta_class a ON a.original = s.orig_uuid AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
 			WHERE s.removed = 0
-			  AND a.object_owner = @sys_owner
-			  AND a.record_type = 'A'
-			  AND a.removed = 0
+			  AND (s.caption_l IS NOT NULL OR s.caption_plural_l IS NOT NULL OR s.description_l IS NOT NULL OR s.helptext_l IS NOT NULL)
 			  AND NOT EXISTS (
 				SELECT 1 FROM meta_class t
 				WHERE t.original = a.original
@@ -1369,21 +1447,17 @@ BEGIN
 
 			SET @cnt_l = @cnt_l + @@ROWCOUNT;
 
-			-- Zachování dědičnosti u 'L' záznamu druhého jazyka při shodě s předkem
-			UPDATE l
-			SET
-				l.caption = CASE WHEN ISNULL(l.caption, '') = ISNULL(anc_l.caption, '') THEN NULL ELSE l.caption END,
-				l.caption_plural = CASE WHEN ISNULL(l.caption_plural, '') = ISNULL(anc_l.caption_plural, '') THEN NULL ELSE l.caption_plural END,
-				l.description = CASE WHEN ISNULL(l.description, '') = ISNULL(anc_l.description, '') THEN NULL ELSE l.description END,
-				l.helptext = CASE WHEN ISNULL(l.helptext, '') = ISNULL(anc_l.helptext, '') THEN NULL ELSE l.helptext END
-			FROM meta_class l
-			JOIN meta_class anc_l ON anc_l.original = l.ancestor_class AND anc_l.object_owner = @sys_owner AND anc_l.record_type = 'L' AND anc_l.[language] = @sec_lang AND anc_l.removed = 0
-			WHERE l.object_owner = @sys_owner
-			  AND l.record_type = 'L'
-			  AND l.[language] = @sec_lang
-			  AND l.removed = 0;
+			-- Jednotná auditní stopa na 'A' záznamu při změně překladu
+			UPDATE a
+			SET a.date_modified = l.date_modified,
+				a.who_modified = l.who_modified
+			FROM meta_class a
+			JOIN meta_class l ON l.original = a.original AND l.object_owner = @sys_owner AND l.record_type = 'L' AND l.[language] = @sec_lang
+			WHERE a.object_owner = @sys_owner
+			  AND a.record_type = 'A'
+			  AND l.date_modified > a.date_modified;
 
-			EXEC insert_request_message 'Záložka class (překlady) byla úspěšně zpracována', 1, @intvalue = @cnt_l, @obj_type = 'meta_class (L)', @obj_name = @sec_lang;
+			EXEC insert_request_message 'Záložka class (překlady - změněné/nové záznamy)', 1, @intvalue = @cnt_l, @obj_type = 'meta_class (L)', @obj_name = @sec_lang;
 		END
 
 		DROP TABLE #clean_class;
@@ -1412,7 +1486,6 @@ BEGIN
 		DECLARE @global_cls_uuid uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'sys_global_columns', '');
 
 		-- Očištění všech hodnot od případných stříšek <...> do pomocné tabulky #clean_column pomocí dbo.f_xlsx_clean
-		-- U *_l sloupců platí, že hodnota ponechaná <ve stříškách> je zděděná a nepřeložená -> ukládá se jako NULL
 		IF OBJECT_ID('tempdb..#clean_column') IS NOT NULL DROP TABLE #clean_column;
 
 		SELECT
@@ -1439,7 +1512,7 @@ BEGIN
 			TRY_CAST(NULLIF(dbo.f_xlsx_clean(s.customizable, 0), '') AS bit) AS customizable,
 			v.ancestor_column,
 			CASE WHEN LTRIM(RTRIM(ISNULL(s.class_name, ''))) <> 'sys_global_columns' AND v.ancestor_column <> '' THEN dbo.f_generate_original('meta_column', @sys_owner, CAST(@global_cls_uuid AS varchar(36)), v.ancestor_column) ELSE NULL END AS calc_ancestor_uuid,
-			dbo.f_xlsx_clean(s.referenced_codetable, 0) AS referenced_codetable,
+			ISNULL(dbo.f_xlsx_clean(s.referenced_codetable, 0), '') AS referenced_codetable,
 			v.referenced_class_code,
 			CASE WHEN v.referenced_class_code <> '' THEN dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), v.referenced_class_code, '') ELSE NULL END AS calc_ref_class_uuid,
 			ISNULL(TRY_CAST(dbo.f_xlsx_clean(s.is_final, 0) AS bit), 1) AS is_final,
@@ -1509,10 +1582,51 @@ BEGIN
 			)
 		  );
 
+		-- Normalizace zděděných hodnot přímo v #clean_column před porovnáním s DB:
+		-- Pokud má sloupec předka v sys_global_columns (v Excelu gc_s nebo v DB gc_db) a hodnota je shodná, uložíme NULL (resp. '' u referenced_codetable)
+		UPDATE s
+		SET
+			s.list_order = CASE WHEN s.list_order = COALESCE(gc_s.list_order, gc_db.list_order) THEN NULL ELSE s.list_order END,
+			s.caption = CASE WHEN ISNULL(s.caption, '') = ISNULL(COALESCE(gc_s.caption, gc_db.caption), '') THEN NULL ELSE s.caption END,
+			s.caption_plural = CASE WHEN ISNULL(s.caption_plural, '') = ISNULL(COALESCE(gc_s.caption_plural, gc_db.caption_plural), '') THEN NULL ELSE s.caption_plural END,
+			s.description = CASE WHEN ISNULL(s.description, '') = ISNULL(COALESCE(gc_s.description, gc_db.description), '') THEN NULL ELSE s.description END,
+			s.label = CASE WHEN ISNULL(s.label, '') = ISNULL(COALESCE(gc_s.label, gc_db.label), '') THEN NULL ELSE s.label END,
+			s.header = CASE WHEN ISNULL(s.header, '') = ISNULL(COALESCE(gc_s.header, gc_db.header), '') THEN NULL ELSE s.header END,
+			s.helptext = CASE WHEN ISNULL(s.helptext, '') = ISNULL(COALESCE(gc_s.helptext, gc_db.helptext), '') THEN NULL ELSE s.helptext END,
+			s.placeholder = CASE WHEN ISNULL(s.placeholder, '') = ISNULL(COALESCE(gc_s.placeholder, gc_db.placeholder), '') THEN NULL ELSE s.placeholder END,
+			s.input_type = CASE WHEN ISNULL(s.input_type, '') = ISNULL(COALESCE(gc_s.input_type, gc_db.input_type), '') THEN NULL ELSE s.input_type END,
+			s.input_width = CASE WHEN ISNULL(s.input_width, '') = ISNULL(COALESCE(gc_s.input_width, gc_db.input_width), '') THEN NULL ELSE s.input_width END,
+			s.input_rows = CASE WHEN s.input_rows = COALESCE(gc_s.input_rows, gc_db.input_rows) THEN NULL ELSE s.input_rows END,
+			s.max_length = CASE WHEN s.max_length = COALESCE(gc_s.max_length, gc_db.max_length) THEN NULL ELSE s.max_length END,
+			s.css_class = CASE WHEN ISNULL(s.css_class, '') = ISNULL(COALESCE(gc_s.css_class, gc_db.css_class), '') THEN NULL ELSE s.css_class END,
+			s.translate = CASE WHEN s.translate = COALESCE(gc_s.translate, gc_db.translate) THEN NULL ELSE s.translate END,
+			s.history = CASE WHEN s.history = COALESCE(gc_s.history, gc_db.history) THEN NULL ELSE s.history END,
+			s.is_html = CASE WHEN s.is_html = COALESCE(gc_s.is_html, gc_db.is_html) THEN NULL ELSE s.is_html END,
+			s.is_mandatory = CASE WHEN s.is_mandatory = COALESCE(gc_s.is_mandatory, gc_db.is_mandatory) THEN NULL ELSE s.is_mandatory END,
+			s.is_url = CASE WHEN s.is_url = COALESCE(gc_s.is_url, gc_db.is_url) THEN NULL ELSE s.is_url END,
+			s.is_computed = CASE WHEN s.is_computed = COALESCE(gc_s.is_computed, gc_db.is_computed) THEN NULL ELSE s.is_computed END,
+			s.show_empty = CASE WHEN s.show_empty = COALESCE(gc_s.show_empty, gc_db.show_empty) THEN NULL ELSE s.show_empty END,
+			s.hidden = CASE WHEN s.hidden = COALESCE(gc_s.hidden, gc_db.hidden) THEN NULL ELSE s.hidden END,
+			s.customizable = CASE WHEN s.customizable = COALESCE(gc_s.customizable, gc_db.customizable) THEN NULL ELSE s.customizable END,
+			s.referenced_codetable = CASE WHEN ISNULL(s.referenced_codetable, '') = ISNULL(COALESCE(gc_s.referenced_codetable, gc_db.referenced_codetable), '') THEN '' ELSE ISNULL(s.referenced_codetable, '') END,
+			s.calc_ref_class_uuid = CASE WHEN s.calc_ref_class_uuid = COALESCE(gc_s.calc_ref_class_uuid, gc_db.referenced_class) THEN NULL ELSE s.calc_ref_class_uuid END,
+			s.caption_l = CASE WHEN ISNULL(s.caption_l, '') = ISNULL(COALESCE(gc_s.caption_l, gc_l.caption), '') THEN NULL ELSE s.caption_l END,
+			s.caption_plural_l = CASE WHEN ISNULL(s.caption_plural_l, '') = ISNULL(COALESCE(gc_s.caption_plural_l, gc_l.caption_plural), '') THEN NULL ELSE s.caption_plural_l END,
+			s.description_l = CASE WHEN ISNULL(s.description_l, '') = ISNULL(COALESCE(gc_s.description_l, gc_l.description), '') THEN NULL ELSE s.description_l END,
+			s.label_l = CASE WHEN ISNULL(s.label_l, '') = ISNULL(COALESCE(gc_s.label_l, gc_l.label), '') THEN NULL ELSE s.label_l END,
+			s.header_l = CASE WHEN ISNULL(s.header_l, '') = ISNULL(COALESCE(gc_s.header_l, gc_l.header), '') THEN NULL ELSE s.header_l END,
+			s.helptext_l = CASE WHEN ISNULL(s.helptext_l, '') = ISNULL(COALESCE(gc_s.helptext_l, gc_l.helptext), '') THEN NULL ELSE s.helptext_l END,
+			s.placeholder_l = CASE WHEN ISNULL(s.placeholder_l, '') = ISNULL(COALESCE(gc_s.placeholder_l, gc_l.placeholder), '') THEN NULL ELSE s.placeholder_l END
+		FROM #clean_column s
+		LEFT JOIN #clean_column gc_s ON gc_s.orig_uuid = s.calc_ancestor_uuid AND gc_s.removed = 0 AND gc_s.class_valid = 1
+		LEFT JOIN meta_column gc_db ON gc_db.original = s.calc_ancestor_uuid AND gc_db.object_owner = @sys_owner AND gc_db.record_type = 'A' AND gc_db.removed = 0
+		LEFT JOIN meta_column gc_l ON gc_l.original = s.calc_ancestor_uuid AND gc_l.object_owner = @sys_owner AND gc_l.record_type = 'L' AND gc_l.[language] = @sec_lang AND gc_l.removed = 0 AND @is_trans_mode = 1
+		WHERE s.calc_parent_class <> @global_cls_uuid
+		  AND s.calc_ancestor_uuid IS NOT NULL;
+
 		IF @is_trans_mode = 0
 		BEGIN
 			-- 5.A) REŽIM JÁDRA: Replikace zrušení sloupce (removed = 1)
-			-- Fyzicky existující sloupec primitivní třídy nelze v metadatech zrušit
 			INSERT INTO request_message (spid, severity, msgtext, obj_type, obj_name)
 			SELECT @@SPID, 2, 'Fyzicky existující sloupec databázové tabulky nelze v metadatech odstranit (removed=1 ignorováno)', 'meta_column', s.class_name + '.' + s.column_name
 			FROM #clean_column s
@@ -1526,7 +1640,6 @@ BEGIN
 				WHERE t.original = s.orig_uuid AND t.object_owner = @sys_owner AND t.record_type = 'A' AND t.removed = 0
 			  );
 
-			-- Odstranění nefyzických sloupců (nebo sloupců, které již ve v_syscolumns neexistují)
 			UPDATE t
 			SET t.removed = 1,
 				t.date_modified = GETDATE(),
@@ -1552,7 +1665,7 @@ BEGIN
 			IF @cnt_rem > 0
 				EXEC insert_request_message 'Zreplikováno odstranění sloupců (removed=1)', 1, @intvalue = @cnt_rem, @obj_type = 'meta_column', @obj_name = 'column';
 
-			-- 5.B) REŽIM JÁDRA: Zpracování hlavních záznamů ('A') v meta_column
+			-- 5.B) REŽIM JÁDRA: Delta UPDATE hlavních záznamů ('A') v meta_column
 			UPDATE t
 			SET
 				t.[language] = @lang,
@@ -1574,7 +1687,7 @@ BEGIN
 				t.hidden = s.hidden,
 				t.customizable = s.customizable,
 				t.ancestor = s.calc_ancestor_uuid,
-				t.referenced_codetable = ISNULL(s.referenced_codetable, ''),
+				t.referenced_codetable = s.referenced_codetable,
 				t.referenced_class = s.calc_ref_class_uuid,
 				t.is_final = s.is_final,
 				t.is_protected = s.is_protected,
@@ -1596,7 +1709,26 @@ BEGIN
 			  AND s.class_valid = 1
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'A'
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT
+					t.[language], t.parent_order, t.sort_code, t.list_order,
+					t.input_type, t.input_width, t.input_rows, t.max_length, t.css_class,
+					t.translate, t.history, t.is_html, t.is_mandatory, t.is_url, t.is_computed,
+					t.show_empty, t.hidden, t.customizable,
+					t.ancestor, t.referenced_codetable, t.referenced_class,
+					t.is_final, t.is_protected, t.inactive, t.editor_note,
+					t.caption, t.caption_plural, t.description, t.label, t.header, t.helptext, t.placeholder
+				EXCEPT
+				SELECT
+					@lang, s.parent_order, s.sort_code, s.list_order,
+					s.input_type, s.input_width, s.input_rows, s.max_length, s.css_class,
+					s.translate, s.history, s.is_html, s.is_mandatory, s.is_url, s.is_computed,
+					s.show_empty, s.hidden, s.customizable,
+					s.calc_ancestor_uuid, s.referenced_codetable, s.calc_ref_class_uuid,
+					s.is_final, s.is_protected, s.inactive, s.editor_note,
+					s.caption, s.caption_plural, s.description, s.label, s.header, s.helptext, s.placeholder
+			  );
 
 			SET @cnt_a = @@ROWCOUNT;
 
@@ -1620,7 +1752,7 @@ BEGIN
 				s.input_type, s.input_width, s.input_rows, s.max_length, s.css_class,
 				s.translate, s.history, s.is_html, s.is_mandatory, s.is_url, s.is_computed,
 				s.show_empty, s.hidden, s.customizable,
-				s.calc_ancestor_uuid, ISNULL(s.referenced_codetable, ''), s.calc_ref_class_uuid,
+				s.calc_ancestor_uuid, s.referenced_codetable, s.calc_ref_class_uuid,
 				s.is_final, s.is_protected,
 				GETDATE(), @user_session, GETDATE(), @user_session
 			FROM #clean_column s
@@ -1635,46 +1767,7 @@ BEGIN
 
 			SET @cnt_a = @cnt_a + @@ROWCOUNT;
 
-			-- Pokud má sloupec předka (ancestor v sys_global_columns) a jeho hodnota je shodná s předkem,
-			-- uložíme do sloupce NULL (u referenced_codetable prázdný string ''), aby fungovalo dědění!
-			UPDATE mc
-			SET
-				mc.list_order = CASE WHEN mc.list_order = gc.list_order THEN NULL ELSE mc.list_order END,
-				mc.caption = CASE WHEN ISNULL(mc.caption, '') = ISNULL(gc.caption, '') THEN NULL ELSE mc.caption END,
-				mc.caption_plural = CASE WHEN ISNULL(mc.caption_plural, '') = ISNULL(gc.caption_plural, '') THEN NULL ELSE mc.caption_plural END,
-				mc.description = CASE WHEN ISNULL(mc.description, '') = ISNULL(gc.description, '') THEN NULL ELSE mc.description END,
-				mc.label = CASE WHEN ISNULL(mc.label, '') = ISNULL(gc.label, '') THEN NULL ELSE mc.label END,
-				mc.header = CASE WHEN ISNULL(mc.header, '') = ISNULL(gc.header, '') THEN NULL ELSE mc.header END,
-				mc.helptext = CASE WHEN ISNULL(mc.helptext, '') = ISNULL(gc.helptext, '') THEN NULL ELSE mc.helptext END,
-				mc.placeholder = CASE WHEN ISNULL(mc.placeholder, '') = ISNULL(gc.placeholder, '') THEN NULL ELSE mc.placeholder END,
-				mc.input_type = CASE WHEN ISNULL(mc.input_type, '') = ISNULL(gc.input_type, '') THEN NULL ELSE mc.input_type END,
-				mc.input_width = CASE WHEN ISNULL(mc.input_width, '') = ISNULL(gc.input_width, '') THEN NULL ELSE mc.input_width END,
-				mc.input_rows = CASE WHEN mc.input_rows = gc.input_rows THEN NULL ELSE mc.input_rows END,
-				mc.max_length = CASE WHEN mc.max_length = gc.max_length THEN NULL ELSE mc.max_length END,
-				mc.css_class = CASE WHEN ISNULL(mc.css_class, '') = ISNULL(gc.css_class, '') THEN NULL ELSE mc.css_class END,
-				mc.translate = CASE WHEN mc.translate = gc.translate THEN NULL ELSE mc.translate END,
-				mc.history = CASE WHEN mc.history = gc.history THEN NULL ELSE mc.history END,
-				mc.is_html = CASE WHEN mc.is_html = gc.is_html THEN NULL ELSE mc.is_html END,
-				mc.is_mandatory = CASE WHEN mc.is_mandatory = gc.is_mandatory THEN NULL ELSE mc.is_mandatory END,
-				mc.is_url = CASE WHEN mc.is_url = gc.is_url THEN NULL ELSE mc.is_url END,
-				mc.is_computed = CASE WHEN mc.is_computed = gc.is_computed THEN NULL ELSE mc.is_computed END,
-				mc.show_empty = CASE WHEN mc.show_empty = gc.show_empty THEN NULL ELSE mc.show_empty END,
-				mc.hidden = CASE WHEN mc.hidden = gc.hidden THEN NULL ELSE mc.hidden END,
-				mc.customizable = CASE WHEN mc.customizable = gc.customizable THEN NULL ELSE mc.customizable END,
-				mc.referenced_codetable = CASE WHEN ISNULL(mc.referenced_codetable, '') = ISNULL(gc.referenced_codetable, '') THEN '' ELSE ISNULL(mc.referenced_codetable, '') END,
-				mc.referenced_class = CASE WHEN mc.referenced_class = gc.referenced_class THEN NULL ELSE mc.referenced_class END
-			FROM meta_column mc
-			JOIN meta_column gc
-				ON gc.original = mc.ancestor
-				AND gc.object_owner = @sys_owner
-				AND gc.record_type = 'A'
-				AND gc.removed = 0
-			WHERE mc.object_owner = @sys_owner
-			  AND mc.record_type = 'A'
-			  AND mc.removed = 0
-			  AND mc.parent_class <> @global_cls_uuid;
-
-			-- Symetrické 'L' záznamy v meta_column pro primární jazyk (@lang)
+			-- Symetrické 'L' záznamy v meta_column pro primární jazyk (@lang) s Delta kontrolou
 			UPDATE t
 			SET
 				t.parent_order = a.parent_order,
@@ -1718,7 +1811,26 @@ BEGIN
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT
+					t.parent_order, t.sort_code, t.list_order,
+					t.caption, t.caption_plural, t.description, t.label, t.header, t.helptext, t.placeholder,
+					t.input_type, t.input_width, t.input_rows, t.max_length, t.css_class,
+					t.translate, t.history, t.is_html, t.is_mandatory, t.is_url, t.is_computed,
+					t.show_empty, t.hidden, t.customizable,
+					t.ancestor, t.referenced_codetable, t.referenced_class,
+					t.is_final, t.is_protected, t.inactive
+				EXCEPT
+				SELECT
+					a.parent_order, a.sort_code, a.list_order,
+					a.caption, a.caption_plural, a.description, a.label, a.header, a.helptext, a.placeholder,
+					a.input_type, a.input_width, a.input_rows, a.max_length, a.css_class,
+					a.translate, a.history, a.is_html, a.is_mandatory, a.is_url, a.is_computed,
+					a.show_empty, a.hidden, a.customizable,
+					a.ancestor, a.referenced_codetable, a.referenced_class,
+					a.is_final, a.is_protected, a.inactive
+			  );
 
 			INSERT INTO meta_column (
 				uuid, object_owner, original, record_type, approval_status, [language],
@@ -1759,11 +1871,11 @@ BEGIN
 				  AND t.removed = 0
 			  );
 
-			EXEC insert_request_message 'Záložka column (jádro) byla úspěšně zpracována', 1, @intvalue = @cnt_a, @obj_type = 'meta_column', @obj_name = 'column';
+			EXEC insert_request_message 'Záložka column (jádro - změněné/nové záznamy)', 1, @intvalue = @cnt_a, @obj_type = 'meta_column', @obj_name = 'column';
 		END
 		ELSE
 		BEGIN
-			-- 5.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně 'L' záznamy pro @sec_lang
+			-- 5.C) REŽIM PŘEKLADŮ (@sec_lang): Upravují se výhradně změněné 'L' záznamy pro @sec_lang
 			UPDATE t
 			SET t.removed = 1,
 				t.date_modified = GETDATE(),
@@ -1796,10 +1908,16 @@ BEGIN
 			JOIN meta_column a ON a.original = t.original AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
 			JOIN #clean_column s ON s.orig_uuid = a.original
 			WHERE s.removed = 0
+			  AND s.class_valid = 1
 			  AND t.object_owner = @sys_owner
 			  AND t.record_type = 'L'
 			  AND t.[language] = @sec_lang
-			  AND t.removed = 0;
+			  AND t.removed = 0
+			  AND EXISTS (
+				SELECT t.caption, t.caption_plural, t.description, t.label, t.header, t.helptext, t.placeholder
+				EXCEPT
+				SELECT s.caption_l, s.caption_plural_l, s.description_l, s.label_l, s.header_l, s.helptext_l, s.placeholder_l
+			  );
 
 			SET @cnt_l = @@ROWCOUNT;
 
@@ -1832,12 +1950,14 @@ BEGIN
 				a.ancestor, a.referenced_codetable, a.referenced_class,
 				a.is_final, a.is_protected,
 				GETDATE(), @user_session, GETDATE(), @user_session
-			FROM meta_column a
-			JOIN #clean_column s ON s.orig_uuid = a.original
+			FROM #clean_column s
+			JOIN meta_column a ON a.original = s.orig_uuid AND a.object_owner = @sys_owner AND a.record_type = 'A' AND a.removed = 0
 			WHERE s.removed = 0
-			  AND a.object_owner = @sys_owner
-			  AND a.record_type = 'A'
-			  AND a.removed = 0
+			  AND s.class_valid = 1
+			  AND (
+				s.caption_l IS NOT NULL OR s.caption_plural_l IS NOT NULL OR s.description_l IS NOT NULL
+				OR s.label_l IS NOT NULL OR s.header_l IS NOT NULL OR s.helptext_l IS NOT NULL OR s.placeholder_l IS NOT NULL
+			  )
 			  AND NOT EXISTS (
 				SELECT 1 FROM meta_column t
 				WHERE t.original = a.original
@@ -1848,30 +1968,17 @@ BEGIN
 
 			SET @cnt_l = @cnt_l + @@ROWCOUNT;
 
-			-- Zachování dědičnosti u 'L' záznamu druhého jazyka v meta_column při shodě s předkem
-			UPDATE l
-			SET
-				l.caption = CASE WHEN ISNULL(l.caption, '') = ISNULL(gc_l.caption, '') THEN NULL ELSE l.caption END,
-				l.caption_plural = CASE WHEN ISNULL(l.caption_plural, '') = ISNULL(gc_l.caption_plural, '') THEN NULL ELSE l.caption_plural END,
-				l.description = CASE WHEN ISNULL(l.description, '') = ISNULL(gc_l.description, '') THEN NULL ELSE l.description END,
-				l.label = CASE WHEN ISNULL(l.label, '') = ISNULL(gc_l.label, '') THEN NULL ELSE l.label END,
-				l.header = CASE WHEN ISNULL(l.header, '') = ISNULL(gc_l.header, '') THEN NULL ELSE l.header END,
-				l.helptext = CASE WHEN ISNULL(l.helptext, '') = ISNULL(gc_l.helptext, '') THEN NULL ELSE l.helptext END,
-				l.placeholder = CASE WHEN ISNULL(l.placeholder, '') = ISNULL(gc_l.placeholder, '') THEN NULL ELSE l.placeholder END
-			FROM meta_column l
-			JOIN meta_column gc_l
-				ON gc_l.original = l.ancestor
-				AND gc_l.object_owner = @sys_owner
-				AND gc_l.record_type = 'L'
-				AND gc_l.[language] = @sec_lang
-				AND gc_l.removed = 0
-			WHERE l.object_owner = @sys_owner
-			  AND l.record_type = 'L'
-			  AND l.[language] = @sec_lang
-			  AND l.removed = 0
-			  AND l.parent_class <> @global_cls_uuid;
+			-- Jednotná auditní stopa na 'A' záznamu při změně překladu
+			UPDATE a
+			SET a.date_modified = l.date_modified,
+				a.who_modified = l.who_modified
+			FROM meta_column a
+			JOIN meta_column l ON l.original = a.original AND l.object_owner = @sys_owner AND l.record_type = 'L' AND l.[language] = @sec_lang
+			WHERE a.object_owner = @sys_owner
+			  AND a.record_type = 'A'
+			  AND l.date_modified > a.date_modified;
 
-			EXEC insert_request_message 'Záložka column (překlady) byla úspěšně zpracována', 1, @intvalue = @cnt_l, @obj_type = 'meta_column (L)', @obj_name = @sec_lang;
+			EXEC insert_request_message 'Záložka column (překlady - změněné/nové záznamy)', 1, @intvalue = @cnt_l, @obj_type = 'meta_column (L)', @obj_name = @sec_lang;
 		END
 
 		DROP TABLE #clean_column;

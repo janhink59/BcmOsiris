@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 22:40
+ * Verze: 2026-10-23 11:00
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – čtecí, metadatová a UI vrstva (STI Architektura).
  *       Zápisové a schvalovací metody jsou vyčleněny do traitu entity_manager_write
@@ -38,6 +38,9 @@
  *    d) pokud je hodnota prázdná a záznam má `ancestor`, vyhodnotí tutéž logiku pro předka.
  * 
  * Změny:
+ * 2026-10-23 11:00 - Doplněna plná lokalizace položek roletek <select> v render_dynamic_input()
+ *                    pro referenced_codetable i referenced_class pomocí dbo.f_language_list
+ *                    (fallback_order < 1000) a tenant overridů.
  * 2026-10-22 22:40 - Oprava projekce sloupců předků ($select_anc_cols) a překladů ($select_l_cols)
  *                    v metodě fetch_rows() (odstraněno chybové str_replace nad m.record_type).
  *                  - Doplněna metoda fetch_records() jako zpětně kompatibilní alias pro fetch_rows().
@@ -1008,6 +1011,7 @@ HTML;
 		global $dbsession;                                                   // Globální kontext relace
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role uživatele v relaci
 		$org_sql = guidliteral((string)($dbsession['organization'] ?? '0x00')); // SQL literál aktivní organizace
+		$safe_lang = charliteral($this->lang_manager->get_current_language(), 2); // SQL literál aktivního jazyka
 
 		$type = $meta['input_type'] ?: 'text';                               // Výchozí typ prvku je text
 		$safe_name = htmlspecialchars($column_name);                         // Ošetřený název prvku
@@ -1079,20 +1083,34 @@ HTML;
 			$options_html = "<option value=\"global_phrase\" {$sel_global}>{$lbl_global}</option>"; // Výchozí volba global_phrase
 
 			$src_rows = sqlarray_simple("
-				SELECT builtin_code, caption
-				FROM meta_object
-				WHERE object_type = 'P'
-				  AND builtin_code <> ''
-				  AND builtin_code <> 'global_phrase'
-				  AND object_owner = 0x00
-				  AND record_type = 'A'
-				  AND removed = 0
-				ORDER BY builtin_code
-			");                                                              // Načtení PHP tříd mimo global_phrase do pole
+				WITH fl AS (
+					SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
+				)
+				SELECT a.builtin_code, COALESCE(tr.caption, a.caption, '') AS caption
+				FROM meta_object a
+				OUTER APPLY (
+					SELECT TOP 1 l.caption
+					FROM meta_object l
+					JOIN fl ON fl.[language] = l.[language]
+					WHERE l.original = a.original
+					  AND l.record_type = 'L'
+					  AND l.removed = 0
+					  AND l.object_owner IN ({$org_sql}, 0x00)
+					  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+					ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
+				) tr
+				WHERE a.object_type = 'P'
+				  AND a.builtin_code <> ''
+				  AND a.builtin_code <> 'global_phrase'
+				  AND a.object_owner = 0x00
+				  AND a.record_type = 'A'
+				  AND a.removed = 0
+				ORDER BY a.builtin_code
+			");                                                              // Načtení lokalizovaných PHP tříd mimo global_phrase
 			if (is_array($src_rows)) {                                       // Kontrola platného pole výsledků
 				foreach ($src_rows as $r_src) {                              // Průchod registrovanými PHP třídami
 					$b_code = (string)$r_src['builtin_code'];                // Název PHP třídy
-					$b_cap = (string)$r_src['caption'];                      // Popisek třídy
+					$b_cap = (string)$r_src['caption'];                      // Přeložený popisek třídy
 					$sel = ($b_code === $eff_value) ? 'selected' : '';       // Shoda s aktuální hodnotou
 					$opt_label = ($b_cap !== '' AND $b_cap !== $b_code) ? "{$b_code} ({$b_cap})" : $b_code; // Popisek volby
 					$options_html .= "<option value=\"" . htmlspecialchars($b_code) . "\" {$sel}>" . htmlspecialchars($opt_label) . "</option>"; // Položka roletky
@@ -1105,20 +1123,40 @@ HTML;
 			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>"; // Aktivní select
 		}
 
-		// 3. Generování <select> seznamů pro číselníky napojené v metadatech (referenced_codetable)
+		// 3. Generování <select> seznamů pro číselníky napojené v metadatech (referenced_codetable) s překlady dle f_language_list
 		if (!empty($meta['referenced_codetable'])) {                         // Pokud je sloupec napojen na číselník
 			$options_html = "<option value=\"\">{$lbl_select}</option>";     // Prázdná výchozí volba číselníku
 			$safe_ct = charliteral($meta['referenced_codetable']);           // Bezpečný literál číselníku
 			$opt_rows = sqlarray_simple("
-				SELECT value_code, caption
-				FROM meta_codetable
-				WHERE codetable_name = {$safe_ct}
-				  AND object_owner IN ({$org_sql}, 0x00)
-				  AND record_type = 'A'
-				  AND removed = 0
-				  AND inactive = 0
-				ORDER BY sort_code, caption
-			");                                                              // Dotaz na položky číselníku s izolací tenanta
+				WITH fl AS (
+					SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
+				),
+				ranked_ct AS (
+					SELECT original, value_code, caption, sort_code,
+						ROW_NUMBER() OVER (PARTITION BY value_code ORDER BY CASE WHEN object_owner = {$org_sql} THEN 0 ELSE 1 END) AS rn
+					FROM meta_codetable
+					WHERE codetable_name = {$safe_ct}
+					  AND object_owner IN ({$org_sql}, 0x00)
+					  AND record_type = 'A'
+					  AND removed = 0
+					  AND inactive = 0
+				)
+				SELECT c.value_code, COALESCE(tr.caption, c.caption, c.value_code) AS caption
+				FROM ranked_ct c
+				OUTER APPLY (
+					SELECT TOP 1 l.caption
+					FROM meta_codetable l
+					JOIN fl ON fl.[language] = l.[language]
+					WHERE l.original = c.original
+					  AND l.record_type = 'L'
+					  AND l.removed = 0
+					  AND l.object_owner IN ({$org_sql}, 0x00)
+					  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+					ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
+				) tr
+				WHERE c.rn = 1
+				ORDER BY c.sort_code, caption
+			");                                                              // Dotaz na položky číselníku s překladem a izolací tenanta
 			
 			if (is_array($opt_rows)) {                                       // Kontrola platného pole položek číselníku
 				foreach ($opt_rows as $opt) {                                // Průchod položkami číselníku
@@ -1133,7 +1171,7 @@ HTML;
 			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>"; // Aktivní select číselníku
 		}
 
-		// 4. Generování <select> seznamů pro relační odkazy na jiné logické třídy (referenced_class)
+		// 4. Generování <select> seznamů pro relační odkazy na jiné logické třídy (referenced_class) s překlady dle f_language_list
 		if (!empty($meta['referenced_class'])) {                             // Pokud sloupec odkazuje na jinou třídu
 			$options_html = "<option value=\"\">{$lbl_select}</option>";     // Prázdná výchozí volba relace
 			$ref_class_uuid = guidliteral((string)$meta['referenced_class']); // UUID odkazované logické třídy
@@ -1150,35 +1188,109 @@ HTML;
 				$exclude_self = '';                                          // Podmínka vyloučení sebe sama u stromů
 				$curr_guid = trim((string)getinput('update_guid'));          // Aktuálně editovaný záznam
 				if ($ref_table === $this->storage_table AND $curr_guid !== '' AND $curr_guid !== 'NEW') { // Kontrola rekurzivní vazby
-					$exclude_self = " AND original <> " . guidliteral($curr_guid); // Zamezení cyklickému odkazu na sebe
+					$exclude_self = " AND a.original <> " . guidliteral($curr_guid); // Zamezení cyklickému odkazu na sebe
 				}
 
-				if ($ref_table === 'meta_class') {                           // Načtení položek z meta_class
-					$items = sqlarray_simple("SELECT original, class_name AS code_col, caption FROM meta_class WHERE object_owner = 0x00 AND record_type = 'A' AND removed = 0 {$exclude_self} ORDER BY class_name"); // Dotaz na třídy
-				} elseif ($ref_table === 'meta_object') {                    // Načtení položek z meta_object
-					$items = sqlarray_simple("SELECT original, builtin_code AS code_col, caption FROM meta_object WHERE object_owner = 0x00 AND record_type = 'A' AND removed = 0 {$exclude_self} ORDER BY object_type, builtin_code"); // Dotaz na objekty
-				} elseif ($ref_table === 'meta_column') {                    // Načtení položek z meta_column
-					$items = sqlarray_simple("SELECT original, column_name AS code_col, caption FROM meta_column WHERE object_owner = 0x00 AND record_type = 'A' AND removed = 0 {$exclude_self} ORDER BY column_name"); // Dotaz na sloupce
+				if ($ref_table === 'meta_class') {                           // Načtení lokalizovaných položek z meta_class
+					$items = sqlarray_simple("
+						WITH fl AS (
+							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
+						)
+						SELECT a.original, a.class_name AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
+						FROM meta_class a
+						OUTER APPLY (
+							SELECT TOP 1 l.caption
+							FROM meta_class l
+							JOIN fl ON fl.[language] = l.[language]
+							WHERE l.original = a.original
+							  AND l.record_type = 'L'
+							  AND l.removed = 0
+							  AND l.object_owner IN ({$org_sql}, 0x00)
+							  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
+						) tr
+						WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0 {$exclude_self}
+						ORDER BY a.class_name
+					");                                                      // Dotaz na třídy s překladem
+				} elseif ($ref_table === 'meta_object') {                    // Načtení lokalizovaných položek z meta_object
+					$items = sqlarray_simple("
+						WITH fl AS (
+							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
+						)
+						SELECT a.original, a.builtin_code AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
+						FROM meta_object a
+						OUTER APPLY (
+							SELECT TOP 1 l.caption
+							FROM meta_object l
+							JOIN fl ON fl.[language] = l.[language]
+							WHERE l.original = a.original
+							  AND l.record_type = 'L'
+							  AND l.removed = 0
+							  AND l.object_owner IN ({$org_sql}, 0x00)
+							  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
+						) tr
+						WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0 {$exclude_self}
+						ORDER BY a.object_type, a.builtin_code
+					");                                                      // Dotaz na objekty s překladem
+				} elseif ($ref_table === 'meta_column') {                    // Načtení lokalizovaných položek z meta_column
+					$items = sqlarray_simple("
+						WITH fl AS (
+							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
+						)
+						SELECT a.original, a.column_name AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
+						FROM meta_column a
+						OUTER APPLY (
+							SELECT TOP 1 l.caption
+							FROM meta_column l
+							JOIN fl ON fl.[language] = l.[language]
+							WHERE l.original = a.original
+							  AND l.record_type = 'L'
+							  AND l.removed = 0
+							  AND l.object_owner IN ({$org_sql}, 0x00)
+							  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
+						) tr
+						WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0 {$exclude_self}
+						ORDER BY a.column_name
+					");                                                      // Dotaz na sloupce s překladem
 				} else {
 					$items = sqlarray_simple("
-						WITH ranked_ref AS (
-							SELECT original, '' AS code_col, caption,
-								ROW_NUMBER() OVER (PARTITION BY original ORDER BY CASE WHEN object_owner = {$org_sql} THEN 0 ELSE 1 END) AS rn
-							FROM {$ref_table}
-							WHERE (object_owner IN ({$org_sql}, 0x00) OR object_owner = original)
-							  AND record_type = 'A'
-							  AND removed = 0
+						WITH fl AS (
+							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
+						),
+						ranked_ref AS (
+							SELECT a.original, '' AS code_col, a.caption,
+								ROW_NUMBER() OVER (PARTITION BY a.original ORDER BY CASE WHEN a.object_owner = {$org_sql} THEN 0 ELSE 1 END) AS rn
+							FROM {$ref_table} a
+							WHERE (a.object_owner IN ({$org_sql}, 0x00) OR a.object_owner = a.original)
+							  AND a.record_type = 'A'
+							  AND a.removed = 0
 							  {$exclude_self}
 						)
-						SELECT original, code_col, caption FROM ranked_ref WHERE rn = 1 ORDER BY caption
-					");                                                      // Obecný dotaz na entitu s izolací tenanta a deduplikací
+						SELECT r.original, r.code_col, COALESCE(tr.caption, r.caption, '') AS caption
+						FROM ranked_ref r
+						OUTER APPLY (
+							SELECT TOP 1 l.caption
+							FROM {$ref_table} l
+							JOIN fl ON fl.[language] = l.[language]
+							WHERE l.original = r.original
+							  AND l.record_type = 'L'
+							  AND l.removed = 0
+							  AND (l.object_owner IN ({$org_sql}, 0x00) OR l.object_owner = l.original)
+							  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
+						) tr
+						WHERE r.rn = 1
+						ORDER BY caption
+					");                                                      // Obecný dotaz na entitu s překladem a izolací tenanta
 				}
 
 				if (is_array($items)) {                                      // Kontrola platného pole položek relace
 					foreach ($items as $item) {                              // Sestavení voleb relační roletky
 						$item_uuid = (string)$item['original'];              // UUID položky v roletce
 						$item_code = (string)$item['code_col'];              // Technický kód položky
-						$item_cap = (string)$item['caption'];                // Zobrazovaný název položky
+						$item_cap = (string)$item['caption'];                // Přeložený název položky
 						$sel = (strcasecmp($item_uuid, $value) === 0) ? 'selected' : ''; // Porovnání UUID bez ohledu na velikost písmen
 						$item_label = ($item_code !== '' AND $item_cap !== '' AND $item_cap !== $item_code) ? "{$item_code} ({$item_cap})" : ($item_code ?: $item_cap ?: $item_uuid); // Text položky
 						$options_html .= "<option value=\"" . htmlspecialchars($item_uuid) . "\" {$sel}>" . htmlspecialchars($item_label) . "</option>"; // Přidání volby

@@ -1,27 +1,18 @@
 /* =============================================================================
- * Verze: 2026-10-22 16:15
+ * Verze: 2026-10-23 16:20
  * Soubor: table_meta_menu.sql
  * Tabulka: meta_menu
  * Popis:   Uchovává strukturu uživatelského menu s vazbou na fyzické stránky.
  * Vazby:   - target_object (UUID) ukazuje na meta_object.original (stránka 'P')
  *          - parent_uuid (UUID) ukazuje na nadřízený uzel v téže tabulce (original)
  *          - Čteno procedurou p_get_menu_hierarchy (p_get_menu_hierarchy.sql)
- *            a plněno hromadným importem přes p_xlsx_meta_object.
- * Změny:   - 2026-10-15: Aktualizace vazeb target_object na sjednocené názvy
- *            stránek s prefixem page_ (page_main, page_meta_class, atd.)
- *            včetně idempotentního UPDATE pro stávající databáze a doplnění
- *            položky excel_reader do výchozího systémového menu.
- *          - 2026-10-16: Přidána položka meta_phrase (Textové fráze a překlady)
- *            a upravena system_role pro složku administrace a metadatové stránky
- *            na 'U', aby všichni uživatelé měli přístup k pořizování překladů.
- *          - 2026-10-17 00:50: Doplněny sloupce draft_author a approval_note pro SSC
- *            a přidána položka menu approval (Schvalování změn) směřující na page_approval.
- *          - 2026-10-18 12:35: Doplněno idempotentní zakládání symetrických 'L'
- *            záznamů pro výchozí položky systémového menu.
- *          - 2026-10-21 15:05: Přidána položka menu xlsx_export_meta (Export metadat
- *            do Excelu) směřující na samostatnou stránku page_xlsx_export_meta.
+ *            a plněno hromadným importem přes p_xlsx_meta_object nebo p_csv_import_metadata.
+ * Změny:   - 2026-10-23 16:20: Přidána položka menu csv_package (Přenos balíčků CSV/TSV)
+ *            směřující na stránku page_csv_package (system_role = 'S').
  *          - 2026-10-22 16:15: Přidána položka menu organization (Správa organizací)
  *            směřující na stránku page_organization (system_role = 'S').
+ *          - 2026-10-21 15:05: Přidána položka menu xlsx_export_meta (Export metadat
+ *            do Excelu) směřující na samostatnou stránku page_xlsx_export_meta.
  * ============================================================================= */
 
 IF OBJECT_ID('meta_menu') IS NULL
@@ -121,6 +112,7 @@ DECLARE @tgt_org_licence uuid = dbo.f_generate_original('meta_object', @sys_owne
 DECLARE @tgt_org_users uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_org_users');
 DECLARE @tgt_excel_reader uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_excel_reader');
 DECLARE @tgt_xlsx_export_meta uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_xlsx_export_meta');
+DECLARE @tgt_csv_package uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_csv_package');
 
 -- 2. Příprava originálů menu uzlů, abychom je mohli mezi sebou ihned provázat (parent_uuid)
 DECLARE @mnu_home uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'home', '');
@@ -134,6 +126,7 @@ DECLARE @mnu_org_licence uuid = dbo.f_generate_original('meta_menu', @sys_owner,
 DECLARE @mnu_org_users uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'org_users', '');
 DECLARE @mnu_excel_reader uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'excel_reader', '');
 DECLARE @mnu_xlsx_export_meta uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'xlsx_export_meta', '');
+DECLARE @mnu_csv_package uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'csv_package', '');
 
 -- 3. Pomocná struktura pro idempotentní dávkový zápis bez duplikace kódu
 DECLARE @init_menu TABLE (
@@ -152,7 +145,8 @@ INSERT INTO @init_menu VALUES
 (@mnu_org_licence, @mnu_admin, '06', 'organization_licence', 'Správa licencí organizací', @tgt_org_licence, 'S', ''),
 (@mnu_org_users, @mnu_admin, '07', 'org_users', 'Uživatelé organizace', @tgt_org_users, 'A', ''),
 (@mnu_excel_reader, @mnu_admin, '08', 'excel_reader', 'Import dat z Excelu', @tgt_excel_reader, 'S', ''),
-(@mnu_xlsx_export_meta, @mnu_admin, '09', 'xlsx_export_meta', 'Export metadat do Excelu', @tgt_xlsx_export_meta, 'S', '');
+(@mnu_xlsx_export_meta, @mnu_admin, '09', 'xlsx_export_meta', 'Export metadat do Excelu', @tgt_xlsx_export_meta, 'S', ''),
+(@mnu_csv_package, @mnu_admin, '10', 'csv_package', 'Přenos balíčků (CSV/TSV)', @tgt_csv_package, 'S', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>');
 
 -- 4. Idempotentní INSERT hlavních 'A' záznamů pomocí NOT EXISTS
 INSERT INTO meta_menu (

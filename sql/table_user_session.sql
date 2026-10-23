@@ -8,10 +8,16 @@
 	- Bitová práva right_sysadmin a right_orgadmin sloučena do active_role (U, A, S, D).
 */
 
+drop table if exists session_import_data
+drop table if exists session_import_column
+drop table if exists session_import_parameter
+drop table if exists session_import_table
+
 drop table if exists request_message
 drop table if exists request_variable
 drop table if exists wwwsession
 drop table if exists dbsession
+
 GO
 
 CREATE TABLE [dbo].[wwwsession](

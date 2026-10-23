@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-22 16:15
+ * Verze: 2026-10-23 16:20
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
@@ -7,32 +7,15 @@
  *          - Záznamy typu 'P' (PHP Page / třída) jsou odkazovány z meta_menu.target_object,
  *            slouží k řízení přístupu přes sloupec system_role a představují platné
  *            zdrojové objekty (source_code) pro textové fráze v tabulce meta_phrase.
- *          - Záznamy typu 'G' (Global Phrase) uchovávají celosystémové textové fráze
- *            (nahrazeno samostatnou tabulkou meta_phrase).
  *          - Plněno automaticky procedurou p_fix_meta_column (typy T, V, F, C)
- *            a hromadným importem z Excelu přes proceduru p_xlsx_meta_object (typy P, M).
- * Změny:   - Odstraněny sloupce is_final a is_protected (ochrana je v meta_class).
- *          - Odstraněn sloupec column_ancestor (přesunut do meta_class).
- *          - Prezentační texty změněny na NULLable (primární zdroj je nově meta_class).
- *          - Přidán sloupec import_origin pro evidenci původu záznamu z importu (Měkký audit).
- *          - 2026-10-09: Přidán sloupec system_role pro základní řízení přístupu.
- *          - 2026-10-14: Přidán sloupec editor_note pro kontext k překladům pomocí AI.
- *          - 2026-10-15: Sjednocena jmenná konvence pro object_type = 'P' na celé názvy
- *            PHP souborů/tříd včetně prefixu page_ a zaregistrovány bázové UI třídy.
- *            Doplněn výmaz opuštěných záznamů bez prefixu page_ a starých frází typu 'G'.
- *          - 2026-10-15 23:55: Zaregistrována stránka page_meta_phrase a u stránek metadat
- *            (page_meta_class, page_meta_column, page_meta_phrase) nastavena system_role = 'U'
- *            pro umožnění překladů všem rolím (funkční atributy chrání entity_manager pro 'D').
- *          - 2026-10-17 00:50: Doplněny sloupce draft_author a approval_note pro schvalovací
- *            cyklus (SSC) a zaregistrována univerzální schvalovací stránka page_approval.
- *          - 2026-10-18 12:35: Doplněny unikátní indexy uq_meta_object_active a
- *            uq_meta_object_language a symetrické 'L' záznamy pro výchozí stránky.
- *          - 2026-10-20 11:25: Bezejmenný záznam '' pro globální fráze nahrazen řádnou
- *            PHP třídou 'global_phrase' a původní záznam '' idempotentně odstraněn.
- *          - 2026-10-21 15:05: Zaregistrována samostatná stránka page_xlsx_export_meta
- *            pro zpětný export systémových metadat do Excelu.
+ *            a hromadným importem přes p_xlsx_meta_object nebo p_csv_import_metadata.
+ * Změny:   - 2026-10-23 16:20: Zaregistrovány třídy abstract_csv_package,
+ *            csv_package_metadata a stránka page_csv_package pro přenos CSV/TSV balíčků.
  *          - 2026-10-22 16:15: Zaregistrována stránka page_organization pro správu
  *            a editaci existujících organizací (system_role = 'S').
+ *          - 2026-10-21 15:05: Zaregistrována samostatná stránka page_xlsx_export_meta.
+ *          - 2026-10-20 11:25: Bezejmenný záznam '' pro globální fráze nahrazen řádnou
+ *            PHP třídou 'global_phrase' a původní záznam '' idempotentně odstraněn.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -160,6 +143,8 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('abstract_page', 'Základní šablona stránky', 'Abstraktní předek všech stránek zajišťující hlavičku, kontext a ochranu formulářů', 'U'),
 ('abstract_page_master_detail', 'Šablona Master-Detail', 'Abstraktní dvoupanelová šablona pro správu entit', 'U'),
 ('abstract_button', 'Komponenta tlačítka', 'Základní třída pro vykreslování tlačítek s ikonou a tooltipem', 'U'),
+('abstract_csv_package', 'Abstraktní CSV/TSV balíček', 'Základní třída pro export a dvoufázový import víceblokových CSV/TSV balíčků', 'U'),
+('csv_package_metadata', 'CSV/TSV balíček systémových metadat', 'Definice a filtry pro přenos systémových metadat mezi instancemi', 'U'),
 ('user_context', 'Kontextový panel uživatele', 'Horní lišta s informacemi o přihlášeném uživateli, roli a volbou jazyka', 'U'),
 ('menu_manager', 'Správce navigace', 'Třída pro sestavení a vykreslení drobečkové navigace a menu', 'U'),
 ('entity_manager', 'Správce logických entit', 'Dynamický generátor SQL dotazů, seznamů a formulářů podle metadat', 'U'),
@@ -173,6 +158,7 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
 ('page_excel_reader', 'Import dat z Excelu', 'Nástroj pro hromadný import a distribuci datových struktur z Excelu', 'S'),
 ('page_xlsx_export_meta', 'Export metadat do Excelu', 'Nástroj pro zpětný export systémových metadat do souboru XLSX', 'S'),
+('page_csv_package', 'Přenos balíčků (CSV/TSV)', 'Nástroj pro export a dvoufázový import datových balíčků ve formátu TSV/CSV', 'S'),
 ('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace, aplikační role a žádosti o přístup', 'U'),
 ('page_login', 'Přihlášení do systému', 'Přihlašovací obrazovka s podporou lokální autentizace a SSO', 'U'),
 ('page_password_reset', 'Obnova hesla', 'Stránka pro vyžádání a nastavení nového hesla pomocí tokenu', 'U'),
