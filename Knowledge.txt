@@ -14,9 +14,9 @@
 * Na konci každého chatu automaticky nabídni formátovanou revizi těchto instrukcí pro uchování pokroku.
 * BEZPEČNOSTNÍ POJISTKA VÝKONU: Pokud při analýze komplexních vazeb narazíš na limity svého logického vyvozování nebo ztratíš přehled v kontextu, okamžitě upozorni uživatele a vyžádej si přerušení práce.
 * KONTROLA MODELU: Na úplném začátku nové konverzace upozorni uživatele, pokud zapomněl nastavit nejvhodnější programovací model (Argon Nejvyšší / Pro nejvyšší / Pro Extended). Během další komunikace už toto upozornění neopakuj.
-* PRAVIDLA KONVERZACE: Na začátku každého chatu uživatel předá Knowledge.txt, kompletní SQL dávku BcmOsirisDb.sql a slepené soubory PHP zdrojových kódů (BcmOsirisPhp1.txt, BcmOsirisPhp2.txt a další slepené soubory). Zkontroluj, zda jsou soubory celé, jestli je vstupní rozhraní neořízlo. Na začátku chatu se POUZE diskutuje, neprogramuje. Nechval, místo toho hledej chyby a navrhuj vylepšení.
-* Pokud se domluvíme na úpravě, vracej více upravených souborů najednou v samostatných code blocích v jedné odpovědi. Předem odhadni jejich celkový rozsah a dávkuj je do bezpečného limitu cca 2 000–2 500 řádků na jednu odpověď, abychom minimalizovali počet zpráv a přitom nepřekročili limit výstupního rozhraní.
-
+* PRAVIDLA KONVERZACE: Na začátku každého chatu uživatel předá Knowledge.txt a slepené soubory PHP a SQL zdrojových kódů s koncovkou txt. Zkontroluj, zda jsou soubory celé, jestli je vstupní rozhraní neořízlo. Na začátku chatu se POUZE diskutuje, neprogramuje. Nechval, místo toho hledej chyby a navrhuj vylepšení.
+* Pokud se domluvíme na úpravě, vracej více upravených souborů najednou v samostatných code blocích v jedné odpovědi. V případě přetečení limitu výstupu ti pak řeknu, které soubory jsem převzal a od které pokračovat.
+* V případě rozsáhlých souborů navrhni možnosti rozdělení do více souborů - přesun SQL kódů z do views, procedur, PHP kódů do trait nebo include modulů.
 2. Databázové konvence (MSSQL)
 * Databáze plně podporuje UTF-8 (zohledni to v PHP skriptech i T-SQL).
 * Textové sloupce používají varchar/varchar(max), identifikátory používají typ uuid (uniqueidentifier). Názvy se píší striktně malými písmeny (snake_case).

@@ -5,8 +5,8 @@ declare(strict_types=1);
 // RamsesDB - Nástroj pro sestavení databázových skriptů (PHP verze)
 // -----------------------------------------------------------------------------
 
-$manifestFile   = 'BuildList.txt';                              // Soubor se seznamem skriptů nebo masek (wildcards)
-$outputFile     = 'BcmOsirisDb.sql';                               // Výsledný sloučený soubor
+$manifestFile   = 'BuildList.txt';         // Soubor se seznamem skriptů nebo masek (wildcards)
+$outputFile     = 'BcmOsirisDb1.txt';      // Výsledný sloučený soubor
 
 echo "----------------------------------------------------------\n";
 echo "RamsesDB Auto-Deploy Build\n";
@@ -19,20 +19,43 @@ if (!file_exists($manifestFile)) {
 	exit(1);
 }
 
-// 2. Příprava výstupního souboru
-if (file_exists($outputFile)) {
-	unlink($outputFile);                                        // Smazání předchozího buildu
+function open_output(){
+	global $outputFile, $outHandle;
+	if (file_exists($outputFile)) {
+		unlink($outputFile);                                        // Smazání předchozího buildu
+	}
+
+	$outHandle = fopen($outputFile, 'wb');
+	if (!$outHandle) {
+		echo "[CHYBA] Nelze vytvorit vystupni soubor '{$outputFile}'.\n";
+		exit(1);
+	}
+
+	echo "Sestavuji skript '{$outputFile}'...\n\n";
+
 }
 
-$outHandle = fopen($outputFile, 'wb');
-if (!$outHandle) {
-	echo "[CHYBA] Nelze vytvorit vystupni soubor '{$outputFile}'.\n";
-	exit(1);
+function close_output(){
+	global $outHandle,$outputFile,$fileCount;
+	fclose($outHandle);
+	echo "\n==========================================================\n";
+	echo "HOTOVO! Bylo spojeno {$fileCount} souboru do '{$outputFile}'.\n";
+	echo "==========================================================\n";
+	$fileCount=0;
 }
 
-echo "Sestavuji skript '{$outputFile}'...\n\n";
 
-// 3. Vložení BOM (Byte Order Mark) pro UTF-8 na úplný začátek souboru
+// 2. Zpracování manifestu a expanze zástupných znaků (wildcards)
+$manifestLines = file($manifestFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+$fileCount = 0;
+$processedFiles = [];                                           // Globální registr pro sledování již vložených souborů
+
+// 3. Příprava výstupního souboru
+
+open_output();
+
+// 4. Vložení BOM (Byte Order Mark) pro UTF-8 na úplný začátek souboru
 // Toto donutí SSMS automaticky otevřít soubor v UTF-8 kódování
 fwrite($outHandle, "\xEF\xBB\xBF");
 
@@ -40,15 +63,13 @@ fwrite($outHandle, "\xEF\xBB\xBF");
 $dateStr = date('Y-m-d H:i');
 $hostStr = gethostname();                                       // Získání identifikace počítače (hostname)
 $header  = "/* ==========================================\n";
-$header .= " * RamsesDB Auto-Deploy Build v. 02.06.2026\n";
+$header .= " * RamsesDB Auto-Deploy Build v. 24.10.2026\n";
+$header .= " * Tento soubor obsahuje všechny SQL soubory předávané AI na začátku chatu\n";
 $header .= " * Datum vygenerování: {$dateStr}\n";
 $header .= " * Počítač: {$hostStr}\n";
 $header .= " * Kontrola kódování UTF-8 😊 (Příšerně žluťoučký kůň úpěl ďábelské ódy)\n";
 $header .= " * ========================================== */\n\nGO\n";
 fwrite($outHandle, $header);
-
-$fileCount = 0;
-$processedFiles = [];                                           // Globální registr pro sledování již vložených souborů
 
 /**
  * Pomocná funkce pro bezpečné přečtení souboru, odstranění BOM z paměti
@@ -76,15 +97,21 @@ $processContent = function(string $filePath, bool &$converted): string {
 	return $content;
 };
 
-// 5. Zpracování manifestu a expanze zástupných znaků (wildcards)
-$manifestLines = file($manifestFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-
 foreach ($manifestLines as $line) {
 	$line = trim($line);
 	
 	if($line==='return;'){
 		echo "[INFO] Narazeno na 'return;' v manifestu, zpracovani preruseno.\n";
 		break;
+	}
+
+	$command=explode("=",$line);
+	if(count($command)==2 AND $command[0]=="output") {
+		close_output();
+		echo "\nZmena vystupniho souboru\n";
+		$outputFile=$command[1];
+		open_output();
+		continue;
 	}
 
 	// Ignorování komentářů v manifestu
@@ -97,7 +124,7 @@ foreach ($manifestLines as $line) {
 	$files = glob($line);
 	
 	if ($files === false || count($files) === 0) {
-		echo "[VAROVANI] Zadne soubory nenalezeny pro polozku/masku: '{$line}'\n";
+		echo "\n[VAROVANI] Zadne soubory nenalezeny pro polozku/masku: '{$line}'\n";
 		continue;
 	}
 	
@@ -139,8 +166,4 @@ foreach ($manifestLines as $line) {
 	}
 }
 
-fclose($outHandle);
-
-echo "\n==========================================================\n";
-echo "HOTOVO! Bylo spojeno {$fileCount} souboru do '{$outputFile}'.\n";
-echo "==========================================================\n";
+close_output();

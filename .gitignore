@@ -1,5 +1,5 @@
 ocfg_*.php
-BcmOsirisDb.sql*
+BcmOsirisDb*.sql*
 config_*.php
 vendor/
 www/www.zip
