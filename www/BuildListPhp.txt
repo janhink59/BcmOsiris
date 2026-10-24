@@ -2,6 +2,7 @@ config.php
 OsirisLib.php
 a*.php
 b*.php
+csv_*.php
 output=BcmOsirisPhp2.txt
 e*.php
 g*.php

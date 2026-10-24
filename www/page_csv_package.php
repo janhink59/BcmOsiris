@@ -1,11 +1,11 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-23 16:20
+ * Verze: 2026-10-24 14:35
  * Soubor: page_csv_package.php
  * Třída: page_csv_package
  * Účel: Uživatelské rozhraní pro export a dvoufázový import víceblokových
- *       CSV/TSV balíčků mezi instancemi systému BCM Osiris.
+ *       CSV balíčků mezi instancemi systému BCM Osiris.
  *
  * ARCHITEKTONICKÉ VAZBY:
  * - Instancována dynamicky z routeru `index.php` při `?page=page_csv_package`.
@@ -14,7 +14,13 @@
  * - Načítá `abstract_csv_package.php` a dynamicky instancuje konkrétní třídu
  *   balíčku `csv_package_{$package_code}` (výchozí `'metadata'`).
  * - Využívá `abstract_button` pro vykreslení tlačítek a `regfile()` z `OsirisLib.php`
- *   pro zpracování nahraného CSV/TSV souboru.
+ *   pro zpracování nahraného CSV souboru.
+ *
+ * Změny:
+ * 2026-10-24 14:35 - Export balíčku přepnut na výchozí oddělovač středník (`;`)
+ *                    a příponu `.csv` pro přímou kontrolu a úpravy v MS Excelu.
+ * 2026-10-24 11:30 - Opravena syntaktická chyba (chybějící mezera v `OR $this->pkg`)
+ *                    a doplněny mezery před znakem `$` dle Anti-LaTeX pravidla.
  * =============================================================================
  */
 
@@ -31,18 +37,18 @@ class page_csv_package extends abstract_page {
 	public function __construct() {
 		parent::__construct();                                               // Inicializace správce frází a kontroly přístupu
 
-		$this->page_title =$this->phrase('page_title', [], 'Přenos datových balíčků (CSV/TSV) - BCM Osiris'); // Titulek stránky
+		$this->page_title = $this->phrase('page_title', [], 'Přenos datových balíčků (CSV) - BCM Osiris'); // Titulek stránky
 
 		if ($this->access_denied) {                                          // Pokud předek zamítl přístup ke stránce
 			return;                                                          // Ukončení inicializace
 		}
 
 		$req_pkg = trim((string)getinput('package_code'));                   // Načtení kódu balíčku z GET/POST
-		if ($req_pkg !== '' AND preg_match('/^[a-zA-Z0-9_]+$/',$req_pkg)) { // Validace kódu balíčku
-			$this->package_code =$req_pkg;                                  // Uložení zvoleného kódu balíčku
+		if ($req_pkg !== '' AND preg_match('/^[a-zA-Z0-9_]+$/', $req_pkg)) { // Validace kódu balíčku
+			$this->package_code = $req_pkg;                                  // Uložení zvoleného kódu balíčku
 		}
 
-		$cls_name = 'csv_package_' .$this->package_code;                    // Odvození názvu třídy balíčku
+		$cls_name = 'csv_package_' . $this->package_code;                    // Odvození názvu třídy balíčku
 		if (class_exists($cls_name)) {                                       // Kontrola existence třídy balíčku
 			$this->pkg = new $cls_name($_REQUEST);                           // Instancování balíčku s předanými parametry
 		}
@@ -55,26 +61,26 @@ class page_csv_package extends abstract_page {
 		$this->init_phrases();                                               // Pojistka inicializace správce frází
 		$this->check_system_role_access();                                   // Pojistka kontroly přístupu podle meta_object
 
-		if ($this->access_denied OR$this->pkg === null) {                   // Kontrola přístupu a platného balíčku
+		if ($this->access_denied OR $this->pkg === null) {                   // Kontrola přístupu a platného balíčku
 			parent::render();                                                // Vykreslení chybového stavu předkem
 			return;                                                          // Ukončení
 		}
 
-		// 1. Požadavek na export balíčku do TSV souboru (musí proběhnout před výpisem HTML)
+		// 1. Požadavek na export balíčku do CSV souboru se středníkem (musí proběhnout před výpisem HTML)
 		if (isset($_POST['btn_export_csv'])) {                               // Detekce stisku tlačítka Exportovat
 			$this->pkg->set_parameters_from_request($_POST);                 // Nastavení parametrů z formuláře
-			$this->pkg->export_to_browser("\t");                             // Odeslání TSV souboru do prohlížeče a exit
+			$this->pkg->export_to_browser(';');                              // Odeslání CSV souboru se středníkem do prohlížeče a exit
 			return;                                                          // Pojistka ukončení
 		}
 
-		// 2. Požadavek na Fázi 1 importu (nahrání CSV/TSV souboru do session_import_*)
+		// 2. Požadavek na Fázi 1 importu (nahrání CSV souboru do session_import_*)
 		$tmpfile = regfile('file_csv');                                      // Cesta k nahranému souboru z $_FILES
 		if ($tmpfile !== '') {                                               // Pokud uživatel odeslal soubor k importu
 			$this->full_width = true;                                        // Široký panel pro přehledové tabulky
 			$this->step = 'PHASE1';                                          // Přepnutí do zobrazení Fáze 1
 			$orig_name = (string)($_FILES['file_csv']['name'] ?? basename($tmpfile)); // Původní jméno souboru
-			$msg_file =$this->phrase('msg_uploaded_file', [], 'Nahrán vstupní soubor'); // Zpráva o nahrání souboru
-			$this->pkg->rqm->add_message($msg_file, 0)->setobject('Soubor',$orig_name); // Zápis do logu
+			$msg_file = $this->phrase('msg_uploaded_file', [], 'Nahrán vstupní soubor'); // Zpráva o nahrání souboru
+			$this->pkg->rqm->add_message($msg_file, 0)->setobject('Soubor', $orig_name); // Zápis do logu
 			$this->pkg->load_file_to_session($tmpfile);                      // Rozpitvání souboru do session_import_*
 		}
 
@@ -82,7 +88,7 @@ class page_csv_package extends abstract_page {
 		if (isset($_POST['btn_run_phase2'])) {                               // Detekce potvrzení Fáze 2
 			$this->full_width = true;                                        // Široký panel pro výpis výsledků
 			$this->step = 'PHASE2';                                          // Přepnutí do zobrazení výsledku Fáze 2
-			$overrides = (isset($_POST['override_param']) AND is_array($_POST['override_param'])) ?$_POST['override_param'] : []; // Změněné parametry
+			$overrides = (isset($_POST['override_param']) AND is_array($_POST['override_param'])) ? $_POST['override_param'] : []; // Změněné parametry
 			$this->pkg->run_import($overrides);                              // Spuštění procedury v databázi
 		}
 
@@ -93,7 +99,7 @@ class page_csv_package extends abstract_page {
 	 * Vykreslí obsah stránky podle aktuální fáze (vstupní formuláře, Fáze 1 nebo Fáze 2).
 	 */
 	protected function render_body(): void {
-		$heading = htmlspecialchars($this->phrase('heading_csv_packages', [], 'Přenos datových balíčků mezi instancemi (CSV / TSV)')); // Nadpis
+		$heading = htmlspecialchars($this->phrase('heading_csv_packages', [], 'Přenos datových balíčků mezi instancemi (CSV)')); // Nadpis
 		echo "<h1 class=\"page-heading\">{$heading}</h1>\n";
 
 		if ($this->pkg === null) {                                           // Pokud nebyl nalezen platný balíček
@@ -129,15 +135,15 @@ class page_csv_package extends abstract_page {
 		// C. Výchozí zobrazení: 1. Exportní formulář parametrů + 2. Formulář pro nahrání souboru (Fáze 1)
 		echo $this->pkg->render_parameters_div($action_url);                 // Vykreslení sekce pro export balíčku
 
-		$hdr_imp = htmlspecialchars($this->phrase('hdr_import_section', [], 'Dvoufázový import balíčku ze souboru TSV / CSV')); // Nadpis importu
-		$desc_imp = htmlspecialchars($this->phrase('desc_import_section', [], 'Nahrajte soubor balíčku (.tsv nebo .csv). V 1. fázi systém ověří elektronický podpis, zkontroluje strukturu a zobrazí přehled dat před samotným zápisem do databáze.')); // Popis
-		$lbl_file = htmlspecialchars($this->phrase('lbl_csv_file', [], 'Soubor balíčku (TSV/CSV):')); // Popisek pole souboru
+		$hdr_imp = htmlspecialchars($this->phrase('hdr_import_section', [], 'Dvoufázový import balíčku ze souboru CSV')); // Nadpis importu
+		$desc_imp = htmlspecialchars($this->phrase('desc_import_section', [], 'Nahrajte soubor balíčku (.csv). V 1. fázi systém ověří elektronický podpis, zkontroluje strukturu a zobrazí přehled dat před samotným zápisem do databáze.')); // Popis
+		$lbl_file = htmlspecialchars($this->phrase('lbl_csv_file', [], 'Soubor balíčku (CSV):')); // Popisek pole souboru
 		$safe_action = htmlspecialchars($action_url);                        // Ošetřená URL akce formuláře
 		$safe_code = htmlspecialchars($this->package_code);                  // Ošetřený kód balíčku
 
 		$btn_up = new abstract_button('btn_upload_phase1', 'Načíst a zkontrolovat soubor (Fáze 1)', 'page_csv_package'); // Tlačítko Fáze 1
 		$btn_up->set_type('submit')->set_name_value('btn_upload_phase1', '1'); // Submit atributy
-		$btn_up_html =$btn_up->render();                                    // HTML tlačítka Fáze 1
+		$btn_up_html = $btn_up->render();                                    // HTML tlačítka Fáze 1
 
 		echo <<<HTML
 		<hr style="border: 0; border-top: 2px solid #eee; margin: 25px 0;">
@@ -149,7 +155,7 @@ class page_csv_package extends abstract_page {
 				<table class="md-table" style="margin-bottom: 15px;">
 					<tr>
 						<td style="width: 35%; font-weight: bold; background-color: #f8fafc;">{$lbl_file} <span style="color:#b91c1c;">*</span></td>
-						<td><input type="file" name="file_csv" accept=".tsv,.csv,.txt" required style="width: 100%; max-width: 380px;"></td>
+						<td><input type="file" name="file_csv" accept=".csv,.tsv,.txt" required style="width: 100%; max-width: 380px;"></td>
 					</tr>
 				</table>
 				<div>{$btn_up_html}</div>

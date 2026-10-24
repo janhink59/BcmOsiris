@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-23 16:00
+ * Verze: 2026-10-24 11:30
  * Soubor: p_csv_fill_table.sql
  * Funkce: dbo.f_csv_param
  * Procedura: dbo.p_csv_fill_table
@@ -8,9 +8,11 @@
  *         2. Procedura p_csv_fill_table naplní cílovou (typicky #dočasnou)
  *            tabulku daty ze staging tabulek session_import_* pro aktuální relaci.
  *            Garantuje vložení přesně takového počtu řádků (row_count), jaký byl
- *            zjištěn v CSV bloku dané tabulky. Vkládá pouze data stejnojmenných
- *            sloupců (dle dbo.f_syscolumns) a kontroluje, že ostatní sloupce
- *            v cílové tabulce povolují NULL (nebo mají definovaný DEFAULT).
+ *            zjištěn v CSV bloku dané tabulky. Vkládá data stejnojmenných sloupců
+ *            (dle dbo.f_syscolumns) a u #dočasných tabulek (vytvořených přes
+ *            SELECT TOP 0 * INTO #..., které v tempdb nemají DEFAULT constrainty)
+ *            automaticky doplní typově bezpečné výchozí hodnoty pro vynechané
+ *            NOT NULL sloupce.
  *
  * Vazby na okolí:
  * - Čte kontext relace (wwwsession) z tabulky dbsession pro aktuální @@SPID.
@@ -19,6 +21,12 @@
  * - Využívá funkci dbo.f_syscolumns z HinkMSSQLLibrary.sql pro zjištění sloupců
  *   a datových typů cílové tabulky (podporuje i #dočasné tabulky v tempdb).
  * - Volána z uložených procedur jednotlivých balíčků p_csv_import_<package_code>.
+ *
+ * Změny:
+ * - 2026-10-24 11:30: Doplněna podpora pro #dočasné tabulky v tempdb vytvořené
+ *   přes SELECT TOP 0 * INTO #tab, u nichž SQL Server nepřenáší DEFAULT constrainty:
+ *   neexportované NOT NULL sloupce (např. object_owner, date_created) dostanou
+ *   při INSERTu automaticky typově bezpečnou výchozí hodnotu.
  * ============================================================================= */
 
 EXECUTE dropni 'p_csv_fill_table', 'P';
@@ -53,8 +61,9 @@ GO
 /* =============================================================================
  * Procedura: dbo.p_csv_fill_table
  * Účel:   Vloží do cílové tabulky (@target_table) přesný počet řádků zjištěný
- *         v CSV bloku (@csv_table_name). Spáruje pouze stejnojmenné sloupce
- *         a ověří, že případné další sloupce v cílové tabulce povolují NULL.
+ *         v CSV bloku (@csv_table_name). Spáruje stejnojmenné sloupce a ověří,
+ *         že případné další sloupce v cílové tabulce povolují NULL (nebo u #temp
+ *         tabulek dosadí typově bezpečnou výchozí hodnotu).
  * ============================================================================= */
 CREATE PROCEDURE dbo.p_csv_fill_table
 	@target_table varchar(250),                                                -- Jméno cílové tabulky (např. '#meta_class')
@@ -65,10 +74,12 @@ BEGIN
 	SET NOCOUNT ON;
 	SET XACT_ABORT ON;
 
+	DECLARE @is_temp_target bit = CASE WHEN LEFT(@target_table, 1) = '#' THEN 1 ELSE 0 END;
+
 	-- 1. Odvození názvu CSV tabulky, pokud nebyl explicitně předán
 	IF ISNULL(@csv_table_name, '') = ''
 	BEGIN
-		IF LEFT(@target_table, 1) = '#'
+		IF @is_temp_target = 1
 			SET @csv_table_name = SUBSTRING(@target_table, 2, 250);
 		ELSE
 			SET @csv_table_name = @target_table;
@@ -121,23 +132,26 @@ BEGIN
 		RETURN -1;
 	END
 
-	-- 5. Kontrola, zda všechny cílové sloupce, které NEJSOU v CSV, povolují NULL (nebo mají DEFAULT)
-	DECLARE @missing_not_null varchar(250) = NULL;
-	SELECT TOP 1 @missing_not_null = tc.colname
-	FROM #tgt_cols tc
-	LEFT JOIN session_import_column ic
-		ON ic.wwwsession = @sess
-		AND ic.table_id = @table_id
-		AND ic.column_name COLLATE DATABASE_DEFAULT = tc.colname
-	WHERE ic.column_id IS NULL
-	  AND tc.nulls = 'not null'
-	  AND tc.default_syntax = 'null'
-	ORDER BY tc.colid;
-
-	IF @missing_not_null IS NOT NULL
+	-- 5. Kontrola u trvalých tabulek, zda všechny cílové sloupce mimo CSV povolují NULL nebo mají DEFAULT
+	IF @is_temp_target = 0
 	BEGIN
-		RAISERROR('p_csv_fill_table: Sloupec "%s" v cílové tabulce "%s" není v CSV bloku "%s" a nepovoluje NULL.', 16, 1, @missing_not_null, @target_table, @csv_table_name);
-		RETURN -1;
+		DECLARE @missing_not_null varchar(250) = NULL;
+		SELECT TOP 1 @missing_not_null = tc.colname
+		FROM #tgt_cols tc
+		LEFT JOIN session_import_column ic
+			ON ic.wwwsession = @sess
+			AND ic.table_id = @table_id
+			AND ic.column_name COLLATE DATABASE_DEFAULT = tc.colname
+		WHERE ic.column_id IS NULL
+		  AND tc.nulls = 'not null'
+		  AND tc.default_syntax = 'null'
+		ORDER BY tc.colid;
+
+		IF @missing_not_null IS NOT NULL
+		BEGIN
+			RAISERROR('p_csv_fill_table: Sloupec "%s" v cílové tabulce "%s" není v CSV bloku "%s" a nepovoluje NULL.', 16, 1, @missing_not_null, @target_table, @csv_table_name);
+			RETURN -1;
+		END
 	END
 
 	-- Pokud má tabulka v CSV 0 datových řádků, neprovádíme INSERT a vrátíme 0
@@ -147,17 +161,27 @@ BEGIN
 		RETURN 0;
 	END
 
-	-- 6. Sestavení seznamu společných sloupců a typově bezpečných konverzních výrazů
+	-- 6. Sestavení seznamu společných sloupců (a u #temp tabulek i chybějících NOT NULL sloupců)
 	DECLARE @insert_cols varchar(max) = '';
 	DECLARE @select_exprs varchar(max) = '';
 	DECLARE @col_ids_list varchar(max) = '';
 
 	SELECT
 		@insert_cols = @insert_cols + ', [' + tc.colname + ']',
-		@col_ids_list = @col_ids_list + ',' + CAST(ic.column_id AS varchar(20)),
+		@col_ids_list = @col_ids_list + CASE WHEN ic.column_id IS NOT NULL THEN ',' + CAST(ic.column_id AS varchar(20)) ELSE '' END,
 		@select_exprs = @select_exprs + ',' + CHAR(13) + CHAR(10) + CHAR(9) +
 			CASE
-				-- UUID / UNIQUEIDENTIFIER (včetně podpory zápisu '0x00')
+				-- A) Sloupec není v CSV, ale v #dočasné tabulce je NOT NULL bez DEFAULTu -> dosadíme typový default
+				WHEN ic.column_id IS NULL THEN
+					CASE
+						WHEN tc.typename IN ('uuid', 'uniqueidentifier') THEN 'CAST(0x00 AS uniqueidentifier)'
+						WHEN tc.typename IN ('bit', 'boolean') THEN 'CAST(0 AS bit)'
+						WHEN tc.typename IN ('int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '0'
+						WHEN tc.typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN '''1970-01-01'''
+						WHEN tc.typename IN ('varbinary', 'binary', 'image') THEN '0x'
+						ELSE ''''''
+					END
+				-- B) Sloupec je v CSV: UUID / UNIQUEIDENTIFIER (včetně podpory zápisu '0x00')
 				WHEN tc.typename IN ('uuid', 'uniqueidentifier') THEN
 					CASE WHEN tc.nulls = 'not null'
 						THEN 'ISNULL(CASE WHEN ' + v.raw_val + ' IN (''0x00'', ''00000000-0000-0000-0000-000000000000'') THEN CAST(0x00 AS uniqueidentifier) ELSE TRY_CONVERT(uniqueidentifier, NULLIF(' + v.raw_val + ', '''')) END, CAST(0x00 AS uniqueidentifier))'
@@ -192,16 +216,19 @@ BEGIN
 					END
 			END + ' AS [' + tc.colname + ']'
 	FROM #tgt_cols tc
-	JOIN session_import_column ic
+	LEFT JOIN session_import_column ic
 		ON ic.wwwsession = @sess
 		AND ic.table_id = @table_id
 		AND ic.column_name COLLATE DATABASE_DEFAULT = tc.colname
-	CROSS APPLY (
+	OUTER APPLY (
 		SELECT 'MAX(CASE WHEN d.column_id = ' + CAST(ic.column_id AS varchar(20)) + ' THEN d.cell_value END)' AS raw_val
+		WHERE ic.column_id IS NOT NULL
 	) v
+	WHERE ic.column_id IS NOT NULL
+	   OR (@is_temp_target = 1 AND tc.nulls = 'not null' AND tc.default_syntax = 'null')
 	ORDER BY tc.colid;
 
-	IF @insert_cols = ''
+	IF @col_ids_list = ''
 	BEGIN
 		RAISERROR('p_csv_fill_table: Mezi cílovou tabulkou "%s" a CSV blokem "%s" nebyl nalezen žádný společný sloupec.', 16, 1, @target_table, @csv_table_name);
 		RETURN -1;

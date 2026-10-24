@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-22 16:30
+ * Verze: 2026-10-24 13:15
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -20,16 +20,15 @@ GO
  *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
  *
  * Změny:
+ * - 2026-10-24 13:15: V sekci 5b doplněno automatické napojení rekurzivní vazby
+ *   referenced_class = parent_class pro sloupce s názvem parent_uuid (např. v meta_menu
+ *   a asset_class), aby entity_manager automaticky generoval stromovou roletku <select>.
  * - 2026-10-22 16:30: Přidán sloupec shortname do #list_order (pro přehledné zobrazení
  *   zkratky v levém panelu organizací a tříd aktiv) a skryty interní sloupce loga
  *   (logo_data, logo_filename, logo_mime_type) v sys_global_columns.
  * - 2026-10-21 14:25: Odstraněny opuštěné záznamy sloupců iconname, svg_code a svg_name
  *   z meta_column (sjednoceno na svg_icon). Odstraněna trojitá duplicita výpočtu
  *   vlastností sloupců z v_syscolumns pomocí dočasné tabulky #syscol_attr.
- * - 2026-10-20 15:00: Pro sloupec svg_icon v globálním slovníku nastaveno hidden = 0
- *   a is_protected = 1 pro neredigovatelný vizuální náhled ikony.
- * - 2026-10-17 00:50: Doplněno automatické idempotentní vytvoření sloupců
- *   draft_author, approval_note a import_origin + unikátního indexu uq_*_draft.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -413,7 +412,7 @@ BEGIN
 	  AND column_name = 'svg_icon';
 
 	-- -------------------------------------------------------------------------
-	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class V GLOBÁLNÍM SLOVNÍKU
+	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class V GLOBÁLNÍM SLOVNÍKU A STROMECH
 	--     Zajistí automatické vykreslení <select> prvků v entity_manageru.
 	-- -------------------------------------------------------------------------
 	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
@@ -442,6 +441,15 @@ BEGIN
 	  AND object_owner = 0x00
 	  AND record_type = 'A'
 	  AND column_name = 'ancestor'
+	  AND referenced_class IS NULL;
+
+	-- Rekurzivní stromová vazba parent_uuid vždy odkazuje na vlastní logickou třídu (např. meta_menu, asset_class)
+	UPDATE meta_column
+	SET referenced_class = parent_class
+	WHERE parent_class <> @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name = 'parent_uuid'
 	  AND referenced_class IS NULL;
 
 	-- -------------------------------------------------------------------------

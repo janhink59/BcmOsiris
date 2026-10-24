@@ -108,7 +108,7 @@ foreach ($manifestLines as $line) {
 	$command=explode("=",$line);
 	if(count($command)==2 AND $command[0]=="output") {
 		close_output();
-		echo "\nZměna výstupního souboru\n";
+		echo "\nZmena vystupniho souboru\n";
 		$outputFile=$command[1];
 		open_output();
 		continue;

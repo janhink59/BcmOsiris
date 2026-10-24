@@ -5,6 +5,7 @@ table_user_session.sql
 table_*.sql
 f_*.sql
 fillup_meta_original_keys.sql
+fillup_*.sql
 generate_trgo.sql
 v_*.sql
 output=BcmOsirisDb2.txt

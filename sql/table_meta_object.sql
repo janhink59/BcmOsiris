@@ -1,21 +1,19 @@
 /* =============================================================================
- * Verze: 2026-10-23 16:20
+ * Verze: 2026-10-24 13:15
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
- * Popis:   Uchovává metadata fyzických objektů v databázi (tabulky, views, funkce, stránky).
+ * Popis:   DDL definice tabulky pro metadata fyzických objektů v databázi
+ *          (tabulky, views, funkce, stránky a systémové kontejnery).
+ *          Prvotní naplnění systémových záznamů typu 'P' je vyčleněno do
+ *          samostatného skriptu fillup_meta_object.sql.
  * Vazby:   - Slouží jako fyzický podklad (storage_object) pro logické třídy v meta_class.
  *          - Záznamy typu 'P' (PHP Page / třída) jsou odkazovány z meta_menu.target_object,
  *            slouží k řízení přístupu přes sloupec system_role a představují platné
  *            zdrojové objekty (source_code) pro textové fráze v tabulce meta_phrase.
- *          - Plněno automaticky procedurou p_fix_meta_column (typy T, V, F, C)
- *            a hromadným importem přes p_xlsx_meta_object nebo p_csv_import_metadata.
- * Změny:   - 2026-10-23 16:20: Zaregistrovány třídy abstract_csv_package,
- *            csv_package_metadata a stránka page_csv_package pro přenos CSV/TSV balíčků.
- *          - 2026-10-22 16:15: Zaregistrována stránka page_organization pro správu
- *            a editaci existujících organizací (system_role = 'S').
- *          - 2026-10-21 15:05: Zaregistrována samostatná stránka page_xlsx_export_meta.
- *          - 2026-10-20 11:25: Bezejmenný záznam '' pro globální fráze nahrazen řádnou
- *            PHP třídou 'global_phrase' a původní záznam '' idempotentně odstraněn.
+ *          - Plněno skriptem fillup_meta_object.sql, procedurou p_fix_meta_column
+ *            (typy T, V, F, C) a importy p_xlsx_meta_object / p_csv_import_metadata.
+ * Změny:   - 2026-10-24 13:15: Oddělení DDL struktury od datového plnění
+ *            (plnění přesunuto do souboru fillup_meta_object.sql).
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -95,7 +93,7 @@ EXEC p_create_missing_column 'meta_object', 'approval_note', 'varchar(max) NOT N
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajištění RAC architektury
+-- Indexy pro zajištění RAC a SSC architektury
 -- -----------------------------------------------------------------------------
 EXEC sp_create_index 
 	@tname = 'meta_object', 
@@ -113,99 +111,10 @@ EXEC sp_create_index
 	@options = 'WHERE record_type = ''L'' AND removed = 0';
 GO
 
--- -----------------------------------------------------------------------------
--- Vyčištění zastaralých systémových záznamů (fráze 'G', bezejmenný '' a stránky bez prefixu 'page_')
--- -----------------------------------------------------------------------------
-DELETE FROM meta_object
-WHERE object_owner = 0x00
-  AND (
-	object_type = 'G'
-	OR (
-		object_type = 'P'
-		AND builtin_code IN (
-			'', 'excel_reader', 'main', 'meta_class', 'meta_column',
-			'organization_licence', 'org_users', 'change_user_context', 'logout'
-		)
-	)
-  );
-GO
-
-/* =============================================================================
- * REGISTRACE SYSTÉMOVÝCH STRÁNEK A UI TŘÍD DO METADAT
- * Účel: Zajišťuje, aby všechny systémové stránky a UI třídy měly v meta_object
- *       jak hlavní 'A' záznam, tak symetrický 'L' záznam.
- * ============================================================================= */
-DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
-
-DECLARE @pages TABLE (builtin_code varchar(80), caption varchar(200), description varchar(max), system_role varchar(1));
-INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES 
-('global_phrase', 'Globální fráze systému', 'Třída a kontejner pro celosystémové textové fráze a sdílené popisky', 'U'),
-('abstract_page', 'Základní šablona stránky', 'Abstraktní předek všech stránek zajišťující hlavičku, kontext a ochranu formulářů', 'U'),
-('abstract_page_master_detail', 'Šablona Master-Detail', 'Abstraktní dvoupanelová šablona pro správu entit', 'U'),
-('abstract_button', 'Komponenta tlačítka', 'Základní třída pro vykreslování tlačítek s ikonou a tooltipem', 'U'),
-('abstract_csv_package', 'Abstraktní CSV/TSV balíček', 'Základní třída pro export a dvoufázový import víceblokových CSV/TSV balíčků', 'U'),
-('csv_package_metadata', 'CSV/TSV balíček systémových metadat', 'Definice a filtry pro přenos systémových metadat mezi instancemi', 'U'),
-('user_context', 'Kontextový panel uživatele', 'Horní lišta s informacemi o přihlášeném uživateli, roli a volbou jazyka', 'U'),
-('menu_manager', 'Správce navigace', 'Třída pro sestavení a vykreslení drobečkové navigace a menu', 'U'),
-('entity_manager', 'Správce logických entit', 'Dynamický generátor SQL dotazů, seznamů a formulářů podle metadat', 'U'),
-('page_main', 'Hlavní panel', 'Úvodní rozcestník aplikace po přihlášení', 'U'),
-('page_meta_class', 'Logické třídy (Objekty)', 'Správa logických entit, jejich vlastností a překladů', 'U'),
-('page_meta_column', 'Sloupce metadat', 'Správa definic sloupců, formulářových prvků a překladů', 'U'),
-('page_meta_phrase', 'Textové fráze a překlady', 'Správa textových frází, tlačítek a jazykových mutací', 'U'),
-('page_approval', 'Schvalování změn', 'Přehled, porovnání a schvalování navržených záznamů napříč třídami', 'U'),
-('page_organization', 'Správa organizací', 'Přehled a editace klientských organizací a jejich nastavení', 'S'),
-('page_organization_licence', 'Správa licencí organizací', 'Evidence a aktivace licencí pro jednotlivé tenanty', 'S'),
-('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
-('page_excel_reader', 'Import dat z Excelu', 'Nástroj pro hromadný import a distribuci datových struktur z Excelu', 'S'),
-('page_xlsx_export_meta', 'Export metadat do Excelu', 'Nástroj pro zpětný export systémových metadat do souboru XLSX', 'S'),
-('page_csv_package', 'Přenos balíčků (CSV/TSV)', 'Nástroj pro export a dvoufázový import datových balíčků ve formátu TSV/CSV', 'S'),
-('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace, aplikační role a žádosti o přístup', 'U'),
-('page_login', 'Přihlášení do systému', 'Přihlašovací obrazovka s podporou lokální autentizace a SSO', 'U'),
-('page_password_reset', 'Obnova hesla', 'Stránka pro vyžádání a nastavení nového hesla pomocí tokenu', 'U'),
-('page_google_callback', 'Google SSO Callback', 'Koncový bod pro ověření identity přes Google OAuth', 'U'),
-('page_logout', 'Odhlášení ze systému', 'Ukončení relace a zneplatnění přihlašovacích tokenů', 'U');
-
--- 1. Idempotentní vložení hlavních 'A' záznamů
-INSERT INTO meta_object (
-	uuid, object_owner, original, record_type, approval_status, [language],
-	object_type, builtin_code, system_role, caption, description, module
-)
-SELECT 
-	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
-	@sys_owner,
-	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
-	'A', 'A', 'cs', 'P', p.builtin_code, p.system_role, p.caption, p.description, ''
-FROM @pages p
-WHERE NOT EXISTS (
-	SELECT 1 FROM meta_object mo 
-	WHERE mo.original = dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code)
-	  AND mo.record_type = 'A' AND mo.object_owner = @sys_owner AND mo.removed = 0
-);
-
--- 2. Idempotentní vložení symetrických 'L' záznamů pro výchozí jazyk ('cs')
-INSERT INTO meta_object (
-	uuid, object_owner, original, record_type, approval_status, [language],
-	object_type, builtin_code, system_role, caption, description, module
-)
-SELECT 
-	NEWID(),
-	@sys_owner,
-	dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code),
-	'L', 'A', 'cs', 'P', p.builtin_code, p.system_role, p.caption, p.description, ''
-FROM @pages p
-WHERE NOT EXISTS (
-	SELECT 1 FROM meta_object mo 
-	WHERE mo.original = dbo.f_generate_original('meta_object', @sys_owner, 'P', p.builtin_code)
-	  AND mo.record_type = 'L' AND mo.[language] = 'cs' AND mo.object_owner = @sys_owner AND mo.removed = 0
-);
-
--- 3. Idempotentní sjednocení system_role u stávajících systémových záznamů
-UPDATE mo
-SET mo.system_role = p.system_role
-FROM meta_object mo
-JOIN @pages p ON p.builtin_code = mo.builtin_code
-WHERE mo.object_owner = @sys_owner
-  AND mo.object_type = 'P'
-  AND mo.record_type IN ('A', 'L')
-  AND mo.system_role <> p.system_role;
+EXEC sp_create_index 
+	@tname = 'meta_object', 
+	@iname = 'uq_meta_object_draft', 
+	@colnames = 'original, object_owner, language, draft_author', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''D'' AND removed = 0';
 GO

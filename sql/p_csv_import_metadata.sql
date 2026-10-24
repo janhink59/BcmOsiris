@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-23 16:20
+ * Verze: 2026-10-24 11:30
  * Soubor: p_csv_import_metadata.sql
  * Procedura: dbo.p_csv_import_metadata
  * Účel:   Zpracování Fáze 2 dvoufázového CSV/TSV importu pro balíček "metadata".
@@ -13,6 +13,12 @@
  * - Využívá funkci dbo.f_syscolumns (HinkMSSQLLibrary.sql) pro dynamické sestavení
  *   porovnávacích a aktualizačních seznamů sloupců.
  * - Zapisuje průběžné zprávy do tabulky request_message přes insert_request_message.
+ *
+ * Změny:
+ * - 2026-10-24 11:30: Oprava chyby "Must declare the scalar variable @s_cols_prefixed"
+ *   (proměnná @s_cols_prefixed řádně deklarována a naplněna před sestavením @sql).
+ *   Do seznamu vynechaných technických sloupců doplněny valid_from, valid_to,
+ *   is_template a template.
  * ============================================================================= */
 
 EXECUTE dropni 'p_csv_import_metadata', 'P';
@@ -92,6 +98,7 @@ BEGIN
 		DECLARE @t_cols nvarchar(max) = N'';
 		DECLARE @s_cols nvarchar(max) = N'';
 		DECLARE @ins_cols nvarchar(max) = N'';
+		DECLARE @s_cols_prefixed nvarchar(max) = N'';
 
 		-- Sestavení seznamů datových sloupců pro Delta UPDATE (EXCEPT) a INSERT
 		SELECT
@@ -105,13 +112,15 @@ BEGIN
 		  AND colname NOT IN (
 			'uuid', 'object_owner', 'original', 'record_type', 'approval_status',
 			'draft_author', 'approval_note', 'import_origin',
+			'valid_from', 'valid_to', 'is_template', 'template',
 			'date_created', 'who_created', 'date_modified', 'who_modified'
 		  )
 		ORDER BY colid;
 
-		SET @set_list = SUBSTRING(@set_list, 3, 2000000);
-		SET @t_cols   = SUBSTRING(@t_cols, 3, 2000000);
-		SET @s_cols   = SUBSTRING(@s_cols, 3, 2000000);
+		SET @set_list        = SUBSTRING(@set_list, 3, 2000000);
+		SET @t_cols          = SUBSTRING(@t_cols, 3, 2000000);
+		SET @s_cols          = SUBSTRING(@s_cols, 3, 2000000);
+		SET @s_cols_prefixed = N', ' + @s_cols;
 
 		DECLARE @sql nvarchar(max) = N'
 		DECLARE @changed_a int = 0, @changed_l int = 0;
@@ -213,9 +222,6 @@ BEGIN
 		DECLARE @total_chg int = @changed_a + @changed_l;
 		EXEC insert_request_message ''Tabulka metadat zpracována (změněné/nové záznamy A+L)'', 1, @intvalue = @total_chg, @obj_type = ''Tabulka'', @obj_name = @p_tab;
 		';
-
-		-- Nahrazení zástupného řetězce pro sloupce v SELECT části INSERTu
-		SET @sql = REPLACE(@sql, N'@s_cols_prefixed', N', ' + @s_cols);
 
 		EXEC sp_executesql
 			@stmt = @sql,
