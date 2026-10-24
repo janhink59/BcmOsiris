@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-24 14:35
+ * Verze: 2026-10-24 20:05
  * Soubor: abstract_csv_package.php
  * Třída: abstract_csv_package
  * Účel: Abstraktní předek pro víceblokový CSV export a dvoufázový import
@@ -27,13 +27,14 @@
  *   pomocí `p_csv_fill_table` a `dbo.f_csv_param` zpracuje načtená data.
  *
  * Změny:
+ * 2026-10-24 20:05 - Doplněna normalizace parametru `version_date` přes `date_from_string()`
+ *                    při výpočtu HMAC podpisu, aby přeformátování data v MS Excelu
+ *                    při uložení souboru (`verify_data = 0`) nezneplatnilo podpis hlavičky.
  * 2026-10-24 14:35 - Změna výchozího oddělovače na středník `;` a přípony na `.csv`
  *                    pro přímou kontrolu a úpravy v MS Excelu.
- *                  - Zjišťování názvů sloupců při exportu přímo přes `sqlsrv_field_metadata()`
- *                    (garantuje přesnou hlavičku ze SELECT dotazu i u prázdných tabulek).
+ *                  - Zjišťování názvů sloupců při exportu přímo přes `sqlsrv_field_metadata()`.
  *                  - Plnění `session_import_*` v `load_file_to_session()` obaleno transakcí
  *                    `BEGIN TRAN ... COMMIT` s dávkovým vkládáním buněk.
- *                  - Rozšířena automatická detekce oddělovače při importu o středník `;`.
  * =============================================================================
  */
 
@@ -208,6 +209,23 @@ abstract class abstract_csv_package {
 	}
 
 	/**
+	 * Normalizuje hodnotu hlavičkového parametru před vložením do HMAC-SHA256.
+	 * U parametru `version_date` sjednotí formát data na `YYYY-MM-DD HH:MM`,
+	 * aby přeformátování buňky v MS Excelu (např. na `24.10.2026 14:35`) při
+	 * uložení souboru s `verify_data = 0` nerozbilo podpis hlavičky.
+	 */
+	protected function normalize_param_for_hmac(string $param_code, string $val): string { // Normalizace parametru pro podpis
+		$trimmed = trim($val);                                               // Oříznutí okrajových mezer
+		if ($param_code === 'version_date' AND $trimmed !== '') {            // Speciální ošetření časového razítka verze
+			$parsed = date_from_string($trimmed);                            // Převod českého i ISO data na YYYY-MM-DD HH:MM:SS
+			if (is_string($parsed) AND strlen($parsed) >= 16) {              // Pokud se datum podařilo rozpoznat
+				return substr($parsed, 0, 16);                               // Sjednocení na minuty (YYYY-MM-DD HH:MM)
+			}
+		}
+		return $trimmed;                                                     // Ostatní parametry vracíme očištěné od okrajových mezer
+	}
+
+	/**
 	 * Vykreslí vstupní <div> s formulářem pro zadání parametrů exportu balíčku.
 	 *
 	 * @param string $form_action Cílová URL adresa formuláře
@@ -281,7 +299,7 @@ HTML;
 		}
 
 		$verify_data = ((string)($this->params['verify_data'] ?? '1') === '1') ? '1' : '0'; // Zda se podepisují i data
-		$version_date = date('Y-m-d H:i:s');                                 // Časové razítko exportu
+		$version_date = date('Y-m-d H:i');                                   // Časové razítko exportu (s přesností na minuty kvůli Excelu)
 
 		// 1. Sestavení uspořádaného seznamu parametrů pro 1. blok souboru
 		$header_params = [                                                   // Základní identifikační parametry balíčku
@@ -300,7 +318,8 @@ HTML;
 		$hmac_ctx = hash_init('sha256', HASH_HMAC, $this->get_hmac_secret()); // Inicializace HMAC výpočtu
 		foreach ($header_params as $pk => $pv) {                             // Zařazení parametrů do podpisu
 			if ($pk !== 'target_status') {                                   // target_status smí uživatel při importu změnit
-				hash_update($hmac_ctx, "P:{$pk}={$pv}\n");                   // Přidání parametru do HMAC
+				$norm_pv = $this->normalize_param_for_hmac((string)$pk, (string)$pv); // Normalizace hodnoty pro HMAC
+				hash_update($hmac_ctx, "P:{$pk}={$norm_pv}\n");              // Přidání parametru do HMAC
 			}
 		}
 
@@ -445,7 +464,7 @@ HTML;
 		$current_table = '';                                                 // Název právě čtené tabulky
 		$current_cols = [];                                                  // Mapa sloupců aktuální tabulky: [index => ['id' => ..., 'name' => ...]]
 		$current_row_id = 0;                                                 // Pořadové číslo řádku v aktuální tabulce
-		$pending_cells = [];                                                 // Buffer buněk aktualní tabulky pro dávkový INSERT
+		$pending_cells = [];                                                 // Buffer buněk aktuální tabulky pro dávkový INSERT
 
 		$hmac_header_ctx = hash_init('sha256', HASH_HMAC, $this->get_hmac_secret()); // HMAC pouze pro hlavičku
 		$hmac_full_ctx = hash_init('sha256', HASH_HMAC, $this->get_hmac_secret());   // HMAC pro hlavičku i data
@@ -493,8 +512,9 @@ HTML;
 				sqlrun("INSERT INTO session_import_parameter (wwwsession, param_order, parameter_code, parameter_value) VALUES ({$safe_sid}, {$param_order}, {$safe_pk}, {$safe_pv})"); // Uložení parametru
 
 				if ($p_key !== 'signature' AND $p_key !== 'target_status') { // Do HMAC vstupují všechny podepsané parametry
-					hash_update($hmac_header_ctx, "P:{$p_key}={$p_val}\n");  // Aktualizace hlavičkového HMAC
-					hash_update($hmac_full_ctx, "P:{$p_key}={$p_val}\n");    // Aktualizace plného HMAC
+					$norm_pv = $this->normalize_param_for_hmac($p_key, $p_val); // Normalizace hodnoty (např. version_date po uložení v Excelu)
+					hash_update($hmac_header_ctx, "P:{$p_key}={$norm_pv}\n"); // Aktualizace hlavičkového HMAC
+					hash_update($hmac_full_ctx, "P:{$p_key}={$norm_pv}\n");  // Aktualizace plného HMAC
 				}
 			} elseif ($state === 'TABLE_WAIT') {                             // Očekáváme řádek s názvem tabulky
 				$current_table = trim((string)($row[0] ?? ''));              // Název tabulky z první buňky
