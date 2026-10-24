@@ -1,5 +1,6 @@
 config.php
 OsirisLib.php
+BuildListPhp.txt
 a*.php
 b*.php
 csv_*.php
@@ -12,6 +13,7 @@ l*.php
 m*.php
 output=BcmOsirisPhp3.txt
 p*.php
+output=BcmOsirisPhp4.txt
 r*.php
 s*.php
 u*.php

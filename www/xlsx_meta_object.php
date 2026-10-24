@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-21 15:40
+ * Verze: 2026-10-24 23:50
  * Soubor: xlsx_meta_object.php
  * Třída: xlsx_meta_object
  * Účel: Konfigurační a validační třída importního balíčku "meta_object"
@@ -25,6 +25,8 @@
  *   odstranit stříšky < > a porovnat hodnoty s předkem.
  *
  * Změny:
+ * 2026-10-24 23:50 - Na záložce class doplněna podpora pro sloupec days_in_trash
+ *                    (při zachování zpětné kompatibility se staršími sešity XLSX).
  * 2026-10-21 15:40 - Ze záložek menu, phrase a class vyřazena validace sloupce svg_icon
  *                    (vektorové ikony se z Excelu neimportují ani neaktualizují).
  * 2026-10-20 11:35 - Doplnění sloupce removed na všechny záložky (page, menu,
@@ -101,11 +103,15 @@ class xlsx_meta_object extends xlsx_abstract {
 
 		// 4. Validace záložky "class" (logické třídy -> tabulka meta_class, bez svg_icon), pokud je v sešitu přítomna
 		if (array_key_exists('class', $this->reader->data)) { // Kontrola přítomnosti záložky class v XLSX
-			$this->setDataType(                             // Registrace všech sloupců záložky class jako varchar (kvůli <stříškám>)
+			$this->setDataType(                             // Registrace povinných sloupců záložky class jako varchar (kvůli <stříškám>)
 				'class_name,storage_type,storage_code,ancestor_code,sort_code,is_final,is_protected,inactive,removed,editor_note,caption,caption_plural,description,helptext,caption_l,caption_plural_l,description_l,helptext_l',
 				'varchar',
 				'class'
 			);
+			$cls_cols = $this->reader->data['class']['column_list'] ?? [];   // Seznam sloupců přítomných na záložce class
+			if (in_array('days_in_trash', $cls_cols, true)) {                // Pokud sešit obsahuje sloupec days_in_trash
+				$this->setDataType('days_in_trash', 'varchar', 'class');     // Registrace sloupce days_in_trash
+			}
 		}
 
 		// 5. Validace záložky "column" (sloupce metadat -> tabulka meta_column), pokud je v sešitu přítomna

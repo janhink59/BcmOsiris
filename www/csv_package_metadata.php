@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-24 20:05
+ * Verze: 2026-10-24 23:50
  * Soubor: csv_package_metadata.php
  * Třída: csv_package_metadata
  * Účel: Konkrétní implementace CSV balíčku "metadata" pro přenos kompletních
@@ -18,6 +18,7 @@
  * - Ve Fázi 2 importu volá uloženou proceduru `p_csv_import_metadata`.
  *
  * Změny:
+ * 2026-10-24 23:50 - Do exportního dotazu tabulky meta_class doplněn sloupec days_in_trash.
  * 2026-10-24 20:05 - Odstraněny filtrační parametry `language_filter` a `class_filter`.
  *                    Balíček vždy exportuje kompletní systémová metadata ve všech jazycích.
  * =============================================================================
@@ -62,7 +63,7 @@ class csv_package_metadata extends abstract_csv_package {
 				ORDER BY object_type, builtin_code, record_type, [language]
 			",
 			'meta_class' => "
-				SELECT uuid, original, record_type, [language], inactive, removed, class_name, storage_object, ancestor_class, sort_code, svg_icon, is_final, is_protected, caption, caption_plural, description, helptext, editor_note
+				SELECT uuid, original, record_type, [language], inactive, removed, class_name, storage_object, ancestor_class, sort_code, days_in_trash, svg_icon, is_final, is_protected, caption, caption_plural, description, helptext, editor_note
 				FROM meta_class
 				WHERE object_owner = 0x00 AND record_type IN ('A', 'L')
 				ORDER BY CASE WHEN class_name = 'sys_global_columns' THEN 0 ELSE 1 END, class_name, record_type, [language]

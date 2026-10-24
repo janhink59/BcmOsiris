@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-21 15:40
+ * Verze: 2026-10-24 23:50
  * Soubor: page_xlsx_export_meta.php
  * Třída: page_xlsx_export_meta
  * Účel: Samostatná stránka pro zpětný export systémových metadat (meta_object,
@@ -11,7 +11,7 @@
  *
  * Vazby na okolí:
  * - Instancována dynamicky z index.php při požadavku ?page=page_xlsx_export_meta.
- * - Dědí z abstract_page (využívá $this->page_title, $this->access_denied,
+ * - Dědí z abstract_page (využívá $this->page_title,$this->access_denied,
  *   $this->phrase(), parent::render() a implementuje render_body()).
  * - Využívá komponentu abstract_button pro vykreslení tlačítek.
  * - Čte číselník [language] a systémové záznamy (object_owner = 0x00) z tabulek
@@ -23,6 +23,13 @@
  *   ve sloupcích s příponou _l (pokud je definován second_language) uzavírá <do stříšek>.
  *
  * Změny:
+ * 2026-10-24 23:50 - Sjednocení vyhodnocení příznaku removed při exportu s kontrolami
+ *                    v p_xlsx_meta_object: pokud je hlavní 'A' záznam neplatný (removed = 1)
+ *                    nebo v DB neexistuje či je zrušen jeho nadřízený/úložný objekt
+ *                    (storage_object u tříd, nadřízená třída u sloupců, source_code u frází,
+ *                    parent_uuid či target_object u menu), vyexportuje se vždy removed = 1
+ *                    bez ohledu na stav překladu l2.removed.
+ *                  - Na záložku class doplněn sloupec days_in_trash.
  * 2026-10-21 15:40 - Ze záložek menu, phrase a class vyřazen sloupec svg_icon
  *                    (vektorové ikony se neexportují do Excelu ani z něj neimportují).
  * 2026-10-21 15:00 - Vytvoření samostatné stránky vyčleněním z page_excel_reader.php.
@@ -219,7 +226,11 @@ HTML;
 
 		$pages_rows = sqlarray_simple("
 			SELECT a.builtin_code, a.system_role, a.module, a.inactive,
-				CASE WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed ELSE a.removed END AS removed,
+				CASE
+					WHEN a.removed = 1 THEN 1
+					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
+					ELSE 0
+				END AS removed,
 				ISNULL(a.editor_note, '') AS editor_note,
 				COALESCE(NULLIF(l1.caption, ''), a.caption, '') AS caption,
 				COALESCE(NULLIF(l1.description, ''), a.description, '') AS description,
@@ -261,7 +272,13 @@ HTML;
 		$menu_rows = sqlarray_simple("
 			SELECT m.builtin_code, ISNULL(pm.builtin_code, '') AS parent_code, m.sort_code, ISNULL(mo.builtin_code, '') AS target_page,
 				m.url_parameters, m.target_url, m.target_window, m.system_role, m.permanent,
-				CASE WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed ELSE m.removed END AS removed,
+				CASE
+					WHEN m.removed = 1 THEN 1
+					WHEN m.parent_uuid IS NOT NULL AND (pm.original IS NULL OR pm.removed = 1) THEN 1
+					WHEN m.target_object IS NOT NULL AND (mo.original IS NULL OR mo.removed = 1) THEN 1
+					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
+					ELSE 0
+				END AS removed,
 				m.css_class, ISNULL(m.editor_note, '') AS editor_note,
 				COALESCE(NULLIF(l1.caption, ''), m.caption, '') AS caption,
 				COALESCE(NULLIF(l1.description, ''), m.description, '') AS description,
@@ -307,17 +324,26 @@ HTML;
 		$phrase_rows = sqlarray_simple("
 			SELECT CASE WHEN ISNULL(LTRIM(RTRIM(a.source_code)), '') = '' THEN 'global_phrase' ELSE a.source_code END AS source_code,
 				a.builtin_code, a.module, a.css_class, a.inactive,
-				CASE WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed ELSE a.removed END AS removed,
+				CASE
+					WHEN a.removed = 1 THEN 1
+					WHEN mo.original IS NULL OR mo.removed = 1 THEN 1
+					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
+					ELSE 0
+				END AS removed,
 				ISNULL(a.editor_note, '') AS editor_note,
 				COALESCE(NULLIF(CAST(l1.caption AS NVARCHAR(MAX)), ''), CAST(a.caption AS NVARCHAR(MAX)), '') AS caption,
 				COALESCE(NULLIF(CAST(l1.helptext AS NVARCHAR(MAX)), ''), CAST(a.helptext AS NVARCHAR(MAX)), '') AS helptext,
 				CAST(l2.caption AS NVARCHAR(MAX)) AS own_caption_l, CAST(l2.helptext AS NVARCHAR(MAX)) AS own_helptext_l
 			FROM meta_phrase a
+			LEFT JOIN meta_object mo
+				ON mo.original = dbo.f_generate_original('meta_object', CAST(0x00 AS uniqueidentifier), 'P', CASE WHEN ISNULL(LTRIM(RTRIM(a.source_code)), '') = '' THEN 'global_phrase' ELSE LTRIM(RTRIM(a.source_code)) END)
+				AND mo.object_owner = 0x00
+				AND mo.record_type = 'A'
 			LEFT JOIN meta_phrase l1 ON l1.original = a.original AND l1.object_owner = 0x00 AND l1.record_type = 'L' AND l1.[language] = {$safe_lang} AND l1.removed = 0
 			LEFT JOIN meta_phrase l2 ON l2.original = a.original AND l2.object_owner = 0x00 AND l2.record_type = 'L' AND l2.[language] = {$safe_sec_lang} AND {$safe_sec_lang} <> ''
 			WHERE a.object_owner = 0x00 AND a.record_type = 'A'
 			ORDER BY CASE WHEN ISNULL(LTRIM(RTRIM(a.source_code)), '') IN ('', 'global_phrase') THEN 0 ELSE 1 END, a.source_code, a.builtin_code
-		");                                             // Načtení všech systémových frází (bez svg_icon)
+		");                                             // Načtení všech systémových frází s kontrolou platnosti source_code
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce phrase
 		if (is_array($phrase_rows)) {                   // Kontrola platného pole frází
@@ -338,19 +364,19 @@ HTML;
 		}
 
 		// =====================================================================
-		// 5. Záložka class (tabulka meta_class – bez sloupce svg_icon)
+		// 5. Záložka class (tabulka meta_class – včetně days_in_trash, bez svg_icon)
 		// =====================================================================
 		$sheetClass = $spreadsheet->createSheet();      // Založení listu pro logické třídy
 		$sheetClass->setTitle('class');                 // Název záložky class
 		$cls_trans_cols = ['caption', 'caption_plural', 'description', 'helptext']; // Překládané sloupce třídy
-		$classHeaders = [                               // Definice sloupců záložky class (18 sloupců: A až R)
+		$classHeaders = [                               // Definice sloupců záložky class (19 sloupců: A až S)
 			'class_name', 'storage_type', 'storage_code', 'ancestor_code',
-			'sort_code', 'is_final', 'is_protected', 'inactive', 'removed', 'editor_note',
+			'sort_code', 'days_in_trash', 'is_final', 'is_protected', 'inactive', 'removed', 'editor_note',
 			'caption', 'caption_plural', 'description', 'helptext',
 			'caption_l', 'caption_plural_l', 'description_l', 'helptext_l'
 		];                                              // Konec hlaviček záložky class
 		$sheetClass->fromArray($classHeaders, null, 'A1'); // Zápis záhlaví záložky class
-		$this->style_sheet_header($sheetClass, 'A1:I1', 'J1', 'K1:N1', 'O1:R1', 'A1:R1'); // Stylování záhlaví class
+		$this->style_sheet_header($sheetClass, 'A1:J1', 'K1', 'L1:O1', 'P1:S1', 'A1:S1'); // Stylování záhlaví class
 
 		$cls_sel = [];                                  // Dynamické výrazy pro děděné a překládané sloupce třídy
 		foreach ($cls_trans_cols as $tc) {              // Sestavení SELECT výrazů pro překládané sloupce třídy
@@ -362,29 +388,38 @@ HTML;
 		$cls_sel_sql = implode(",\n\t\t\t\t", $cls_sel); // Spojení výrazů do SELECTu
 
 		$class_rows = sqlarray_simple("
-			SELECT c.class_name, ISNULL(mo.object_type, 'T') AS storage_type, ISNULL(mo.builtin_code, c.class_name) AS storage_code,
+			SELECT c.class_name,
+				ISNULL(mo.object_type, CASE WHEN c.class_name LIKE 'v[_]%' OR c.class_name LIKE 'vrepo[_]%' THEN 'V' ELSE 'T' END) AS storage_type,
+				ISNULL(mo.builtin_code, c.class_name) AS storage_code,
 				ISNULL(anc.class_name, '') AS ancestor_code, c.sort_code,
+				ISNULL(c.days_in_trash, 365) AS days_in_trash,
 				c.is_final, c.is_protected, c.inactive,
-				CASE WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed ELSE c.removed END AS removed,
+				CASE
+					WHEN c.removed = 1 THEN 1
+					WHEN mo.original IS NULL OR mo.removed = 1 THEN 1
+					WHEN c.ancestor_class IS NOT NULL AND (anc.original IS NULL OR anc.removed = 1) THEN 1
+					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
+					ELSE 0
+				END AS removed,
 				ISNULL(c.editor_note, '') AS editor_note,
 				{$cls_sel_sql}
 			FROM meta_class c
 			LEFT JOIN meta_object mo ON mo.original = c.storage_object AND mo.object_owner = 0x00 AND mo.record_type = 'A'
-			LEFT JOIN meta_class anc ON anc.original = c.ancestor_class AND anc.object_owner = 0x00 AND anc.record_type = 'A' AND anc.removed = 0
+			LEFT JOIN meta_class anc ON anc.original = c.ancestor_class AND anc.object_owner = 0x00 AND anc.record_type = 'A'
 			LEFT JOIN meta_class l1 ON l1.original = c.original AND l1.object_owner = 0x00 AND l1.record_type = 'L' AND l1.[language] = {$safe_lang} AND l1.removed = 0
 			LEFT JOIN meta_class anc_l1 ON anc_l1.original = anc.original AND anc_l1.object_owner = 0x00 AND anc_l1.record_type = 'L' AND anc_l1.[language] = {$safe_lang} AND anc_l1.removed = 0
 			LEFT JOIN meta_class l2 ON l2.original = c.original AND l2.object_owner = 0x00 AND l2.record_type = 'L' AND l2.[language] = {$safe_sec_lang} AND {$safe_sec_lang} <> ''
 			LEFT JOIN meta_class anc_l2 ON anc_l2.original = anc.original AND anc_l2.object_owner = 0x00 AND anc_l2.record_type = 'L' AND anc_l2.[language] = {$safe_sec_lang} AND anc_l2.removed = 0 AND {$safe_sec_lang} <> ''
 			WHERE c.object_owner = 0x00 AND c.record_type = 'A'
 			ORDER BY CASE WHEN c.class_name = 'sys_global_columns' THEN 0 ELSE 1 END, c.class_name
-		");                                             // Načtení logických tříd včetně předků (bez svg_icon)
+		");                                             // Načtení logických tříd s přísnou kontrolou platnosti storage_object
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce class
 		if (is_array($class_rows)) {                    // Kontrola platného pole tříd
 			foreach ($class_rows as $r) {               // Průchod načtenými třídami
 				$class_vals = [                         // Základní technické sloupce třídy
 					(string)$r['class_name'], (string)$r['storage_type'], (string)$r['storage_code'], (string)$r['ancestor_code'],
-					(string)$r['sort_code'], (int)$r['is_final'], (int)$r['is_protected'], (int)$r['inactive'], (int)$r['removed'], (string)$r['editor_note']
+					(string)$r['sort_code'], (int)$r['days_in_trash'], (int)$r['is_final'], (int)$r['is_protected'], (int)$r['inactive'], (int)$r['removed'], (string)$r['editor_note']
 				];                                      // Konec technických sloupců třídy
 				foreach ($cls_trans_cols as $tc) {      // Přidání sloupců primárního jazyka
 					$class_vals[] = $this->format_inherited_val($r["own_{$tc}"], $r["anc_{$tc}"], true); // Hodnota 1. jazyka
@@ -396,7 +431,7 @@ HTML;
 				$row_idx++;                             // Posun na další řádek
 			}
 		}
-		foreach (range('A', 'R') as $colId) {           // Automatická šířka sloupců na záložce class
+		foreach (range('A', 'S') as $colId) {           // Automatická šířka sloupců na záložce class
 			$sheetClass->getColumnDimension($colId)->setAutoSize(true); // Nastavení auto-size sloupce
 		}
 
@@ -443,10 +478,16 @@ HTML;
 				c.referenced_codetable AS own_ref_codetable, gc.referenced_codetable AS anc_ref_codetable,
 				rc_own.class_name AS own_ref_class_code, rc_anc.class_name AS anc_ref_class_code,
 				c.is_final, c.is_protected, c.inactive,
-				CASE WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed ELSE c.removed END AS removed,
+				CASE
+					WHEN c.removed = 1 THEN 1
+					WHEN mcl.removed = 1 OR mo.original IS NULL OR mo.removed = 1 THEN 1
+					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
+					ELSE 0
+				END AS removed,
 				ISNULL(c.editor_note, '') AS editor_note
 			FROM meta_column c
 			JOIN meta_class mcl ON mcl.original = c.parent_class AND mcl.object_owner = 0x00 AND mcl.record_type = 'A'
+			LEFT JOIN meta_object mo ON mo.original = mcl.storage_object AND mo.object_owner = 0x00 AND mo.record_type = 'A'
 			LEFT JOIN meta_column gc ON gc.original = c.ancestor AND gc.object_owner = 0x00 AND gc.record_type = 'A' AND gc.removed = 0
 			LEFT JOIN meta_class rc_own ON rc_own.original = c.referenced_class AND rc_own.object_owner = 0x00 AND rc_own.record_type = 'A' AND rc_own.removed = 0
 			LEFT JOIN meta_class rc_anc ON rc_anc.original = gc.referenced_class AND rc_anc.object_owner = 0x00 AND rc_anc.record_type = 'A' AND rc_anc.removed = 0
@@ -456,7 +497,7 @@ HTML;
 			LEFT JOIN meta_column gc_l2 ON gc_l2.original = gc.original AND gc_l2.object_owner = 0x00 AND gc_l2.record_type = 'L' AND gc_l2.[language] = {$safe_sec_lang} AND gc_l2.removed = 0 AND {$safe_sec_lang} <> ''
 			WHERE c.object_owner = 0x00 AND c.record_type = 'A'
 			ORDER BY CASE WHEN mcl.class_name = 'sys_global_columns' THEN 0 ELSE 1 END, mcl.class_name, c.parent_order, c.column_name
-		");                                             // Načtení sloupců metadat včetně hodnot zděděných z globálního slovníku
+		");                                             // Načtení sloupců metadat s kontrolou platnosti nadřízené třídy i storage_object
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce column
 		if (is_array($col_rows)) {                      // Kontrola platného pole sloupců

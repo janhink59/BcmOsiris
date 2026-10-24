@@ -1,6 +1,6 @@
 /* =============================================================================
  * Soubor: table_meta_class.sql
- * Verze: 2026-10-21 14:25
+ * Verze: 2026-10-24 23:45
  * Tabulka: meta_class
  * Popis:   Logické třídy (entity) systému. Slouží jako nadstavba nad 
  *          fyzickými objekty (meta_object). Definuje konkrétní třídy 
@@ -15,6 +15,8 @@
  *            a sloupce draft_author a approval_note pro schvalovací cyklus (SSC).
  *          - 2026-10-21 14:25: Sloupec iconname nahrazen sjednoceným sloupcem
  *            svg_icon varchar(max) NULL (včetně idempotentní migrace a odstranění iconname).
+ *          - 2026-10-24 23:45: Přidán sloupec days_in_trash smallint NOT NULL DEFAULT 365
+ *            pro řízení automatického vysypávání koše (removed = 1; 0 = nikdy).
  * ============================================================================= */
 
 if not exists (select * from v_syscolumns where tabname='meta_class' and colname='storage_object')
@@ -63,9 +65,10 @@ CREATE TABLE meta_class(
 	helptext varchar(max) NULL,
 	editor_note varchar(max) NULL,                     -- Sémantický kontext pro překladatele a AI (nepřekládá se)
 	
-	-- Uživatelské rozhraní
+	-- Uživatelské rozhraní a správa životního cyklu
 	svg_icon varchar(max) NULL,                        -- Vektorová ikona SVG pro navigaci a seznamy (NULL = dědí se)
 	sort_code varchar(20) NOT NULL DEFAULT '',         -- Výchozí třídění v hierarchii
+	days_in_trash smallint NOT NULL DEFAULT 365,       -- Počet dnů uchování zrušených záznamů (removed = 1) v koši (0 = nikdy)
 	
 	-- Oprávnění (Vazba na role v rámci tenanta)
 	role_editor uuid NULL,                             -- Odkaz (UUID) na roli oprávněnou k editaci dat této třídy
@@ -88,6 +91,7 @@ EXEC p_create_missing_column 'meta_class', 'editor_note', 'varchar(max) NULL';
 EXEC p_create_missing_column 'meta_class', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
 EXEC p_create_missing_column 'meta_class', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'meta_class', 'svg_icon', 'varchar(max) NULL';
+EXEC p_create_missing_column 'meta_class', 'days_in_trash', 'smallint NOT NULL DEFAULT 365';
 GO
 
 -- Idempotentní migrace a odstranění zastaralého sloupce iconname

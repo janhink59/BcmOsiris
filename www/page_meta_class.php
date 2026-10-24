@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 16:15
+ * Verze: 2026-10-24 23:50
  * Soubor: page_meta_class.php
  * Účel: Editace metadat logických tříd (STI architektura).
  * Nahrazuje původní page_meta_object.php.
@@ -15,6 +15,8 @@
  *   do podřízené stránky `page_meta_column`.
  * 
  * Změny:
+ * 2026-10-24 23:50 - Do technické sekce formuláře ($this->form_groups) doplněn
+ *                    sloupec days_in_trash (počet dnů uchování zrušených záznamů v koši).
  * 2026-10-22 16:15 - Opraveny chybějící mezery před znakem $ a nastaveno $allow_insert = false.
  * 2026-10-21 15:00 - Sloupec iconname ve $form_groups nahrazen sjednoceným svg_icon.
  *                  - Čtení počtu sloupců převedeno ze sqlrun/fetch na sqlfirstrow().
@@ -41,7 +43,7 @@ class page_meta_class extends abstract_page_master_detail {
 
 		$this->form_groups = [                                               // Rozdělení polí do sekcí formuláře
 			$grp_pres => ['caption', 'caption_plural', 'description', 'helptext', 'editor_note'], // Překládané popisky třídy a AI kontext
-			$grp_tech => ['class_name', 'ancestor_class', 'sort_code', 'svg_icon', 'is_final', 'is_protected', 'inactive'] // Technické atributy a SVG ikona
+			$grp_tech => ['class_name', 'ancestor_class', 'sort_code', 'days_in_trash', 'svg_icon', 'is_final', 'is_protected', 'inactive'] // Technické atributy, koš a SVG ikona
 		];                                                                   // Konec definice skupin formuláře
 	}
 

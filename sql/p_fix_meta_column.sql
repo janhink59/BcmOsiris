@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-24 13:15
+ * Verze: 2026-10-24 23:45
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -20,6 +20,13 @@ GO
  *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
  *
  * Změny:
+ * - 2026-10-24 23:45: Osiřelé systémové objekty v meta_object (T, V, F), meta_class
+ *   (např. zrušené pohledy vrepo_*) a meta_column, které již neodpovídají živé
+ *   databázové struktuře v_syscolumns, se označují příznakem removed = 1 s časem
+ *   běhu dávky (date_modified = @batch_time). Naopak pokud se dříve zrušený
+ *   objekt, třída či sloupec v databázi znovu objeví, automaticky se obnoví
+ *   z koše (removed = 0, date_modified = @batch_time).
+ *   Doplněna výchozí česká lokalizace sloupce days_in_trash v sys_global_columns.
  * - 2026-10-24 13:15: V sekci 5b doplněno automatické napojení rekurzivní vazby
  *   referenced_class = parent_class pro sloupce s názvem parent_uuid (např. v meta_menu
  *   a asset_class), aby entity_manager automaticky generoval stromovou roletku <select>.
@@ -36,8 +43,9 @@ BEGIN
 	SET NOCOUNT ON;
 	SET XACT_ABORT ON;
 
-	-- Explicitní definice vlastníka pro zajištění stejného datového typu jako má T-SQL hash
+	-- Explicitní definice vlastníka a jednotného času spuštění dávky
 	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+	DECLARE @batch_time datetime = GETDATE();
 
 	-- -------------------------------------------------------------------------
 	-- PŘÍPRAVA RAC/SSC STRUKTUR: Zajištění sloupců a indexů pro koncepty ('D')
@@ -100,19 +108,19 @@ BEGIN
 	
 	-- 2. Odstranění duplicit objektů (ponecháme vždy ten nejstarší platný)
 	WITH cte AS (
-		SELECT ROW_NUMBER() OVER(PARTITION BY builtin_code, object_type, object_owner, record_type ORDER BY date_created ASC) as rn
+		SELECT ROW_NUMBER() OVER(PARTITION BY builtin_code, object_type, object_owner, record_type ORDER BY removed ASC, date_created ASC) as rn
 		FROM meta_object WHERE object_owner = 0x00 AND record_type = 'A'
 	) DELETE FROM cte WHERE rn > 1;
 
 	-- Odstranění duplicit tříd
 	WITH cte AS (
-		SELECT ROW_NUMBER() OVER(PARTITION BY class_name, object_owner, record_type ORDER BY date_created ASC) as rn
+		SELECT ROW_NUMBER() OVER(PARTITION BY class_name, object_owner, record_type ORDER BY removed ASC, date_created ASC) as rn
 		FROM meta_class WHERE object_owner = 0x00 AND record_type = 'A'
 	) DELETE FROM cte WHERE rn > 1;
 
 	-- Odstranění duplicit sloupců
 	WITH cte AS (
-		SELECT ROW_NUMBER() OVER(PARTITION BY parent_class, column_name, object_owner, record_type ORDER BY date_created ASC) as rn
+		SELECT ROW_NUMBER() OVER(PARTITION BY parent_class, column_name, object_owner, record_type ORDER BY removed ASC, date_created ASC) as rn
 		FROM meta_column WHERE object_owner = 0x00 AND record_type = 'A'
 	) DELETE FROM cte WHERE rn > 1;
 
@@ -125,6 +133,7 @@ BEGIN
 	SELECT 
 		tabname COLLATE DATABASE_DEFAULT AS tabname,
 		object_type COLLATE DATABASE_DEFAULT AS object_type,
+		CASE WHEN object_type = 'U' THEN 'T' WHEN object_type = 'V' THEN 'V' ELSE 'F' END AS meta_obj_type,
 		colid,
 		colname COLLATE DATABASE_DEFAULT AS colname,
 		CASE 
@@ -165,22 +174,49 @@ BEGIN
 	WHERE rn = 1;
 
 	-- -------------------------------------------------------------------------
-	-- 1. SYNCHRONIZACE FYZICKÝCH OBJEKTŮ (T, V, F)
+	-- 1. SYNCHRONIZACE FYZICKÝCH OBJEKTŮ (T, V, F) V TABULCE meta_object
 	-- -------------------------------------------------------------------------
+	-- 1a. Obnova dříve zrušených fyzických objektů (removed: 1 -> 0), pokud se v DB znovu objevily
+	UPDATE mo
+	SET mo.removed = 0,
+		mo.date_modified = @batch_time
+	FROM meta_object mo
+	WHERE mo.object_owner = 0x00
+	  AND mo.object_type IN ('T', 'V', 'F')
+	  AND mo.removed = 1
+	  AND EXISTS (
+		SELECT 1 FROM #syscol_attr s
+		WHERE s.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
+		  AND s.meta_obj_type = mo.object_type COLLATE DATABASE_DEFAULT
+	  );
+
+	-- 1b. Označení osiřelých fyzických objektů (removed: 0 -> 1), které již v DB neexistují (např. zrušené vrepo_*)
+	UPDATE mo
+	SET mo.removed = 1,
+		mo.date_modified = @batch_time
+	FROM meta_object mo
+	WHERE mo.object_owner = 0x00
+	  AND mo.object_type IN ('T', 'V', 'F')
+	  AND mo.removed = 0
+	  AND NOT EXISTS (
+		SELECT 1 FROM #syscol_attr s
+		WHERE s.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
+		  AND s.meta_obj_type = mo.object_type COLLATE DATABASE_DEFAULT
+	  );
+
+	-- 1c. Vložení zcela nových fyzických objektů (T, V, F)
 	INSERT INTO meta_object (
 		uuid, object_owner, original, record_type, approval_status,
-		object_type, builtin_code, module
+		object_type, builtin_code, module, date_created, date_modified
 	)
 	SELECT 
 		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
-		obj.obj_type, obj.tabname, ''
+		obj.meta_obj_type, obj.tabname, '', @batch_time, @batch_time
 	FROM (
-		SELECT DISTINCT 
-			tabname,
-			CASE WHEN object_type = 'U' THEN 'T' WHEN object_type = 'V' THEN 'V' ELSE 'F' END AS obj_type
+		SELECT DISTINCT tabname, meta_obj_type
 		FROM #syscol_attr
 	) obj
-	CROSS APPLY (SELECT dbo.f_generate_original('meta_object', @sys_owner, obj.obj_type, obj.tabname) AS orig_uuid) x
+	CROSS APPLY (SELECT dbo.f_generate_original('meta_object', @sys_owner, obj.meta_obj_type, obj.tabname) AS orig_uuid) x
 	WHERE NOT EXISTS (
 		SELECT 1 FROM meta_object mo
 		WHERE mo.original = x.orig_uuid
@@ -189,20 +225,36 @@ BEGIN
 	);
 
 	-- -------------------------------------------------------------------------
-	-- 2. INTEGRACE p_generate_primitive_classes: Vytvoření logických tříd
+	-- 2. INTEGRACE p_generate_primitive_classes: Synchronizace logických tříd
 	-- -------------------------------------------------------------------------
+	-- 2a. Obnova dříve zrušených primitivních tříd (removed: 1 -> 0), jejichž fyzický objekt je opět platný
+	UPDATE mc
+	SET mc.removed = 0,
+		mc.date_modified = @batch_time
+	FROM meta_class mc
+	JOIN meta_object mo
+		ON mo.original = mc.storage_object
+		AND mo.object_owner = 0x00
+		AND mo.record_type = 'A'
+		AND mo.removed = 0
+		AND mo.object_type IN ('T', 'V', 'F')
+	WHERE mc.object_owner = 0x00
+	  AND mc.removed = 1
+	  AND mc.class_name = mo.builtin_code;
+
+	-- 2b. Vložení chybějících primitivních logických tříd pro platné fyzické objekty
 	INSERT INTO meta_class (
 		uuid, object_owner, original, record_type, approval_status,
 		class_name, storage_object, ancestor_class,
 		is_final, is_protected,
-		who_created, who_modified,
+		date_created, who_created, date_modified, who_modified,
 		caption, caption_plural
 	)
 	SELECT 
 		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
 		mo.builtin_code, mo.original, NULL,
 		1, 0,
-		@sys_owner, @sys_owner,
+		@batch_time, @sys_owner, @batch_time, @sys_owner,
 		UPPER(SUBSTRING(mo.builtin_code, 1, 1)) + SUBSTRING(mo.builtin_code, 2, LEN(mo.builtin_code)),
 		UPPER(SUBSTRING(mo.builtin_code, 1, 1)) + SUBSTRING(mo.builtin_code, 2, LEN(mo.builtin_code))
 	FROM meta_object mo
@@ -230,24 +282,80 @@ BEGIN
 	BEGIN
 		INSERT INTO meta_object (
 			uuid, object_owner, original, record_type, approval_status,
-			object_type, builtin_code, module
+			object_type, builtin_code, module, date_created, date_modified
 		) VALUES (
-			@c_object, 0x00, @c_object, 'A', 'A', 'C', 'sys_global_columns', ''
+			@c_object, 0x00, @c_object, 'A', 'A', 'C', 'sys_global_columns', '', @batch_time, @batch_time
 		);
+	END
+	ELSE
+	BEGIN
+		UPDATE meta_object
+		SET removed = 0, date_modified = @batch_time
+		WHERE original = @c_object AND object_owner = 0x00 AND removed = 1;
 	END
 
 	IF NOT EXISTS (SELECT 1 FROM meta_class WHERE original = @c_class AND object_owner = 0x00 AND record_type = 'A')
 	BEGIN
 		INSERT INTO meta_class (
 			uuid, object_owner, original, record_type, approval_status,
-			class_name, storage_object, is_final, is_protected, caption
+			class_name, storage_object, is_final, is_protected, caption,
+			date_created, date_modified
 		) VALUES (
 			@c_class, 0x00, @c_class, 'A', 'A',
-			'sys_global_columns', @c_object, 1, 1, 'Globální definice sloupců'
+			'sys_global_columns', @c_object, 1, 1, 'Globální definice sloupců',
+			@batch_time, @batch_time
 		);
 	END
+	ELSE
+	BEGIN
+		UPDATE meta_class
+		SET removed = 0, date_modified = @batch_time
+		WHERE original = @c_class AND object_owner = 0x00 AND removed = 1;
+	END
 
-	-- Plnění unikátních názvů sloupců do globálního slovníku (navázáno na @c_class)
+	-- 2c. Označení osiřelých systémových tříd (removed: 0 -> 1, např. vrepo_*), jejichž úložný objekt neexistuje nebo je zrušený
+	UPDATE mc
+	SET mc.removed = 1,
+		mc.date_modified = @batch_time
+	FROM meta_class mc
+	WHERE mc.object_owner = 0x00
+	  AND mc.removed = 0
+	  AND mc.original <> @c_class
+	  AND NOT EXISTS (
+		SELECT 1 FROM meta_object mo
+		WHERE mo.original = mc.storage_object
+		  AND mo.object_owner = 0x00
+		  AND mo.record_type = 'A'
+		  AND mo.removed = 0
+	  );
+
+	-- 3b. Obnova dříve zrušených sloupců v globálním slovníku (removed: 1 -> 0), pokud se v DB znovu objevily
+	UPDATE mc
+	SET mc.removed = 0,
+		mc.date_modified = @batch_time
+	FROM meta_column mc
+	WHERE mc.object_owner = 0x00
+	  AND mc.parent_class = @c_class
+	  AND mc.removed = 1
+	  AND EXISTS (
+		SELECT 1 FROM #global_attr ga
+		WHERE ga.colname = mc.column_name COLLATE DATABASE_DEFAULT
+	  );
+
+	-- 3c. Označení osiřelých sloupců v globálním slovníku (removed: 0 -> 1), které se již nevyskytují v žádné tabulce/view/funkci
+	UPDATE mc
+	SET mc.removed = 1,
+		mc.date_modified = @batch_time
+	FROM meta_column mc
+	WHERE mc.object_owner = 0x00
+	  AND mc.parent_class = @c_class
+	  AND mc.removed = 0
+	  AND NOT EXISTS (
+		SELECT 1 FROM #global_attr ga
+		WHERE ga.colname = mc.column_name COLLATE DATABASE_DEFAULT
+	  );
+
+	-- 3d. Plnění unikátních názvů sloupců do globálního slovníku (navázáno na @c_class)
 	INSERT INTO meta_column (
 		uuid, object_owner, original, record_type, approval_status,
 		parent_class, parent_order, sort_code, column_name, 
@@ -255,7 +363,8 @@ BEGIN
 		input_type, input_width, input_rows, max_length, css_class,
 		translate, history, is_html, is_mandatory, is_url, is_computed, 
 		show_empty, hidden, customizable,
-		is_final, is_protected, ancestor
+		is_final, is_protected, ancestor,
+		date_created, date_modified
 	)
 	SELECT 
 		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
@@ -267,7 +376,8 @@ BEGIN
 		'Nápověda pro ' + ga.colname, 'Zadejte ' + ga.colname,
 		ga.calc_input_type, ga.calc_input_width, 0, ga.calc_max_length, '',
 		0, 0, 0, 0, 0, ga.calc_is_computed, 1, 0, 1,
-		1, 0, NULL
+		1, 0, NULL,
+		@batch_time, @batch_time
 	FROM #global_attr ga
 	CROSS APPLY (SELECT dbo.f_generate_original('meta_column', @sys_owner, CAST(@c_class AS varchar(36)), ga.colname) AS orig_uuid) x
 	WHERE NOT EXISTS (
@@ -278,8 +388,64 @@ BEGIN
 	);
 
 	-- -------------------------------------------------------------------------
-	-- 4. SYNCHRONIZACE LOKÁLNÍCH SLOUPCŮ (Vazba na primitivní logickou třídu)
+	-- 4. SYNCHRONIZACE LOKÁLNÍCH SLOUPCŮ (Vazba na logickou třídu)
 	-- -------------------------------------------------------------------------
+	-- 4a. Obnova dříve zrušených lokálních sloupců (removed: 1 -> 0), pokud jsou třída i fyzický sloupec opět platné
+	UPDATE mc
+	SET mc.removed = 0,
+		mc.date_modified = @batch_time
+	FROM meta_column mc
+	JOIN meta_class mcl
+		ON mcl.original = mc.parent_class
+		AND mcl.object_owner = 0x00
+		AND mcl.record_type = 'A'
+		AND mcl.removed = 0
+	JOIN meta_object mo
+		ON mo.original = mcl.storage_object
+		AND mo.object_owner = 0x00
+		AND mo.record_type = 'A'
+		AND mo.removed = 0
+		AND mo.object_type IN ('T', 'V', 'F')
+	JOIN #syscol_attr la
+		ON la.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
+		AND la.colname = mc.column_name COLLATE DATABASE_DEFAULT
+	WHERE mc.object_owner = 0x00
+	  AND mc.parent_class <> @c_class
+	  AND mc.removed = 1
+	  AND mcl.class_name = mo.builtin_code;
+
+	-- 4b. Označení osiřelých lokálních sloupců (removed: 0 -> 1), pokud je neplatná jejich třída nebo fyzický sloupec zmizel
+	UPDATE mc
+	SET mc.removed = 1,
+		mc.date_modified = @batch_time
+	FROM meta_column mc
+	LEFT JOIN meta_class mcl
+		ON mcl.original = mc.parent_class
+		AND mcl.object_owner = 0x00
+		AND mcl.record_type = 'A'
+		AND mcl.removed = 0
+	LEFT JOIN meta_object mo
+		ON mo.original = mcl.storage_object
+		AND mo.object_owner = 0x00
+		AND mo.record_type = 'A'
+		AND mo.removed = 0
+	WHERE mc.object_owner = 0x00
+	  AND mc.parent_class <> @c_class
+	  AND mc.removed = 0
+	  AND (
+		mcl.original IS NULL
+		OR mo.original IS NULL
+		OR (
+			mo.object_type IN ('T', 'V', 'F')
+			AND NOT EXISTS (
+				SELECT 1 FROM #syscol_attr la
+				WHERE la.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
+				  AND la.colname = mc.column_name COLLATE DATABASE_DEFAULT
+			)
+		)
+	  );
+
+	-- 4c. Vložení nových lokálních sloupců pro platné primitivní logické třídy
 	INSERT INTO meta_column (
 		uuid, object_owner, original, record_type, approval_status,
 		parent_class, parent_order, column_name, 
@@ -287,7 +453,8 @@ BEGIN
 		input_type, input_width, input_rows, max_length, css_class,
 		translate, history, is_html, is_mandatory, is_url, is_computed, 
 		show_empty, hidden, customizable,
-		is_final, is_protected, ancestor
+		is_final, is_protected, ancestor,
+		date_created, date_modified
 	)
 	SELECT 
 		x.orig_uuid, 0x00, x.orig_uuid, 'A', 'A',
@@ -301,23 +468,27 @@ BEGIN
 		NULL, NULL, NULL, NULL, NULL, 
 		CASE WHEN la.calc_is_computed = ga.calc_is_computed THEN NULL ELSE la.calc_is_computed END, 
 		NULL, NULL, NULL,
-		1, 0, gc.original
+		1, 0, gc.original,
+		@batch_time, @batch_time
 	FROM #syscol_attr la
 	JOIN meta_object mo 
 		ON mo.builtin_code = la.tabname
-		AND mo.object_type IN ('T', 'V', 'F') 
+		AND mo.object_type = la.meta_obj_type
 		AND mo.record_type = 'A'
 		AND mo.object_owner = 0x00
+		AND mo.removed = 0
 	JOIN meta_class mcl 
 		ON mcl.storage_object = mo.original
 		AND mcl.class_name = mo.builtin_code COLLATE DATABASE_DEFAULT
 		AND mcl.record_type = 'A'
 		AND mcl.object_owner = 0x00
+		AND mcl.removed = 0
 	JOIN meta_column gc
 		ON gc.parent_class = @c_class
 		AND gc.column_name = la.colname
 		AND gc.record_type = 'A'
 		AND gc.object_owner = 0x00
+		AND gc.removed = 0
 	JOIN #global_attr ga
 		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
 	CROSS APPLY (SELECT dbo.f_generate_original('meta_column', @sys_owner, CAST(mcl.original AS varchar(36)), la.colname) AS orig_uuid) x
@@ -347,11 +518,13 @@ BEGIN
 		ON mcl.original = mc.parent_class 
 		AND mcl.record_type = 'A' 
 		AND mcl.object_owner = 0x00
+		AND mcl.removed = 0
 	JOIN meta_object mo 
 		ON mo.original = mcl.storage_object 
 		AND mo.object_type IN ('T', 'V', 'F') 
 		AND mo.record_type = 'A' 
 		AND mo.object_owner = 0x00
+		AND mo.removed = 0
 	JOIN #syscol_attr la
 		ON la.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
 		AND la.colname = mc.column_name COLLATE DATABASE_DEFAULT
@@ -360,10 +533,12 @@ BEGIN
 		AND gc.column_name = mc.column_name 
 		AND gc.record_type = 'A' 
 		AND gc.object_owner = 0x00
+		AND gc.removed = 0
 	JOIN #global_attr ga
 		ON ga.colname = gc.column_name COLLATE DATABASE_DEFAULT
 	WHERE mc.record_type = 'A' 
 	  AND mc.object_owner = 0x00 
+	  AND mc.removed = 0
 	  AND mc.ancestor IS NULL;
 
 	-- Výchozí nastavení hodnoty list_order pro sloupce zobrazované v levém Master panelu
@@ -387,6 +562,17 @@ BEGIN
 			'shortname', 'description', 'description_text', 'helptext', 'help_text',
 			'caption_forward', 'caption_backward', 'note'
 		)
+
+	-- Výchozí česká lokalizace pro nový sloupec days_in_trash v globálním slovníku (pokud nebyla ručně upravena)
+	UPDATE meta_column
+	SET caption = 'Dny v koši (days_in_trash)',
+		label = 'Dny v koši',
+		header = 'Dny v koši',
+		helptext = 'Počet dnů uchování zrušených záznamů (removed = 1) v koši před automatickým smazáním (0 = nikdy).'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'days_in_trash'
+	  AND (who_modified = 0x00 OR caption = 'days_in_trash');
 
 	-- Skrytí čistě technických RAC/SSC a binárních sloupců z automaticky generovaných formulářů
 	UPDATE meta_column
