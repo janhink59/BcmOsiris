@@ -1,12 +1,22 @@
 /* =============================================================================
- * Tabulka: system_constant (Systémové konstanty)
- * Popis:	Uchovává globální konfiguraci systému v jediném řádku (Singleton).
+ * Verze: 2026-10-25 08:45
+ * Soubor: system_constant.sql
+ * Tabulky: system_constant (Systémové konstanty), service_logbook (Provozní deník)
+ * Popis:	1. system_constant uchovává globální konfiguraci systému v jediném
+ *			   řádku (Singleton).
+ *			2. service_logbook eviduje historii spuštěných změnových skriptů
+ *			   (changes_YYYY.sql) a importů systémových dávek.
  *
  * VÝJIMKA Z ARCHITEKTURY:
- * Tato tabulka úmyslně NEPODLÉHÁ schvalovacímu procesu (SSC) ani pravidlům
- * pro záznamy a řízení přístupu (RAC). Z toho důvodu NEOBSAHUJE standardní
+ * Tyto tabulky úmyslně NEPODLÉHAJÍ schvalovacímu procesu (SSC) ani pravidlům
+ * pro záznamy a řízení přístupu (RAC). Z toho důvodu NEOBSAHUJÍ standardní
  * sloupce jako record_type, approval_status, language, original, object_owner
- * ani platnosti. Slouží čistě pro globální technické parametry serveru.
+ * ani platnosti. Slouží čistě pro globální technické parametry a servisní audit.
+ *
+ * Změny:
+ * - 2026-10-25 08:45: Výchozí hodnota sloupce database_version změněna na
+ *   '26.10.20.0' (včetně idempotentní výměny DEFAULT constraintu pro existující
+ *   databáze). Doplněna definice tabulky service_logbook.
  * ============================================================================= */
 
 IF OBJECT_ID('system_constant') IS NULL
@@ -21,8 +31,8 @@ BEGIN
 		date_modified datetime NOT NULL DEFAULT getdate(),
 		who_modified uuid NOT NULL DEFAULT 0x00,
 		
-		-- Globální verze a stavy
-		database_version varchar(20) NOT NULL DEFAULT '20260804',
+		-- Globální verze a stavy (formát verze 'RR.MM.DD.N')
+		database_version varchar(20) NOT NULL DEFAULT '26.10.20.0',
 		app_version varchar(20) NOT NULL DEFAULT '',
 		database_state varchar(1) NOT NULL DEFAULT 'X',
 		
@@ -66,9 +76,14 @@ END
 GO
 
 -- -----------------------------------------------------------------------------
--- Zajištění chybějících sloupců pro upgrady existujících databází pomocí procedury "p_create_missing_column"
+-- Zajištění chybějících sloupců a aktuálního DEFAULT constraintu pro existující DB
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'system_constant', 'system_admin_pwd', 'varchar(255) NOT NULL DEFAULT ''''';
+GO
+
+EXEC sp_drop_default 'system_constant', 'database_version';
+ALTER TABLE system_constant
+	ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.10.20.0' FOR database_version;
 GO
 
 -- -----------------------------------------------------------------------------
@@ -89,7 +104,7 @@ BEGIN
 		email_sender_address
 	) VALUES (
 		NEWID(),
-		'20260804',
+		'26.10.20.0',
 		'hink@rac.cz',
 		'', -- Ponecháno prázdné, doplní se při aktivaci systému
 		'sandbox.smtp.mailtrap.io', -- Nultý bod: Vývojový SMTP server
@@ -97,5 +112,23 @@ BEGIN
 		'Ramses Enterprise ISMS',
 		'noreply@rac.cz'
 	);
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Tabulka: service_logbook (Provozní deník upgradů a systémových importů)
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('service_logbook') IS NULL
+BEGIN
+	CREATE TABLE service_logbook (
+		id int IDENTITY PRIMARY KEY,
+		servername varchar(250) NOT NULL DEFAULT @@servername,
+		original_login varchar(200) NOT NULL DEFAULT original_login(),
+		[date] smalldatetime NOT NULL DEFAULT getdate(),
+		[name] varchar(250) NOT NULL,
+		[version] varchar(200) NOT NULL,
+		content varchar(max) NULL
+	);
+	PRINT 'Tabulka service_logbook byla vytvorena.';
 END
 GO

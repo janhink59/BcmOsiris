@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-24 23:45
+ * Verze: 2026-10-25 08:45
  * Soubor: p_xlsx_meta_object.sql
  * Procedura: p_xlsx_meta_object
  * Účel: Hromadný import systémových stránek a tříd (page), textových frází (phrase),
@@ -18,7 +18,8 @@
  * - Využívá deterministickou funkci dbo.f_generate_original pro výpočet klíčů
  *   original a převod mnemotechnických textových odkazů na UUID.
  * - Využívá funkci dbo.f_xlsx_clean pro odstranění stříšek <...> u zděděných hodnot.
- * - Zapisuje průběžné a chybové zprávy přes proceduru insert_request_message.
+ * - Zapisuje průběžné a chybové zprávy přes proceduru insert_request_message
+ *   a při ostrém importu (@import_mode = '2') zapisuje záznam do service_logbook.
  *
  * Architektura dvou režimů (Jádro vs. Překlady), Delta kontroly, dědičnosti (<do stříšek>), svg_icon a removed:
  * - Upravuje výhradně systémové záznamy (object_owner = 0x00).
@@ -36,11 +37,13 @@
  *   Pokud je záznam v DB v koši (removed = 1) a v Excelu má removed = 0 (a platné
  *   vazby), obnoví jej zpět na removed = 0.
  * - REŽIM 2: Import překladů druhého jazyka (když second_language <> ''):
- *   Nijak nemodifikuje věcné atributy 'A' záznamů ani primární jazyk (@lang)! Zpracovává
+ *   Nijak nemodifikuje věcné atributy 'A' záznamy ani primární jazyk (@lang)! Zpracovává
  *   'L' záznamy druhého jazyka (@sec_lang) ze sloupců s příponou *_l (a při skutečné
  *   změně překladu aktualizuje auditní stopu date_modified/who_modified na 'A' záznamu).
  *
  * Změny:
+ * - 2026-10-25 08:45: Doplněno čtení version_date a description z XLSX_CONTENT_INFO$
+ *   a registrace ostrého importu (@import_mode = '2') do tabulky service_logbook.
  * - 2026-10-24 23:45: Doplněna podpora sloupce days_in_trash na záložce class.
  *   Sjednocena kontrola platnosti třídy (class_valid) na záložce column (ověření
  *   platnosti třídy v meta_class i jejího storage_object v meta_object).
@@ -71,6 +74,8 @@ BEGIN
 	DECLARE @sec_lang varchar(2) = '';                                    -- Volitelný druhý jazyk z CONTENT_INFO
 	DECLARE @is_trans_mode bit = 0;                                       -- 1 = Režim překladu (@sec_lang <> ''), 0 = Režim jádra
 	DECLARE @import_origin varchar(255) = NULL;                           -- Původ importu (měkký audit)
+	DECLARE @version_date varchar(200) = '';                              -- Datum verze balíčku z CONTENT_INFO
+	DECLARE @pkg_description varchar(max) = '';                           -- Popis balíčku z CONTENT_INFO
 	DECLARE @cnt_a int = 0;                                               -- Počitadlo změněných/vložených 'A' záznamů
 	DECLARE @cnt_l int = 0;                                               -- Počitadlo změněných/vložených 'L' záznamů
 	DECLARE @cnt_rem int = 0;                                             -- Počitadlo zreplikovaných odstranění (removed=1)
@@ -111,6 +116,22 @@ BEGIN
 			N'SELECT TOP 1 @out = NULLIF(LTRIM(RTRIM(import_origin)), '''') FROM XLSX_CONTENT_INFO$',
 			N'@out varchar(255) OUTPUT',
 			@out = @import_origin OUTPUT;
+	END
+
+	IF COL_LENGTH('XLSX_CONTENT_INFO$', 'version_date') IS NOT NULL
+	BEGIN
+		EXEC sp_executesql
+			N'SELECT TOP 1 @out = LTRIM(RTRIM(ISNULL(CAST(version_date AS varchar(200)), ''''))) FROM XLSX_CONTENT_INFO$',
+			N'@out varchar(200) OUTPUT',
+			@out = @version_date OUTPUT;
+	END
+
+	IF COL_LENGTH('XLSX_CONTENT_INFO$', 'description') IS NOT NULL
+	BEGIN
+		EXEC sp_executesql
+			N'SELECT TOP 1 @out = LTRIM(RTRIM(ISNULL(CAST([description] AS varchar(max)), ''''))) FROM XLSX_CONTENT_INFO$',
+			N'@out varchar(max) OUTPUT',
+			@out = @pkg_description OUTPUT;
 	END
 
 	-- Kontrola platnosti primárního jazyka proti číselníku [language]
@@ -1964,6 +1985,23 @@ BEGIN
 		END
 
 		DROP TABLE #clean_column;
+	END
+
+	-- =========================================================================
+	-- 6. Registrace ostrého importu (@import_mode = '2') do tabulky service_logbook
+	-- =========================================================================
+	IF @import_mode = '2' AND OBJECT_ID('service_logbook') IS NOT NULL
+	BEGIN
+		DECLARE @log_name varchar(250) = 'p_xlsx_meta_object (' + CASE WHEN @is_trans_mode = 1 THEN @lang + '->' + @sec_lang ELSE @lang END + ')';
+		DECLARE @log_ver varchar(200) = ISNULL(NULLIF(@version_date, ''), CONVERT(varchar(20), GETDATE(), 120));
+		DECLARE @log_content varchar(max) = LTRIM(RTRIM(
+			ISNULL(@import_origin, '')
+			+ CASE WHEN ISNULL(@import_origin, '') <> '' AND @pkg_description <> '' THEN ': ' ELSE '' END
+			+ @pkg_description
+		));
+
+		INSERT INTO service_logbook ([name], [version], content)
+		VALUES (@log_name, @log_ver, NULLIF(@log_content, ''));
 	END
 END
 GO

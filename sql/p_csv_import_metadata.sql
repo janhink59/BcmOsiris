@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-24 11:30
+ * Verze: 2026-10-25 08:45
  * Soubor: p_csv_import_metadata.sql
  * Procedura: dbo.p_csv_import_metadata
  * Účel:   Zpracování Fáze 2 dvoufázového CSV/TSV importu pro balíček "metadata".
@@ -12,9 +12,12 @@
  * - Využívá proceduru dbo.p_csv_fill_table a funkci dbo.f_csv_param (p_csv_fill_table.sql).
  * - Využívá funkci dbo.f_syscolumns (HinkMSSQLLibrary.sql) pro dynamické sestavení
  *   porovnávacích a aktualizačních seznamů sloupců.
- * - Zapisuje průběžné zprávy do tabulky request_message přes insert_request_message.
+ * - Zapisuje průběžné zprávy do tabulky request_message přes insert_request_message
+ *   a registruje provedený import do tabulky service_logbook.
  *
  * Změny:
+ * - 2026-10-25 08:45: Doplněn zápis o provedeném importu systémového balíčku
+ *   metadat do tabulky service_logbook.
  * - 2026-10-24 11:30: Oprava chyby "Must declare the scalar variable @s_cols_prefixed"
  *   (proměnná @s_cols_prefixed řádně deklarována a naplněna před sestavením @sql).
  *   Do seznamu vynechaných technických sloupců doplněny valid_from, valid_to,
@@ -33,6 +36,7 @@ BEGIN
 	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 	DECLARE @user_session uniqueidentifier;
 	DECLARE @import_origin varchar(255);
+	DECLARE @version_date varchar(200);
 
 	SELECT @user_session = login_session_uuid
 	FROM dbsession
@@ -42,6 +46,7 @@ BEGIN
 		SET @user_session = @sys_owner;
 
 	SET @import_origin = NULLIF(LTRIM(RTRIM(dbo.f_csv_param('import_origin', ''))), '');
+	SET @version_date  = NULLIF(LTRIM(RTRIM(dbo.f_csv_param('version_date', ''))), '');
 
 	-- -------------------------------------------------------------------------
 	-- 1. Vytvoření dočasných tabulek v lokálním scope a jejich naplnění z CSV
@@ -235,5 +240,18 @@ BEGIN
 
 	CLOSE cur_meta;
 	DEALLOCATE cur_meta;
+
+	-- -------------------------------------------------------------------------
+	-- 3. Registrace importu systémového balíčku do tabulky service_logbook
+	-- -------------------------------------------------------------------------
+	IF OBJECT_ID('service_logbook') IS NOT NULL
+	BEGIN
+		INSERT INTO service_logbook ([name], [version], content)
+		VALUES (
+			'p_csv_import_metadata',
+			ISNULL(@version_date, CONVERT(varchar(20), GETDATE(), 120)),
+			ISNULL(@import_origin, 'CSV Package Import (metadata)')
+		);
+	END
 END
 GO
