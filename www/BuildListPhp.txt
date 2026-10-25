@@ -4,6 +4,7 @@ BuildListPhp.txt
 a*.php
 b*.php
 csv_*.php
+
 output=BcmOsirisPhp2.txt
 e*.php
 g*.php
@@ -11,8 +12,12 @@ html_classes.php
 i*.php
 l*.php
 m*.php
+page_approval.php
+page_org_users.php
+
 output=BcmOsirisPhp3.txt
 p*.php
+
 output=BcmOsirisPhp4.txt
 r*.php
 s*.php

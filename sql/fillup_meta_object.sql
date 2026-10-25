@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-24 13:15
+ * Verze: 2026-10-25 11:30
  * Soubor: fillup_meta_object.sql
  * Účel:   Idempotentní prvotní naplnění a registrace systémových PHP stránek
  *         a UI tříd (object_type = 'P', object_owner = 0x00) do tabulky meta_object
@@ -9,7 +9,9 @@
  *           a funkce dbo.f_generate_original (f_generate_original.sql).
  *         - Slouží jako podklad pro navigační vazby target_object v fillup_meta_menu.sql
  *           a pro kontrolu oprávnění v abstract_page::check_system_role_access().
- * Změny:  - 2026-10-24 13:15: Vyčleněno do samostatného souboru a doplněna
+ * Změny:  - 2026-10-25 11:30: Doplněna registrace stránky page_service_logbook
+ *           (system_role = 'S').
+ *         - 2026-10-24 13:15: Vyčleněno do samostatného souboru a doplněna
  *           registrace stránky page_meta_menu.
  * ============================================================================= */
 
@@ -63,6 +65,7 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_excel_reader', 'Import dat z Excelu', 'Nástroj pro hromadný import a distribuci datových struktur z Excelu', 'S'),
 ('page_xlsx_export_meta', 'Export metadat do Excelu', 'Nástroj pro zpětný export systémových metadat do souboru XLSX', 'S'),
 ('page_csv_package', 'Přenos balíčků (CSV/TSV)', 'Nástroj pro export a dvoufázový import datových balíčků ve formátu TSV/CSV', 'S'),
+('page_service_logbook', 'Provozní deník (service_logbook)', 'Přehled historie provedených upgradů databáze a importů systémových dávek', 'S'),
 ('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace, aplikační role a žádosti o přístup', 'U'),
 ('page_login', 'Přihlášení do systému', 'Přihlašovací obrazovka s podporou lokální autentizace a SSO', 'U'),
 ('page_password_reset', 'Obnova hesla', 'Stránka pro vyžádání a nastavení nového hesla pomocí tokenu', 'U'),
