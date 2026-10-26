@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-24 23:45
+ * Verze: 2026-10-26 13:55
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -20,6 +20,10 @@ GO
  *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
  *
  * Změny:
+ * - 2026-10-26 13:55: V sekci 5 doplněno výchozí nastavení příznaku is_html = 1
+ *   v globálním slovníku (sys_global_columns) pro dlouhé popisné sloupce
+ *   (description, description_text, helptext, help_text, note), pokud záznam
+ *   nebyl ručně upraven uživatelem (who_modified = 0x00).
  * - 2026-10-24 23:45: Osiřelé systémové objekty v meta_object (T, V, F), meta_class
  *   (např. zrušené pohledy vrepo_*) a meta_column, které již neodpovídají živé
  *   databázové struktuře v_syscolumns, se označují příznakem removed = 1 s časem
@@ -562,6 +566,15 @@ BEGIN
 			'shortname', 'description', 'description_text', 'helptext', 'help_text',
 			'caption_forward', 'caption_backward', 'note'
 		)
+
+	-- Výchozí zapnutí podpory formátovaného textu (Markdown / HTML: is_html = 1)
+	-- pro víceřádkové popisné sloupce v globálním slovníku (pokud nebyly ručně změněny)
+	UPDATE meta_column
+	SET is_html = 1
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND who_modified = 0x00
+	  AND column_name IN ('description', 'description_text', 'helptext', 'help_text', 'note');
 
 	-- Výchozí česká lokalizace pro nový sloupec days_in_trash v globálním slovníku (pokud nebyla ručně upravena)
 	UPDATE meta_column

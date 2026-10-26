@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-24 13:15
+ * Verze: 2026-10-26 13:50
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – čtecí, metadatová a UI vrstva (STI Architektura).
  *       Zápisové a schvalovací metody jsou vyčleněny do traitu entity_manager_write
@@ -11,6 +11,8 @@
  * - Instancován z potomků `abstract_page_master_detail` (v metodě `render()`),
  *   `page_meta_column.php` a z univerzální schvalovací stránky `page_approval.php`.
  * - Vkládá trait `entity_manager_write` (`entity_manager_write.php`).
+ * - Využívá třídu `rich_text` (`rich_text.php`) pro vykreslování a konverzi sloupců
+ *   s příznakem `is_html = 1` (podpora Markdownu i HTML).
  * - Využívá globální pole `$dbsession` (inicializované v `OsirisLib.php` přes `initsession()`).
  * - Využívá třídu `language_manager` (`language_manager.php`) a databázovou funkci
  *   `dbo.f_language_list()` s podmínkou `fallback_order < 1000`.
@@ -31,6 +33,9 @@
  *    - podřízené dvojrozměrné pole `[original][language]` seřazené podle `fallback_order`.
  * 
  * Změny:
+ * 2026-10-26 13:50 - V metodě render_dynamic_input() doplněna podpora sloupců
+ *                    s příznakem is_html = 1 přes třídu rich_text (automatické
+ *                    rozpoznání Markdown vs. HTML, Toast UI Editor a readonly náhled).
  * 2026-10-24 13:15 - V evaluate_remove_permission() doplněna ochrana kořenové položky
  *                    menu 'home' a ochrana proti zrušení složky menu s aktivními potomky.
  *                  - V render_dynamic_input() u sloupce target_object filtrovány pouze
@@ -994,13 +999,14 @@ HTML;
 
 	/**
 	 * Dynamický HTML generátor formulářových prvků na základě metadat v DB.
-	 * Zajišťuje vizuální vykreslení datových typů, maximálních délek a zamykání polí.
+	 * Zajišťuje vizuální vykreslení datových typů, maximálních délek, zamykání polí
+	 * i interaktivního Markdown / HTML editoru pro sloupce s příznakem is_html = 1.
 	 * 
 	 * @param string $column_name    Název sloupce (klíč v databázi, např. 'caption')
 	 * @param string $value          Aktuální hodnota k zobrazení
 	 * @param bool   $is_mine        Příznak, zda tenant vytvořil pro tento záznam svůj vlastní 'A' override
 	 * @param bool   $force_readonly Vynucení režimu pouze pro čtení z nadřazeného panelu
-	 * @return string Vygenerovaný HTML string (např. tag <input> nebo <select>)
+	 * @return string Vygenerovaný HTML string (např. tag <input>, <select> nebo editor)
 	 */
 	public function render_dynamic_input(string $column_name, string $value, bool $is_mine = true, bool $force_readonly = false): string { // Vykreslení formulářového prvku
 		$meta = $this->get_column_meta($column_name);                        // Načtení metadat sloupce
@@ -1356,6 +1362,16 @@ HTML;
 				return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$safe_val}\"><select disabled {$attr_string}>{$options_html}</select>"; // Zamčený select relace
 			}
 			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>"; // Aktivní select relace
+		}
+
+		// 5. Podpora formátovaného textu (Markdown / HTML) pro sloupce s příznakem is_html = 1
+		if (!empty($meta['is_html'])) {                                      // Sloupec podporuje formátovaný text (Markdown / HTML)
+			if ($is_readonly) {                                              // V uzamčeném režimu vykreslíme bezpečný náhled
+				$rendered_view = rich_text::render_formatted($value, true);  // Zformátovaný náhled se štítkem formátu
+				return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$safe_val}\">"
+					. "<div style=\"padding: 8px 10px; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; min-height: 38px;\">{$rendered_view}</div>"; // Readonly box
+			}
+			return rich_text::render_editor($column_name, $value, $meta);    // Interaktivní Markdown / WYSIWYG editor
 		}
 
 		// Výběr správného prvku podle 'input_type' uloženého v databázi

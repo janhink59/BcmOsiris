@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-25 11:30
+ * Verze: 2026-10-26 10:45
  * Soubor: fillup_meta_menu.sql
  * Účel:   Prvotní idempotentní naplnění systémové navigace (object_owner = 0x00)
  *         v tabulce meta_menu s rozestupy sort_code po desítkách ('010', '020'...).
@@ -13,7 +13,10 @@
  *           ze starých 2znakových kódů (LEN(sort_code) = 2) na 3znakové desítky.
  *         - Technické sloupce v jazykových 'L' záznamech synchronizuje podle 'A'
  *           vždy bez ohledu na l.who_modified.
- * Změny:  - 2026-10-25 11:30: Do složky Systémová administrace (admin_folder)
+ * Změny:  - 2026-10-26 10:45: Do složky Systémová administrace (admin_folder)
+ *           přidána položka audit_login_session (sort_code = '070', system_role = 'A')
+ *           odkazující na stránku page_audit_login_session.
+ *         - 2026-10-25 11:30: Do složky Systémová administrace (admin_folder)
  *           přidána položka service_logbook (sort_code = '060', system_role = 'S')
  *           odkazující na stránku page_service_logbook.
  * ============================================================================= */
@@ -34,6 +37,7 @@ DECLARE @tgt_excel_reader uuid = dbo.f_generate_original('meta_object', @sys_own
 DECLARE @tgt_xlsx_export_meta uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_xlsx_export_meta');
 DECLARE @tgt_csv_package uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_csv_package');
 DECLARE @tgt_service_logbook uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_service_logbook');
+DECLARE @tgt_audit_login uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_audit_login_session');
 
 -- 2. Příprava originálů menu uzlů pro vzájemné provázání (parent_uuid)
 DECLARE @mnu_home uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'home', '');
@@ -51,6 +55,7 @@ DECLARE @mnu_excel_reader uuid = dbo.f_generate_original('meta_menu', @sys_owner
 DECLARE @mnu_xlsx_export_meta uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'xlsx_export_meta', '');
 DECLARE @mnu_csv_package uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'csv_package', '');
 DECLARE @mnu_service_logbook uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'service_logbook', '');
+DECLARE @mnu_audit_login uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'audit_login_session', '');
 
 -- 3. Pomocná struktura pro idempotentní dávkový zápis (sort_code rozřazen po desítkách)
 DECLARE @init_menu TABLE (
@@ -72,13 +77,14 @@ INSERT INTO @init_menu VALUES
 (@mnu_xlsx_export_meta, @mnu_meta_folder, '060', 'xlsx_export_meta', 'Export metadat do Excelu', 'Zpětný export systémových metadat do souboru XLSX', @tgt_xlsx_export_meta, 'S', ''),
 
 -- 1. úroveň: Složka "Systémová administrace" (sort_code = '090') a její podřízené položky po desítkách
-(@mnu_admin, @mnu_home, '090', 'admin_folder', 'Systémová administrace', 'Schvalování změn, správa organizací, licencí, uživatelů, přenos datových balíčků a provozní deník', NULL, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.06-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.73,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.06,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12-0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62-0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.49-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>'),
+(@mnu_admin, @mnu_home, '090', 'admin_folder', 'Systémová administrace', 'Schvalování změn, správa organizací, licencí, uživatelů, přenos datových balíčků, provozní deník a aktivita uživatelů', NULL, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.06-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.73,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.06,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62-0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.49-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>'),
 (@mnu_approval, @mnu_admin, '010', 'approval', 'Schvalování změn', 'Posouzení, schvalování a vracení navržených změn záznamů', @tgt_approval, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'),
 (@mnu_organization, @mnu_admin, '020', 'organization', 'Správa organizací', 'Přehled a nastavení klientských organizací (tenantů)', @tgt_organization, 'S', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 7V3H2v18h20V7H12zM6 19H4v-2h2v2zm0-4H4v-2h2v2zm0-4H4V9h2v2zm0-4H4V5h2v2zm4 12H8v-2h2v2zm0-4H8v-2h2v2zm0-4H8V9h2v2zm0-4H8V5h2v2zm10 12h-8v-2h2v-2h-2v-2h2v-2h-2V9h8v10zm-2-8h-2v2h2v-2zm0 4h-2v2h2v-2z"/></svg>'),
 (@mnu_org_licence, @mnu_admin, '030', 'organization_licence', 'Správa licencí organizací', 'Evidence žádostí o licenci a aktivace nových organizací', @tgt_org_licence, 'S', ''),
 (@mnu_org_users, @mnu_admin, '040', 'org_users', 'Uživatelé organizace', 'Správa uživatelů, oprávnění a žádostí o přístup v organizaci', @tgt_org_users, 'A', ''),
 (@mnu_csv_package, @mnu_admin, '050', 'csv_package', 'Přenos balíčků (CSV/TSV)', 'Export a dvoufázový import datových balíčků mezi instancemi', @tgt_csv_package, 'S', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>'),
-(@mnu_service_logbook, @mnu_admin, '060', 'service_logbook', 'Provozní deník (Logbook)', 'Přehled historie provedených upgradů databáze a importů systémových dávek', @tgt_service_logbook, 'S', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>');
+(@mnu_service_logbook, @mnu_admin, '060', 'service_logbook', 'Provozní deník (Logbook)', 'Přehled historie provedených upgradů databáze a importů systémových dávek', @tgt_service_logbook, 'S', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>'),
+(@mnu_audit_login, @mnu_admin, '070', 'audit_login_session', 'Aktivita uživatelů', 'Přehled přihlášení a aktivity uživatelů z tabulky audit_login_session', @tgt_audit_login, 'A', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>');
 
 -- 4. Idempotentní INSERT hlavních 'A' záznamů pomocí NOT EXISTS
 INSERT INTO meta_menu (

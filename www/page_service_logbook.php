@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-25 11:30
+ * Verze: 2026-10-26 10:45
  * Soubor: page_service_logbook.php
  * Třída: page_service_logbook
  * Účel: Přehledová stránka pro prohlížení záznamů v provozním deníku
@@ -20,6 +20,7 @@
  *   funkcí sqlfirstrow() a sqlarray_simple() z knihovny OsirisLib.php.
  *
  * Změny:
+ * 2026-10-26 10:45 - Oprava chybějících mezer před znakem $ dle Anti-LaTeX pravidla.
  * 2026-10-25 11:30 - Vytvoření první verze stránky pro prohlížení tabulky service_logbook
  *                    s filtrací podle počtu záznamů (výchozí 100) a textového vzorku.
  * =============================================================================
@@ -37,7 +38,7 @@ class page_service_logbook extends abstract_page {
 
 		global $dbsession;                                                   // Globální kontext relace přihlášeného uživatele
 
-		$this->page_title =$this->phrase('page_title', [], 'Provozní deník (service_logbook) - BCM Osiris'); // Lokalizovaný titulek stránky
+		$this->page_title = $this->phrase('page_title', [], 'Provozní deník (service_logbook) - BCM Osiris'); // Lokalizovaný titulek stránky
 		$this->full_width = true;                                            // Roztažení hlavního panelu na plnou šířku okna
 
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální efektivní role v relaci
@@ -50,8 +51,8 @@ class page_service_logbook extends abstract_page {
 		$raw_limit = trim((string)getinput('limit'));                        // Surová hodnota limitu z požadavku
 		if ($raw_limit !== '' AND is_numeric($raw_limit)) {                  // Pokud byl zadán číselný limit
 			$parsed_limit = intval($raw_limit);                              // Převod limitu na celé číslo
-			if ($parsed_limit >= 1 AND$parsed_limit <= 10000) {             // Kontrola povoleného rozsahu
-				$this->limit =$parsed_limit;                                // Uložení platného limitu záznamů
+			if ($parsed_limit >= 1 AND $parsed_limit <= 10000) {             // Kontrola povoleného rozsahu
+				$this->limit = $parsed_limit;                                // Uložení platného limitu záznamů
 			}
 		}
 
@@ -91,12 +92,12 @@ class page_service_logbook extends abstract_page {
 
 		$btn_filter = new abstract_button('btn_apply_filter', 'Filtrovat', 'page_service_logbook'); // Tlačítko odeslání filtru
 		$btn_filter->set_type('submit')->set_onclick('isFormDirty = false;'); // Vypnutí příznaku změny při filtrování
-		$btn_filter_html =$btn_filter->render();                            // Vykreslení tlačítka Filtrovat
+		$btn_filter_html = $btn_filter->render();                            // Vykreslení tlačítka Filtrovat
 
 		$reset_url = 'index.php?page=page_service_logbook' . ($menu_code !== '' ? '&menu_code=' . urlencode($menu_code) : ''); // URL pro zrušení filtru
 		$btn_reset = new abstract_button('btn_reset_filter', 'Zrušit filtr', 'page_service_logbook', '', 'btn-secondary'); // Tlačítko resetu filtru
 		$btn_reset->set_href($reset_url)->set_onclick('isFormDirty = false;'); // Odkaz pro návrat na výchozích 100 záznamů
-		$btn_reset_html =$btn_reset->render();                              // Vykreslení tlačítka Zrušit filtr
+		$btn_reset_html = $btn_reset->render();                              // Vykreslení tlačítka Zrušit filtr
 
 		echo "<form method=\"get\" action=\"index.php\" onsubmit=\"isFormDirty = false;\" style=\"background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; padding: 12px 15px; margin-bottom: 18px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;\">\n";
 		echo "\t<input type=\"hidden\" name=\"page\" value=\"page_service_logbook\">\n";
@@ -118,7 +119,7 @@ class page_service_logbook extends abstract_page {
 		// Sestavení SQL dotazu s TOP (@limit) a volitelnou podmínkou LIKE
 		$where_sql = '';                                                     // Výchozí prázdná podmínka WHERE
 		if ($this->search_text !== '') {                                     // Pokud uživatel zadal hledaný vzorek textu
-			$like_lit = charliteral('%' .$this->search_text . '%');         // Bezpečný SQL literál se znaky % pro LIKE
+			$like_lit = charliteral('%' . $this->search_text . '%');         // Bezpečný SQL literál se znaky % pro LIKE
 			$where_sql = "WHERE [name] LIKE {$like_lit}"                     // Hledání v názvu skriptu nebo operace
 				. " OR [version] LIKE {$like_lit}"                           // Hledání v označení verze
 				. " OR ISNULL(content, '') LIKE {$like_lit}"                 // Hledání v poznámce nebo obsahu
@@ -141,7 +142,7 @@ class page_service_logbook extends abstract_page {
 			return;                                                          // Ukončení vykreslování
 		}
 
-		$lbl_found = htmlspecialchars($this->phrase('lbl_displayed_records', ['count' =>$row_count], 'Zobrazeno záznamů: {' . chr(36) . 'count}')); // Počet zobrazených řádků
+		$lbl_found  = htmlspecialchars($this->phrase('lbl_displayed_records', ['count' => $row_count], 'Zobrazeno záznamů: {' . chr(36) . 'count}')); // Počet zobrazených řádků
 		$th_id      = htmlspecialchars($this->phrase('th_id', [], 'ID'));                       // Záhlaví sloupce ID
 		$th_date    = htmlspecialchars($this->phrase('th_date', [], 'Datum a čas'));            // Záhlaví sloupce data
 		$th_name    = htmlspecialchars($this->phrase('th_name', [], 'Skript / Operace (name)')); // Záhlaví sloupce názvu
@@ -165,7 +166,7 @@ class page_service_logbook extends abstract_page {
 		echo "\t</thead>\n";
 		echo "\t<tbody>\n";
 
-		foreach ($rows as$row) {                                            // Průchod načtenými záznamy v paměti
+		foreach ($rows as $row) {                                            // Průchod načtenými záznamy v paměti
 			$id_val = intval($row['id']);                                    // Primární klíč záznamu
 			$date_val = htmlspecialchars(date_format4((string)($row['date'] ?? ''), 16)); // Zformátované datum a čas
 			$name_val = htmlspecialchars((string)($row['name'] ?? ''));      // Název skriptu nebo procedury

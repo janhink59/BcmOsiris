@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-23 15:15
+ * Verze: 2026-10-26 13:55
  * Soubor: page_approval.php
  * Třída: page_approval
  * Účel: Univerzální schvalovací obrazovka (SSC) pro porovnání původních
@@ -16,6 +16,8 @@
  *   přes `$this->class_name`) pro načtení metadat cílové logické třídy, získání
  *   původních schválených hodnot (`fetch_row(..., true, true)`) a spuštění
  *   transakčního schválení (`approve_draft()`) nebo vrácení (`reject_draft()`).
+ * - Využívá `rich_text` (`rich_text.php`) pro bezpečné vykreslení formátovaných
+ *   sloupců (`is_html = 1`, Markdown i HTML) v porovnávací tabulce.
  * - Využívá `abstract_button` a `$this->phrase()` pro plnou lokalizaci.
  * - Načítá návrhy ve stavu `approval_status = 'F'` (`record_type = 'D'`, včetně
  *   návrhů na zrušení záznamu s `removed = 1`), které patří aktuální organizaci
@@ -26,6 +28,9 @@
  *   ve specializovaných modulech `page_org_users` a `page_change_user_context`.
  *
  * Změny:
+ * 2026-10-26 13:55 - V porovnávací tabulce v render_detail() doplněno vykreslování
+ *                    formátovaného textu (Markdown / HTML) pro sloupce s is_html = 1
+ *                    pomocí třídy rich_text (včetně rozbalovacího náhledu zdrojového kódu).
  * 2026-10-23 15:15 - Doplněno hromadné schvalování a odmítání vybraných návrhů
  *                    v levém panelu (checkboxy + hromadná lišta s poznámkou).
  *                  - Odstraněn filtr `removed = 0` u konceptů `'D'`, aby byly viditelné
@@ -40,6 +45,10 @@
  */
 
 declare(strict_types=1);
+
+if (file_exists(__DIR__ . '/rich_text.php')) {
+	require_once __DIR__ . '/rich_text.php';
+}
 
 class page_approval extends abstract_page_master_detail {
 
@@ -398,6 +407,46 @@ class page_approval extends abstract_page_master_detail {
 	}
 
 	/**
+	 * Vykreslí buňku porovnávací tabulky pro formátovaný sloupec (`is_html = 1`)
+	 * s bezpečně vyrenderovaným HTML výstupem a rozbalovacím náhledem zdrojového kódu (Markdown / HTML).
+	 */
+	private function render_formatted_comparison_cell(string $raw_text): string { // Vykreslení buňky s is_html = 1
+		if (trim($raw_text) === '') {                                        // Prázdný text nevyžaduje vykreslování
+			return '';                                                       // Vrácení prázdného řetězce
+		}
+
+		$rendered_html = '';                                                 // Vykreslený HTML obsah
+		$fmt_badge = '';                                                     // Štítek rozpoznaného formátu (MD / HTML)
+		if (class_exists('rich_text')) {                                     // Pokud je třída rich_text k dispozici
+			if (method_exists('rich_text', 'detect_format')) {               // Zjištění formátu textu
+				$det = (string)rich_text::detect_format($raw_text);          // Detekovaný formát ('markdown' nebo 'html')
+				$fmt_label = ($det === 'html') ? 'HTML' : 'MD';              // Zkratka formátu do štítku
+				$fmt_badge = "<span style=\"float: right; font-size: 10px; background: #e2e8f0; color: #334155; padding: 1px 5px; border-radius: 3px; font-family: monospace;\">{$fmt_label}</span>"; // Štítek
+			}
+			if (method_exists('rich_text', 'to_html')) {                     // Převod na bezpečné HTML přes to_html()
+				$rendered_html = (string)rich_text::to_html($raw_text);      // Vyrenderované HTML
+			} elseif (method_exists('rich_text', 'render_html')) {           // Fallback na metodu render_html()
+				$rendered_html = (string)rich_text::render_html($raw_text);  // Vyrenderované HTML
+			} elseif (method_exists('rich_text', 'render_readonly')) {       // Fallback na metodu render_readonly()
+				$rendered_html = (string)rich_text::render_readonly($raw_text); // Vyrenderované HTML
+			}
+		}
+
+		if ($rendered_html === '') {                                         // Nouzový fallback pokud rich_text není dostupný
+			return nl2br(htmlspecialchars($raw_text));                       // Klasický escapovaný výpis
+		}
+
+		$lbl_src = htmlspecialchars($this->phrase('lbl_show_raw_source', [], 'Zobrazit zdrojový text (Markdown / HTML)')); // Popisek rozbalení zdroje
+		$safe_raw = htmlspecialchars($raw_text);                             // Ošetřený zdrojový kód
+
+		return "<div class=\"bcm-rt-Rendered\">{$fmt_badge}{$rendered_html}</div>"
+			. "<details style=\"margin-top: 6px; font-size: 11px; color: #64748b;\">"
+			. "<summary style=\"cursor: pointer; user-select: none;\">{$lbl_src}</summary>"
+			. "<pre style=\"margin: 4px 0 0 0; padding: 6px; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 3px; white-space: pre-wrap; word-break: break-word; font-family: monospace; color: #334155;\">{$safe_raw}</pre>"
+			. "</details>";                                                  // Složená buňka s náhledem a zdrojem
+	}
+
+	/**
 	 * Vykreslí levý panel se seznamem všech návrhů čekajících na schválení ('F')
 	 * a ovládací lištou pro hromadné schválení nebo odmítnutí vybraných položek.
 	 */
@@ -715,11 +764,18 @@ HTML;
 			$row_style = $is_rem_row ? ' style="background-color: #fef2f2;"' : ($is_changed ? ' style="background-color: #f0fdf4;"' : ''); // Podbarvení řádku
 			$new_style = $is_rem_row ? ' style="font-weight: bold; color: #991b1b;"' : ($is_changed ? ' style="font-weight: bold; color: #166534;"' : ''); // Barva nové hodnoty
 
-			$disp_old = $this->format_comparison_value($meta, $old_val);     // Čitelná původní hodnota
-			$disp_new = $this->format_comparison_value($meta, $new_val);     // Čitelná navrhovaná hodnota
+			if (!empty($meta['is_html'])) {                                  // Vykreslení formátovaného sloupce (Markdown / HTML)
+				$safe_old = $is_new_record
+					? "<span style=\"color: #94a3b8; font-style: italic;\">{$txt_none}</span>"
+					: $this->render_formatted_comparison_cell($old_val);     // Formátovaná původní hodnota
+				$safe_new = $this->render_formatted_comparison_cell($new_val); // Formátovaná navrhovaná hodnota
+			} else {
+				$disp_old = $this->format_comparison_value($meta, $old_val); // Čitelná původní hodnota
+				$disp_new = $this->format_comparison_value($meta, $new_val); // Čitelná navrhovaná hodnota
 
-			$safe_old = $is_new_record ? "<span style=\"color: #94a3b8; font-style: italic;\">{$txt_none}</span>" : nl2br(htmlspecialchars($disp_old)); // HTML staré hodnoty
-			$safe_new = nl2br(htmlspecialchars($disp_new));                  // HTML navrhované hodnoty
+				$safe_old = $is_new_record ? "<span style=\"color: #94a3b8; font-style: italic;\">{$txt_none}</span>" : nl2br(htmlspecialchars($disp_old)); // HTML staré hodnoty
+				$safe_new = nl2br(htmlspecialchars($disp_new));              // HTML navrhované hodnoty
+			}
 
 			echo <<<HTML
 						<tr{$row_style}>
