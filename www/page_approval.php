@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-26 13:55
+ * Verze: 2026-10-27 19:40
  * Soubor: page_approval.php
  * Třída: page_approval
  * Účel: Univerzální schvalovací obrazovka (SSC) pro porovnání původních
@@ -11,7 +11,7 @@
  * ARCHITEKTONICKÉ VAZBY:
  * - Instancována dynamicky z routeru `index.php` při `?page=page_approval`.
  * - Dědí z `abstract_page_master_detail`, čímž přebírá kompletní Flexbox dvoupanelový
- *   layout (`.md-master` a `.md-detail`) bez duplicity CSS a JS kódu.
+ *   layout (`.md-master` a `.md-detail`) i asynchronní načítání detailu (`loadDetailPanel`).
  * - Využívá `entity_manager` (inicializovaný v `abstract_page_master_detail::render()`
  *   přes `$this->class_name`) pro načtení metadat cílové logické třídy, získání
  *   původních schválených hodnot (`fetch_row(..., true, true)`) a spuštění
@@ -24,23 +24,17 @@
  *   (`dbsession.organization`) a mají stejnou jazykovou verzi jako přihlášený
  *   schvalovatel (`dbsession.language`).
  * - Tabulka `user_organization_access` je z obecného schvalování vyčleněna,
- *   protože podléhá oboustrannému souhlasu (žádost uživatele vs. pozvánka orgadmina)
+ *   protože podléhá obousměrnému souhlasu (žádost uživatele vs. pozvánka orgadmina)
  *   ve specializovaných modulech `page_org_users` a `page_change_user_context`.
  *
  * Změny:
+ * 2026-10-27 19:40 - Náhrada CTE `;WITH fl AS (...)` za indexovanou tabulkovou
+ *                    proměnnou `DECLARE @fl TABLE` se `SET NOCOUNT ON`.
+ *                  - Napojení řádků v `render_master()` na asynchronní `loadDetailPanel()`
+ *                    bez refreshe levého panelu (při zachování funkčnosti checkboxů).
  * 2026-10-26 13:55 - V porovnávací tabulce v render_detail() doplněno vykreslování
- *                    formátovaného textu (Markdown / HTML) pro sloupce s is_html = 1
- *                    pomocí třídy rich_text (včetně rozbalovacího náhledu zdrojového kódu).
- * 2026-10-23 15:15 - Doplněno hromadné schvalování a odmítání vybraných návrhů
- *                    v levém panelu (checkboxy + hromadná lišta s poznámkou).
- *                  - Odstraněn filtr `removed = 0` u konceptů `'D'`, aby byly viditelné
- *                    i návrhy na zrušení záznamu (`removed = 1`), a zapnuto načítání
- *                    zrušených originálů `fetch_row($where_app, true, true)` pro návrhy obnovy.
- *                  - Sloupec `removed` zařazen do porovnávací tabulky v `render_detail()`.
- *                  - Doplněna lokalizace názvů tříd, číselníků a relací přes `dbo.f_language_list`.
- * 2026-10-22 22:40 - Oprava načtení původního schváleného stavu v `render_detail()`
- *                    přímo přes `$em->fetch_row($where_app, true)`.
- * 2026-10-22 17:45 - Doplněna striktní kontrola vlastníka (`object_owner`) a jazyka.
+ *                    formátovaného textu (Markdown / HTML) pro sloupce s is_html = 1.
+ * 2026-10-23 15:15 - Doplněno hromadné schvalování a odmítání vybraných návrhů.
  * =============================================================================
  */
 
@@ -174,11 +168,16 @@ class page_approval extends abstract_page_master_detail {
 		$classes = [];                                                       // Mapa dostupných tříd: [class_name => caption]
 		$items = [];                                                         // Seznam nalezených návrhů ke schválení
 
-		// 1. Zjištění všech logických tříd (s lokalizovaným názvem dle f_language_list), jejichž fyzická tabulka má sloupec draft_author
+		// 1. Zjištění všech logických tříd (přes indexovanou tabulkovou proměnnou @fl bez CTE)
 		$raw_cls = sqlarray_simple("
-			WITH fl AS (
-				SELECT [language], fallback_order FROM dbo.f_language_list({$lang_sql}) WHERE fallback_order < 1000
-			)
+			SET NOCOUNT ON;
+			DECLARE @fl TABLE (
+				[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+				fallback_order int NOT NULL
+			);
+			INSERT INTO @fl ([language], fallback_order)
+			SELECT [language], fallback_order FROM dbo.f_language_list({$lang_sql}) WHERE fallback_order < 1000;
+
 			SELECT mc.class_name, COALESCE(tr.caption, mc.caption, mc.class_name) AS caption, mo.builtin_code AS table_name
 			FROM meta_class mc
 			JOIN meta_object mo ON mo.original = mc.storage_object AND mo.object_type = 'T' AND mo.record_type = 'A' AND mo.removed = 0
@@ -186,7 +185,7 @@ class page_approval extends abstract_page_master_detail {
 			OUTER APPLY (
 				SELECT TOP 1 l.caption
 				FROM meta_class l
-				JOIN fl ON fl.[language] = l.[language]
+				JOIN @fl fl ON fl.[language] = l.[language]
 				WHERE l.original = mc.original
 				  AND l.record_type = 'L'
 				  AND l.removed = 0
@@ -199,7 +198,7 @@ class page_approval extends abstract_page_master_detail {
 			  AND mc.removed = 0
 			  AND mc.class_name NOT IN ('sys_global_columns', 'user_organization_access')
 			  AND mo.builtin_code <> 'user_organization_access'
-			ORDER BY mc.class_name
+			ORDER BY mc.class_name;
 		");                                                                  // Načtení všech logických tříd do pole
 
 		$class_rows = [];                                                    // Pomocné pole načtených tříd
@@ -328,15 +327,20 @@ class page_approval extends abstract_page_master_detail {
 			$safe_ct = charliteral((string)$meta['referenced_codetable']);   // SQL literál názvu číselníku
 			$safe_val = charliteral($raw_val);                               // SQL literál hodnoty číselníku
 			$r_ct = sqlfirstrow("
-				WITH fl AS (
-					SELECT [language], fallback_order FROM dbo.f_language_list({$lang_sql}) WHERE fallback_order < 1000
-				)
+				SET NOCOUNT ON;
+				DECLARE @fl TABLE (
+					[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+					fallback_order int NOT NULL
+				);
+				INSERT INTO @fl ([language], fallback_order)
+				SELECT [language], fallback_order FROM dbo.f_language_list({$lang_sql}) WHERE fallback_order < 1000;
+
 				SELECT TOP 1 COALESCE(tr.caption, c.caption, '') AS caption
 				FROM meta_codetable c
 				OUTER APPLY (
 					SELECT TOP 1 l.caption
 					FROM meta_codetable l
-					JOIN fl ON fl.[language] = l.[language]
+					JOIN @fl fl ON fl.[language] = l.[language]
 					WHERE l.original = c.original
 					  AND l.record_type = 'L'
 					  AND l.removed = 0
@@ -349,7 +353,7 @@ class page_approval extends abstract_page_master_detail {
 				  AND c.object_owner IN ({$org_sql}, 0x00)
 				  AND c.record_type = 'A'
 				  AND c.removed = 0
-				ORDER BY CASE WHEN c.object_owner = {$org_sql} THEN 0 ELSE 1 END
+				ORDER BY CASE WHEN c.object_owner = {$org_sql} THEN 0 ELSE 1 END;
 			");                                                              // Dotaz na lokalizovaný popisek číselníku
 			if (!empty($r_ct) AND (string)$r_ct['caption'] !== '') {         // Pokud byl nalezen popisek v číselníku
 				return (string)$r_ct['caption'] . " [{$raw_val}]";           // Výpis popisku i kódu
@@ -369,15 +373,20 @@ class page_approval extends abstract_page_master_detail {
 			if (!empty($r_rc) AND !empty($r_rc['ref_table'])) {              // Pokud cílová tabulka existuje
 				$ref_tab = (string)$r_rc['ref_table'];                       // Název odkazované tabulky
 				$t_row = sqlfirstrow("
-					WITH fl AS (
-						SELECT [language], fallback_order FROM dbo.f_language_list({$lang_sql}) WHERE fallback_order < 1000
-					)
+					SET NOCOUNT ON;
+					DECLARE @fl TABLE (
+						[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+						fallback_order int NOT NULL
+					);
+					INSERT INTO @fl ([language], fallback_order)
+					SELECT [language], fallback_order FROM dbo.f_language_list({$lang_sql}) WHERE fallback_order < 1000;
+
 					SELECT TOP 1 a.*, tr.caption AS trans_caption
 					FROM [{$ref_tab}] a
 					OUTER APPLY (
 						SELECT TOP 1 l.caption
 						FROM [{$ref_tab}] l
-						JOIN fl ON fl.[language] = l.[language]
+						JOIN @fl fl ON fl.[language] = l.[language]
 						WHERE l.original = a.original
 						  AND l.record_type = 'L'
 						  AND l.removed = 0
@@ -389,7 +398,7 @@ class page_approval extends abstract_page_master_detail {
 					  AND (a.object_owner IN ({$org_sql}, 0x00) OR a.object_owner = a.original)
 					  AND a.record_type = 'A'
 					  AND a.removed = 0
-					ORDER BY CASE WHEN a.object_owner = {$org_sql} THEN 0 ELSE 1 END
+					ORDER BY CASE WHEN a.object_owner = {$org_sql} THEN 0 ELSE 1 END;
 				");                                                          // Načtení cílového řádku s překladem a izolací tenanta
 				if (!empty($t_row)) {                                        // Sestavení čitelného popisku cílového záznamu
 					$cap = (string)($t_row['trans_caption'] ?? $t_row['caption'] ?? ''); // Lokalizovaný popisek cíle
@@ -425,10 +434,8 @@ class page_approval extends abstract_page_master_detail {
 			}
 			if (method_exists('rich_text', 'to_html')) {                     // Převod na bezpečné HTML přes to_html()
 				$rendered_html = (string)rich_text::to_html($raw_text);      // Vyrenderované HTML
-			} elseif (method_exists('rich_text', 'render_html')) {           // Fallback na metodu render_html()
-				$rendered_html = (string)rich_text::render_html($raw_text);  // Vyrenderované HTML
-			} elseif (method_exists('rich_text', 'render_readonly')) {       // Fallback na metodu render_readonly()
-				$rendered_html = (string)rich_text::render_readonly($raw_text); // Vyrenderované HTML
+			} elseif (method_exists('rich_text', 'render_formatted')) {      // Fallback na render_formatted()
+				$rendered_html = (string)rich_text::render_formatted($raw_text, false); // Vyrenderované HTML
 			}
 		}
 
@@ -551,6 +558,7 @@ HTML;
 			$rowIdAttr = $is_active ? 'id="active-row"' : '';                // ID aktivního řádku pro scroll
 
 			$row_url = htmlspecialchars("index.php?page=page_approval{$filter_suffix}&target_class=" . urlencode($c_name) . "&draft_uuid=" . urlencode($d_uuid)); // URL detailu
+			$safe_d_uuid = htmlspecialchars($d_uuid);                        // Ošetřené UUID návrhu pro data-uuid
 			$safe_bulk_val = htmlspecialchars($c_name . $pipe . $d_uuid);    // Hodnota pro hromadné zpracování
 			$safe_cls = htmlspecialchars($item['class_caption']);            // Ošetřený název třídy
 			$safe_rec = htmlspecialchars($item['record_label']);             // Ošetřené označení záznamu
@@ -567,7 +575,7 @@ HTML;
 			}
 
 			echo <<<HTML
-						<tr class="{$rowClass}" {$rowIdAttr} style="cursor: pointer;" onclick="document.location='{$row_url}'">
+						<tr class="{$rowClass}" {$rowIdAttr} data-uuid="{$safe_d_uuid}" data-row-url="{$row_url}" style="cursor: pointer;" onclick="if (window.loadDetailPanel) { window.loadDetailPanel('{$row_url}', this); } else { document.location='{$row_url}'; }">
 							<td style="text-align: center;" onclick="event.stopPropagation();">
 								<input type="checkbox" class="chk-draft-item" name="selected_drafts[]" value="{$safe_bulk_val}" style="cursor: pointer;">
 							</td>
@@ -715,7 +723,7 @@ HTML;
 				$c_url = htmlspecialchars("index.php?page=page_approval{$filter_suffix}&target_class=" . urlencode($this->target_class) . "&draft_uuid=" . urlencode($c_uuid)); // Odkaz
 				$c_auth = htmlspecialchars((string)$comp['author_info']);    // Autor souběžného návrhu
 				$c_dt = htmlspecialchars(date_format4((string)$comp['date_modified'], 16)); // Datum souběžného návrhu
-				echo "<li><a href=\"{$c_url}\" style=\"color: #004488; font-weight: bold;\">{$c_auth} ({$c_dt})</a></li>"; // Položka seznamu
+				echo "<li><a href=\"{$c_url}\" onclick=\"if(window.loadDetailPanel){window.loadDetailPanel('{$c_url}');return false;}\" style=\"color: #004488; font-weight: bold;\">{$c_auth} ({$c_dt})</a></li>"; // Položka seznamu
 			}
 			echo "</ul></div>\n";                                            // Uzavření seznamu souběžných návrhů
 		}

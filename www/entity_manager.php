@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-26 13:50
+ * Verze: 2026-10-27 16:10
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – čtecí, metadatová a UI vrstva (STI Architektura).
  *       Zápisové a schvalovací metody jsou vyčleněny do traitu entity_manager_write
@@ -11,8 +11,8 @@
  * - Instancován z potomků `abstract_page_master_detail` (v metodě `render()`),
  *   `page_meta_column.php` a z univerzální schvalovací stránky `page_approval.php`.
  * - Vkládá trait `entity_manager_write` (`entity_manager_write.php`).
- * - Využívá třídu `rich_text` (`rich_text.php`) pro vykreslování a konverzi sloupců
- *   s příznakem `is_html = 1` (podpora Markdownu i HTML).
+ * - Využívá třídu `rich_text` (`rich_text.php`) pro vykreslování náhledu (Preview)
+ *   a modálního editoru na popředí u sloupců s příznakem `is_html = 1` (Markdown / HTML).
  * - Využívá globální pole `$dbsession` (inicializované v `OsirisLib.php` přes `initsession()`).
  * - Využívá třídu `language_manager` (`language_manager.php`) a databázovou funkci
  *   `dbo.f_language_list()` s podmínkou `fallback_order < 1000`.
@@ -24,31 +24,28 @@
  * 1. Single Table Inheritance (STI) a Dědičnost sloupců (ancestor)
  *    Systém abstrahuje fyzické tabulky (meta_object) do logických tříd (meta_class).
  *    Chybějící vlastnosti sloupců v meta_column se dědí z předka v 'sys_global_columns'.
- * 2. Dvoupolové vyhodnocování jazykových verzí v PHP (Konec obřích LEFT JOIN dotazů)
- *    Místo nabalování desítek LEFT JOINů a COALESCE pro každý fallback jazyk a předka
- *    načte `fetch_rows()` (i `load_metadata()`) jedním dotazem záznamy 'A'/'D' a k nim
- *    záznamy 'L' s `fallback_order < 1000` (přes `dbo.f_language_list`).
- *    V PHP z nich vytvoří dvě pole:
- *    - pole hlavních záznamů indexované podle `original`,
- *    - podřízené dvojrozměrné pole `[original][language]` seřazené podle `fallback_order`.
+ * 2. Dvoupolové vyhodnocování jazykových verzí v PHP a optimalizace přes @table proměnné
+ *    Místo nabalování vícenásobně odkazovaných CTE (;WITH) využívají metody
+ *    `load_metadata()`, `fetch_rows()` i `render_dynamic_input()` materializované
+ *    tabulkové proměnné (`DECLARE @t TABLE`) s primárními klíči, které umožňují
+ *    provádět přímé Index Seek operace nad fyzickými tabulkami.
  * 
  * Změny:
- * 2026-10-26 13:50 - V metodě render_dynamic_input() doplněna podpora sloupců
- *                    s příznakem is_html = 1 přes třídu rich_text (automatické
- *                    rozpoznání Markdown vs. HTML, Toast UI Editor a readonly náhled).
+ * 2026-10-27 16:10 - Kompletní náhrada neefektivních CTE (;WITH) v metodách load_metadata(),
+ *                    fetch_rows() a render_dynamic_input() za indexované tabulkové
+ *                    proměnné (DECLARE @t TABLE s PRIMARY KEY) a přímé protlačení
+ *                    podmínek WHERE (original, parent_class, source_code) k Index Seeku.
+ * 2026-10-27 14:35 - V metodě render_dynamic_input() upraveno vykreslování sloupců
+ *                    s is_html = 1 na čistý Preview box v tabulce detailu s modálním
+ *                    Toast UI Editorem na popředí (přes rich_text::render_editor).
  * 2026-10-24 13:15 - V evaluate_remove_permission() doplněna ochrana kořenové položky
  *                    menu 'home' a ochrana proti zrušení složky menu s aktivními potomky.
- *                  - V render_dynamic_input() u sloupce target_object filtrovány pouze
- *                    objekty typu 'P' (PHP stránky) a pro rekurzivní vazbu na meta_menu
- *                    (parent_uuid) doplněno stromové řazení a rekurzivní vyloučení
- *                    vlastního podstromu (ochrana proti zacyklení hierarchie).
- * 2026-10-24 11:30 - V metodě fetch_rows() odstraněn filtr rc.removed = 0 u konceptů 'D'
- *                    v CTE dr a doplněn sloupec native_language.
  * =============================================================================
  */
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/rich_text.php';
 require_once __DIR__ . '/entity_manager_write.php';
 
 class entity_manager {
@@ -189,7 +186,7 @@ class entity_manager {
 
 	/**
 	 * Načte metadata logické třídy, identifikuje fyzickou tabulku 
-	 * a načte definici sloupců pomocí dvoupolového vyhodnocení ('A' + podřízené 'L').
+	 * a načte definici sloupců pomocí indexovaných tabulkových proměnných a dvoupolového vyhodnocení.
 	 */
 	private function load_metadata(): void {
 		$safe_class = charliteral($this->class_name);                        // Bezpečný SQL literál názvu třídy
@@ -200,43 +197,75 @@ class entity_manager {
 		$safe_lang = charliteral($curr_lang, 2);                             // SQL literál jazyka
 		$lang_chain = $this->lang_manager->get_fallback_chain();             // Řetězec jazyků s fallback_order < 1000
 
-		// 1. Načtení definice logické třídy ('A' i 'L' pro třídu a jejího případného předka ancestor_class)
+		// 1. Načtení definice logické třídy přes skalární proměnné a @fl tabulku (přímý Index Seek na original)
 		$sql_class = "
-		WITH fl AS (
-			SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-		),
-		base_cls AS (
-			SELECT mc.*, mo.builtin_code AS storage_table_name, mo.original AS storage_original
-			FROM meta_class mc
-			JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
-			WHERE mc.class_name = {$safe_class} AND mc.record_type = 'A' AND mc.object_owner = 0x00 AND mc.removed = 0
-		)
-		SELECT 'A' AS row_kind, 0 AS is_tenant_l, 0 AS fallback_order,
-			c.original, c.class_name, c.storage_object, c.ancestor_class, c.sort_code, c.svg_icon,
-			c.is_final, c.is_protected, c.inactive, c.[language],
-			COALESCE(NULLIF(CAST(c_my.caption AS NVARCHAR(MAX)), ''), CAST(c.caption AS NVARCHAR(MAX)), '') AS caption,
-			COALESCE(NULLIF(CAST(c_my.caption_plural AS NVARCHAR(MAX)), ''), CAST(c.caption_plural AS NVARCHAR(MAX)), '') AS caption_plural,
-			COALESCE(NULLIF(CAST(c_my.description AS NVARCHAR(MAX)), ''), CAST(c.description AS NVARCHAR(MAX)), '') AS description,
-			COALESCE(NULLIF(CAST(c_my.helptext AS NVARCHAR(MAX)), ''), CAST(c.helptext AS NVARCHAR(MAX)), '') AS helptext,
-			c.storage_table_name, c.storage_original
-		FROM base_cls c
-		LEFT JOIN meta_class c_my ON c_my.original = c.original AND c_my.record_type = 'A' AND c_my.object_owner = {$org_uuid} AND c_my.object_owner <> 0x00 AND c_my.removed = 0
+		SET NOCOUNT ON;
 
-		UNION ALL
+		DECLARE @fl TABLE (
+			[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+			fallback_order int NOT NULL
+		);
+		INSERT INTO @fl ([language], fallback_order)
+		SELECT [language], fallback_order
+		FROM dbo.f_language_list({$safe_lang})
+		WHERE fallback_order < 1000;
 
-		SELECT 'L' AS row_kind, CASE WHEN l.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant_l, fl.fallback_order,
-			l.original, l.class_name, l.storage_object, l.ancestor_class, l.sort_code, l.svg_icon,
-			l.is_final, l.is_protected, l.inactive, l.[language],
-			CAST(l.caption AS NVARCHAR(MAX)) AS caption,
-			CAST(l.caption_plural AS NVARCHAR(MAX)) AS caption_plural,
-			CAST(l.description AS NVARCHAR(MAX)) AS description,
-			CAST(l.helptext AS NVARCHAR(MAX)) AS helptext,
-			'' AS storage_table_name, 0x00 AS storage_original
-		FROM base_cls c
-		JOIN meta_class l ON l.original = c.original AND l.record_type = 'L' AND l.removed = 0 AND l.object_owner IN (0x00, {$org_uuid})
-		JOIN fl ON fl.[language] = l.[language]
-		ORDER BY row_kind ASC, fallback_order ASC, is_tenant_l DESC
-		";                                                                   // Jednoduchý dotaz na metadata třídy bez násobných JOINů
+		DECLARE @cls_orig uniqueidentifier = NULL;
+		DECLARE @stg_name varchar(80) = '';
+		DECLARE @stg_orig uniqueidentifier = 0x00;
+
+		SELECT TOP 1
+			@cls_orig = mc.original,
+			@stg_name = mo.builtin_code,
+			@stg_orig = mo.original
+		FROM meta_class mc
+		JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
+		WHERE mc.class_name = {$safe_class}
+		  AND mc.record_type = 'A'
+		  AND mc.object_owner = 0x00
+		  AND mc.removed = 0;
+
+		IF @cls_orig IS NOT NULL
+		BEGIN
+			SELECT 'A' AS row_kind, 0 AS is_tenant_l, 0 AS fallback_order,
+				c.original, c.class_name, c.storage_object, c.ancestor_class, c.sort_code, c.svg_icon,
+				c.is_final, c.is_protected, c.inactive, c.[language],
+				COALESCE(NULLIF(CAST(c_my.caption AS NVARCHAR(MAX)), ''), CAST(c.caption AS NVARCHAR(MAX)), '') AS caption,
+				COALESCE(NULLIF(CAST(c_my.caption_plural AS NVARCHAR(MAX)), ''), CAST(c.caption_plural AS NVARCHAR(MAX)), '') AS caption_plural,
+				COALESCE(NULLIF(CAST(c_my.description AS NVARCHAR(MAX)), ''), CAST(c.description AS NVARCHAR(MAX)), '') AS description,
+				COALESCE(NULLIF(CAST(c_my.helptext AS NVARCHAR(MAX)), ''), CAST(c.helptext AS NVARCHAR(MAX)), '') AS helptext,
+				@stg_name AS storage_table_name, @stg_orig AS storage_original
+			FROM meta_class c
+			LEFT JOIN meta_class c_my
+				ON c_my.original = c.original
+				AND c_my.record_type = 'A'
+				AND c_my.object_owner = {$org_uuid}
+				AND c_my.object_owner <> 0x00
+				AND c_my.removed = 0
+			WHERE c.original = @cls_orig
+			  AND c.record_type = 'A'
+			  AND c.object_owner = 0x00
+			  AND c.removed = 0
+
+			UNION ALL
+
+			SELECT 'L' AS row_kind, CASE WHEN l.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant_l, fl.fallback_order,
+				l.original, l.class_name, l.storage_object, l.ancestor_class, l.sort_code, l.svg_icon,
+				l.is_final, l.is_protected, l.inactive, l.[language],
+				CAST(l.caption AS NVARCHAR(MAX)) AS caption,
+				CAST(l.caption_plural AS NVARCHAR(MAX)) AS caption_plural,
+				CAST(l.description AS NVARCHAR(MAX)) AS description,
+				CAST(l.helptext AS NVARCHAR(MAX)) AS helptext,
+				'' AS storage_table_name, 0x00 AS storage_original
+			FROM meta_class l
+			JOIN @fl fl ON fl.[language] = l.[language]
+			WHERE l.original = @cls_orig
+			  AND l.record_type = 'L'
+			  AND l.removed = 0
+			  AND l.object_owner IN (0x00, {$org_uuid})
+			ORDER BY row_kind ASC, fallback_order ASC, is_tenant_l DESC;
+		END
+		";                                                                   // Dotaz na metadata třídy přes Index Seek na @cls_orig
 
 		$cls_rows = sqlarray_simple($sql_class);                             // Načtení metadat třídy do paměti
 		if (empty($cls_rows)) {                                              // Pokud logická třída neexistuje
@@ -279,44 +308,64 @@ class entity_manager {
 			}
 		}
 
-		// 3. Načtení sloupců třídy, jejich předků (ancestor v sys_global_columns) a jazykových verzí ('L' s fallback_order < 1000) jedním dotazem
+		// 3. Načtení sloupců třídy, jejich předků a překladů přes indexovanou tabulkovou proměnnou @col_origs
 		$sql_cols = "
-		WITH fl AS (
-			SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-		),
-		cls_cols AS (
-			SELECT c.*
-			FROM meta_column c
-			WHERE c.parent_class = {$class_uuid} AND c.record_type = 'A' AND c.object_owner = 0x00 AND c.removed = 0
-		),
-		anc_cols AS (
-			SELECT a.*
-			FROM meta_column a
-			WHERE a.record_type = 'A' AND a.object_owner = 0x00 AND a.removed = 0
-			  AND a.original IN (SELECT DISTINCT ancestor FROM cls_cols WHERE ancestor IS NOT NULL)
-		),
-		all_origs AS (
-			SELECT original FROM cls_cols
-			UNION
-			SELECT original FROM anc_cols
-		)
-		SELECT 'A' AS row_kind, 0 AS is_tenant_l, 0 AS fallback_order, c.*
-		FROM cls_cols c
+		SET NOCOUNT ON;
 
-		UNION ALL
+		DECLARE @fl TABLE (
+			[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+			fallback_order int NOT NULL
+		);
+		INSERT INTO @fl ([language], fallback_order)
+		SELECT [language], fallback_order
+		FROM dbo.f_language_list({$safe_lang})
+		WHERE fallback_order < 1000;
 
-		SELECT 'ANC_A' AS row_kind, 0 AS is_tenant_l, 0 AS fallback_order, a.*
-		FROM anc_cols a
+		DECLARE @col_origs TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			row_kind varchar(10) COLLATE DATABASE_DEFAULT NOT NULL
+		);
+
+		INSERT INTO @col_origs (original, row_kind)
+		SELECT c.original, 'A'
+		FROM meta_column c
+		WHERE c.parent_class = {$class_uuid}
+		  AND c.record_type = 'A'
+		  AND c.object_owner = 0x00
+		  AND c.removed = 0;
+
+		INSERT INTO @col_origs (original, row_kind)
+		SELECT DISTINCT c.ancestor, 'ANC_A'
+		FROM @col_origs co
+		JOIN meta_column c
+			ON c.original = co.original
+			AND c.record_type = 'A'
+			AND c.object_owner = 0x00
+			AND c.removed = 0
+		WHERE co.row_kind = 'A'
+		  AND c.ancestor IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM @col_origs ex WHERE ex.original = c.ancestor);
+
+		SELECT co.row_kind, 0 AS is_tenant_l, 0 AS fallback_order, c.*
+		FROM @col_origs co
+		JOIN meta_column c
+			ON c.original = co.original
+			AND c.record_type = 'A'
+			AND c.object_owner = 0x00
+			AND c.removed = 0
 
 		UNION ALL
 
 		SELECT 'L' AS row_kind, CASE WHEN l.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant_l, fl.fallback_order, l.*
-		FROM meta_column l
-		JOIN all_origs ao ON ao.original = l.original
-		JOIN fl ON fl.[language] = l.[language]
-		WHERE l.record_type = 'L' AND l.removed = 0 AND l.object_owner IN (0x00, {$org_uuid})
-		ORDER BY row_kind ASC, parent_order ASC, sort_code ASC, fallback_order ASC, is_tenant_l DESC
-		";                                                                   // Jednotný dotaz na sloupce, předky a jejich překlady
+		FROM @col_origs co
+		JOIN meta_column l
+			ON l.original = co.original
+			AND l.record_type = 'L'
+			AND l.removed = 0
+			AND l.object_owner IN (0x00, {$org_uuid})
+		JOIN @fl fl ON fl.[language] = l.[language]
+		ORDER BY row_kind ASC, parent_order ASC, sort_code ASC, fallback_order ASC, is_tenant_l DESC;
+		";                                                                   // Dotaz na sloupce, předky a překlady přes @col_origs
 
 		$raw_col_rows = sqlarray_simple($sql_cols);                          // Načtení všech záznamů sloupců do paměti
 		$col_a_map = [];                                                     // Hlavní pole 'A' záznamů sloupců: [original => row]
@@ -445,13 +494,8 @@ class entity_manager {
 	}
 
 	/**
-	 * Načte záznamy entity pomocí rychlého dvoupolového algoritmu v PHP:
-	 * 1. Jedním SQL příkazem načte záznamy 'A'/'D' (včetně případných předků 'ANC_A'
-	 *    a mateřského jazyka 'native_language') a k nim podřízené jazykové záznamy 'L'
-	 *    s `fallback_order < 1000` (z `dbo.f_language_list`).
-	 * 2. Vytvoří hlavní pole indexované podle `original` a podřízené 2D pole `[original][language]`
-	 *    seřazené podle `fallback_order`.
-	 * 3. Pro každý `original` vyhodnotí jazykovou verzi v PHP bez masivních SQL JOINů.
+	 * Načte záznamy entity pomocí indexovaných tabulkových proměnných (@fl, @sy, @my, @dr, @mix, @target_origs)
+	 * a dvoupolového vyhodnocení překladů v PHP (zcela bez vícenásobně vyhodnocovaných ;WITH CTE).
 	 *
 	 * @param string $where          Volitelná WHERE podmínka (např. "m.original = ...")
 	 * @param string $order_by       Volitelné řazení
@@ -459,7 +503,7 @@ class entity_manager {
 	 * @param bool   $show_removed   Pokud true, zahrne i záznamy s removed = 1
 	 * @return array<int, array<string, mixed>> Pole výsledných řádků
 	 */
-	public function fetch_rows(string $where = '', string $order_by = '', bool $ignore_drafts = false, bool $show_removed = false): array { // Načtení záznamů přes 2 pole
+	public function fetch_rows(string $where = '', string $order_by = '', bool $ignore_drafts = false, bool $show_removed = false): array { // Načtení záznamů přes @table
 		if (!$this->is_initialized) {                                        // Kontrola inicializace správce
 			$err_title = $this->phrase('err_em_title', 'Entity manager');    // Lokalizovaný titulek chyby
 			$err_msg = $this->phrase('err_meta_not_found', 'Metadata pro logickou třídu {' . chr(36) . 'class} nebyla nalezena.', ['class' => $this->class_name]); // Text chyby
@@ -529,38 +573,44 @@ class entity_manager {
 		$sel_l_str = implode(",\n\t\t\t", $select_l_cols);                   // Řetězec sloupců pro 'L'
 
 		$has_draft_author_col = in_array('draft_author', $this->physical_cols, true); // Zda tabulka podporuje koncepty
-		$rem_filter = $show_removed ? "" : "WHERE rc.removed = 0";           // Filtr platných záznamů
-		$sy_where = $show_removed ? "WHERE my.original IS NULL" : "WHERE sy.removed = 0 AND my.original IS NULL"; // Filtr sy vs my
+		$rem_and_filter = $show_removed ? "" : "AND rc.removed = 0";         // Podmínka platných záznamů
+		$sy_rem_where = $show_removed ? "" : "AND sy.removed = 0";           // Filtr platných systémových záznamů
 
 		$my_owner_cond = $is_self_owned
-			? "(rc.object_owner = s.organization_uuid OR (s.organization_uuid = 0x00 AND rc.object_owner = rc.original))"
-			: "rc.object_owner = s.organization_uuid AND rc.object_owner <> 0x00"; // Podmínka vlastníka pro my
+			? "(rc.object_owner = @org_uuid OR (@org_uuid = 0x00 AND rc.object_owner = rc.original))"
+			: "rc.object_owner = @org_uuid AND rc.object_owner <> 0x00";     // Podmínka vlastníka pro @my
 
 		$dr_owner_cond = $is_self_owned
-			? "(rc.object_owner = s.organization_uuid OR (s.organization_uuid = 0x00 AND rc.object_owner = rc.original))"
-			: "rc.object_owner = s.organization_uuid";                       // Podmínka vlastníka pro koncepty dr
+			? "(rc.object_owner = @org_uuid OR (@org_uuid = 0x00 AND rc.object_owner = rc.original))"
+			: "rc.object_owner = @org_uuid";                                 // Podmínka vlastníka pro koncepty @dr
 
-		$sy_cte = "
-		sy_raw AS (
-			SELECT rc.*, CAST(0 AS BIT) AS object_is_mine,
-				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.removed ASC, rc.date_modified DESC) AS rn_rec,
-				rc.[language] AS native_language
-			FROM s JOIN {$table} rc ON rc.object_owner = 0x00 AND rc.record_type = 'A' {$rem_filter}
-		),
-		sy AS (SELECT * FROM sy_raw WHERE rn_rec = 1),
-		my_raw AS (
-			SELECT rc.*, CAST(1 AS BIT) AS object_is_mine,
-				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.removed ASC, rc.date_modified DESC) AS rn_rec,
-				rc.[language] AS native_language
-			FROM s JOIN {$table} rc ON {$my_owner_cond} AND rc.record_type = 'A' {$rem_filter}
-		),
-		my AS (SELECT * FROM my_raw WHERE rn_rec = 1)";                      // Společné CTE pro systémové a vlastní záznamy
+		// Protlačení filtrů na klíčové NOT NULL sloupce (original, parent_class, source_code) přímo do @sy, @my, @dr pro okamžitý Index Seek
+		$pushdown_rc_filter = '';                                            // Výchozí prázdný pushdown filtr
+		$trimmed_where = trim($where);                                       // Oříznutá vstupní podmínka WHERE
+		$m_push = [];                                                        // Pole zachycených skupin regulárního výrazu
+		if ($trimmed_where !== '' AND preg_match('/^m\.(original|parent_class|source_code)\s*=\s*(\'[0-9a-zA-Z_\-]+\'|0x00)$/i', $trimmed_where, $m_push)) { // Detekce klíčového filtru
+			$push_col = $m_push[1];                                          // Filtrovaný klíčový sloupec
+			$push_val = $m_push[2];                                          // Hodnota filtru
+			$pushdown_rc_filter = "AND rc.[{$push_col}] = {$push_val}";      // Přímé omezení pro Index Seek v primární tabulce
+		}
 
-		if (!$ignore_drafts AND $has_draft_author_col) {                     // Režim se zahrnutím konceptů ('D', vč. návrhů na removed = 1)
-			$mix_cte = "
-		{$sy_cte},
-		dr_raw AS (
-			SELECT rc.*, CAST(1 AS BIT) AS object_is_mine,
+		$where_clause = ($trimmed_where !== '') ? "WHERE {$trimmed_where}" : ""; // Obecná podmínka WHERE nad vítězným záznamem m
+		$anc_expr_sql = ($anc_col_name !== '')
+			? "COALESCE(m.[{$anc_col_name}], o.[{$anc_col_name}])"
+			: "NULL";                                                        // Výraz pro zjištění UUID předka do @mix
+
+		if (!$ignore_drafts AND $has_draft_author_col) {                     // Sestavení plnění @mix se zahrnutím konceptů @dr
+			$dr_sql_block = "
+		DECLARE @dr TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			dr_uuid uniqueidentifier NOT NULL,
+			native_language varchar(2) COLLATE DATABASE_DEFAULT NOT NULL
+		);
+
+		INSERT INTO @dr (original, dr_uuid, native_language)
+		SELECT original, uuid, native_language
+		FROM (
+			SELECT rc.original, rc.uuid,
 				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.date_modified DESC) AS rn_rec,
 				ISNULL((
 					SELECT TOP 1 a_nat.[language]
@@ -568,36 +618,63 @@ class entity_manager {
 					WHERE a_nat.original = rc.original AND a_nat.record_type = 'A'
 					ORDER BY CASE WHEN a_nat.object_owner = rc.object_owner THEN 0 ELSE 1 END, a_nat.removed ASC
 				), rc.[language]) AS native_language
-			FROM s JOIN {$table} rc ON {$dr_owner_cond} AND rc.record_type = 'D'
-			WHERE rc.[language] = s.sess_lang
-			  AND (rc.draft_author = s.user_account OR (rc.draft_author = 0x00 AND rc.approval_status = 'R'))
-		),
-		dr AS (SELECT * FROM dr_raw WHERE rn_rec = 1),
-		base_mix AS (
-			SELECT sy.* FROM sy LEFT JOIN my ON my.original = sy.original {$sy_where}
-			UNION ALL
-			SELECT * FROM my
-		),
-		mix_all AS (
-			SELECT bm.* FROM base_mix bm LEFT JOIN dr ON dr.original = bm.original WHERE dr.original IS NULL
-			UNION ALL
-			SELECT * FROM dr
-		)";                                                                  // CTE mix_all s koncepty a native_language
+			FROM {$table} rc
+			WHERE {$dr_owner_cond}
+			  AND rc.record_type = 'D'
+			  AND rc.[language] = @sess_lang
+			  AND (rc.draft_author = @user_account OR (rc.draft_author = 0x00 AND rc.approval_status = 'R'))
+			  {$pushdown_rc_filter}
+		) x
+		WHERE x.rn_rec = 1;
+
+		DECLARE @cand TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			win_uuid uniqueidentifier NOT NULL,
+			sys_uuid uniqueidentifier NULL,
+			object_is_mine bit NOT NULL,
+			native_language varchar(2) COLLATE DATABASE_DEFAULT NOT NULL
+		);
+
+		INSERT INTO @cand (original, win_uuid, sys_uuid, object_is_mine, native_language)
+		SELECT dr.original, dr.dr_uuid, sy.sys_uuid, 1, dr.native_language
+		FROM @dr dr
+		LEFT JOIN @sy sy ON sy.original = dr.original
+		UNION ALL
+		SELECT my.original, my.my_uuid, sy.sys_uuid, 1, my.native_language
+		FROM @my my
+		LEFT JOIN @sy sy ON sy.original = my.original
+		LEFT JOIN @dr dr ON dr.original = my.original
+		WHERE dr.original IS NULL
+		UNION ALL
+		SELECT sy.original, sy.sys_uuid, sy.sys_uuid, 0, sy.native_language
+		FROM @sy sy
+		LEFT JOIN @my my ON my.original = sy.original
+		LEFT JOIN @dr dr ON dr.original = sy.original
+		WHERE my.original IS NULL AND dr.original IS NULL {$sy_rem_where};"; // Kandidáti s koncepty
 		} else {
-			$mix_cte = "
-		{$sy_cte},
-		mix_all AS (
-			SELECT sy.* FROM sy LEFT JOIN my ON my.original = sy.original {$sy_where}
-			UNION ALL
-			SELECT * FROM my
-		)";                                                                  // CTE mix_all bez konceptů
+			$dr_sql_block = "
+		DECLARE @cand TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			win_uuid uniqueidentifier NOT NULL,
+			sys_uuid uniqueidentifier NULL,
+			object_is_mine bit NOT NULL,
+			native_language varchar(2) COLLATE DATABASE_DEFAULT NOT NULL
+		);
+
+		INSERT INTO @cand (original, win_uuid, sys_uuid, object_is_mine, native_language)
+		SELECT my.original, my.my_uuid, sy.sys_uuid, 1, my.native_language
+		FROM @my my
+		LEFT JOIN @sy sy ON sy.original = my.original
+		UNION ALL
+		SELECT sy.original, sy.sys_uuid, sy.sys_uuid, 0, sy.native_language
+		FROM @sy sy
+		LEFT JOIN @my my ON my.original = sy.original
+		WHERE my.original IS NULL {$sy_rem_where};";                        // Kandidáti bez konceptů
 		}
 
-		$where_clause = ($where !== '') ? "WHERE {$where}" : "";             // Volitelná podmínka WHERE nad m
-
-		// Sestavení UNION ALL částí pro předky ('ANC_A') a překlady ('L' s fallback_order < 1000)
+		// Sestavení UNION ALL částí pro předky ('ANC_A') a překlady ('L' s fallback_order < 1000) přes @mix a @target_origs
 		$anc_union_sql = "";                                                 // SQL větev pro načtení předků
-		$l_join_anc_sql = "";                                                // SQL podmínka pro 'L' záznamy předků
+		$target_anc_insert = "";                                             // Doplnění předků do @target_origs pro překlady 'L'
 		if ($anc_col_name !== '') {                                          // Pokud tabulka podporuje dědičnost z předka
 			$anc_union_sql = "
 		UNION ALL
@@ -612,20 +689,36 @@ class entity_manager {
 			'' AS who_created_info,
 			'' AS who_modified_info,
 			{$sel_anc_str}
-		FROM {$table} anc
-		WHERE anc.object_owner = 0x00
-		  AND anc.record_type = 'A'
-		  AND anc.removed = 0
-		  AND anc.original IN (SELECT DISTINCT [{$anc_col_name}] FROM mix WHERE [{$anc_col_name}] IS NOT NULL)"; // Načtení předků
-			$l_join_anc_sql = "OR l.original IN (SELECT DISTINCT [{$anc_col_name}] FROM mix WHERE [{$anc_col_name}] IS NOT NULL)"; // Překlady předků
+		FROM (SELECT DISTINCT anc_uuid FROM @mix WHERE anc_uuid IS NOT NULL) a
+		JOIN {$table} anc
+			ON anc.original = a.anc_uuid
+			AND anc.object_owner = 0x00
+			AND anc.record_type = 'A'
+			AND anc.removed = 0";                                            // Načtení předků přes Index Seek na anc.original
+			$target_anc_insert = "
+		INSERT INTO @target_origs (original)
+		SELECT DISTINCT anc_uuid
+		FROM @mix m
+		WHERE m.anc_uuid IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM @target_origs t WHERE t.original = m.anc_uuid);"; // Zařazení předků do @target_origs
 		}
 
+		$l_prep_sql = "";                                                    // Příprava tabulky @target_origs pro 'L'
 		$l_union_sql = "";                                                   // SQL větev pro načtení 'L' záznamů
 		if (!empty($trans_cols)) {                                           // Pouze pokud má třída překládané sloupce
 			$l_owner_cond = $is_self_owned
-				? "(l.object_owner = 0x00 OR l.object_owner = l.original OR l.object_owner = s.organization_uuid)"
-				: "(l.object_owner = 0x00 OR l.object_owner = s.organization_uuid)"; // Vlastník L záznamu
+				? "(l.object_owner = 0x00 OR l.object_owner = l.original OR l.object_owner = @org_uuid)"
+				: "(l.object_owner = 0x00 OR l.object_owner = @org_uuid)";   // Vlastník L záznamu
 			$l_rem_cond = $show_removed ? "" : "AND l.removed = 0";          // Filtr zrušených L záznamů
+
+			$l_prep_sql = "
+		DECLARE @target_origs TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY
+		);
+
+		INSERT INTO @target_origs (original)
+		SELECT original FROM @mix;
+		{$target_anc_insert}";                                               // Naplnění unikátních klíčů original pro 'L' dotaz
 
 			$l_union_sql = "
 		UNION ALL
@@ -640,50 +733,118 @@ class entity_manager {
 			'' AS who_created_info,
 			dbo.f_get_user_info(l.who_modified) AS who_modified_info,
 			{$sel_l_str}
-		FROM s
-		CROSS JOIN {$table} l
-		JOIN fl ON fl.[language] = l.[language]
-		LEFT JOIN mix m ON m.original = l.original
+		FROM @target_origs to_orig
+		JOIN {$table} l ON l.original = to_orig.original
+		JOIN @fl fl ON fl.[language] = l.[language]
 		WHERE l.record_type = 'L'
 		  {$l_rem_cond}
-		  AND {$l_owner_cond}
-		  AND (m.original IS NOT NULL {$l_join_anc_sql})";                   // Načtení 'L' záznamů s fallback_order < 1000
+		  AND {$l_owner_cond}";                                              // Přímý Index Seek přes uq_<table>_language
 		}
 
 		$sql = "
-		WITH s AS (
-			SELECT
-				ISNULL((SELECT TOP 1 organization FROM dbsession WHERE spid = @@SPID), 0x00) AS organization_uuid,
-				ISNULL((SELECT TOP 1 user_account FROM dbsession WHERE spid = @@SPID), 0x00) AS user_account,
-				ISNULL((SELECT TOP 1 [language] FROM dbsession WHERE spid = @@SPID), {$safe_lang}) AS sess_lang
-		),
-		fl AS (
-			SELECT [language], fallback_order
-			FROM dbo.f_language_list({$safe_lang})
-			WHERE fallback_order < 1000
-		),
-		{$mix_cte},
-		mix AS (
-			SELECT m.*
-			FROM mix_all m
-			{$where_clause}
-		)
+		SET NOCOUNT ON;
+
+		DECLARE @org_uuid uniqueidentifier = 0x00;
+		DECLARE @user_account uniqueidentifier = 0x00;
+		DECLARE @sess_lang varchar(2) = {$safe_lang};
+
+		SELECT TOP 1
+			@org_uuid = ISNULL(organization, 0x00),
+			@user_account = ISNULL(user_account, 0x00),
+			@sess_lang = ISNULL([language], {$safe_lang})
+		FROM dbsession
+		WHERE spid = @@SPID;
+
+		DECLARE @fl TABLE (
+			[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+			fallback_order int NOT NULL
+		);
+		INSERT INTO @fl ([language], fallback_order)
+		SELECT [language], fallback_order
+		FROM dbo.f_language_list(@sess_lang)
+		WHERE fallback_order < 1000;
+
+		DECLARE @sy TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			sys_uuid uniqueidentifier NOT NULL,
+			removed bit NOT NULL,
+			native_language varchar(2) COLLATE DATABASE_DEFAULT NOT NULL
+		);
+
+		INSERT INTO @sy (original, sys_uuid, removed, native_language)
+		SELECT original, uuid, removed, [language]
+		FROM (
+			SELECT rc.original, rc.uuid, rc.removed, rc.[language],
+				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.removed ASC, rc.date_modified DESC) AS rn_rec
+			FROM {$table} rc
+			WHERE rc.object_owner = 0x00
+			  AND rc.record_type = 'A'
+			  {$rem_and_filter}
+			  {$pushdown_rc_filter}
+		) x
+		WHERE x.rn_rec = 1;
+
+		DECLARE @my TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			my_uuid uniqueidentifier NOT NULL,
+			removed bit NOT NULL,
+			native_language varchar(2) COLLATE DATABASE_DEFAULT NOT NULL
+		);
+
+		INSERT INTO @my (original, my_uuid, removed, native_language)
+		SELECT original, uuid, removed, [language]
+		FROM (
+			SELECT rc.original, rc.uuid, rc.removed, rc.[language],
+				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.removed ASC, rc.date_modified DESC) AS rn_rec
+			FROM {$table} rc
+			WHERE {$my_owner_cond}
+			  AND rc.record_type = 'A'
+			  {$rem_and_filter}
+			  {$pushdown_rc_filter}
+		) x
+		WHERE x.rn_rec = 1;
+		{$dr_sql_block}
+
+		DECLARE @mix TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			win_uuid uniqueidentifier NOT NULL,
+			sys_uuid uniqueidentifier NULL,
+			anc_uuid uniqueidentifier NULL,
+			object_is_mine bit NOT NULL,
+			native_language varchar(2) COLLATE DATABASE_DEFAULT NOT NULL
+		);
+
+		INSERT INTO @mix (original, win_uuid, sys_uuid, anc_uuid, object_is_mine, native_language)
+		SELECT
+			c.original,
+			c.win_uuid,
+			c.sys_uuid,
+			{$anc_expr_sql},
+			c.object_is_mine,
+			c.native_language
+		FROM @cand c
+		JOIN {$table} m ON m.uuid = c.win_uuid
+		LEFT JOIN {$table} o ON o.uuid = c.sys_uuid
+		{$where_clause};
+		{$l_prep_sql}
+
 		SELECT
 			1 AS kind_order,
 			'A' AS row_kind,
 			0 AS is_tenant_l,
 			0 AS fallback_order,
-			m.object_is_mine,
-			m.native_language,
+			mk.object_is_mine,
+			mk.native_language,
 			dbo.f_get_user_info(m.who_created) AS who_created_info,
 			dbo.f_get_user_info(m.who_modified) AS who_modified_info,
 			{$sel_a_str}
-		FROM mix m
-		LEFT JOIN sy o ON o.original = m.original
+		FROM @mix mk
+		JOIN {$table} m ON m.uuid = mk.win_uuid
+		LEFT JOIN {$table} o ON o.uuid = mk.sys_uuid
 		{$anc_union_sql}
 		{$l_union_sql}
-		ORDER BY kind_order ASC, fallback_order ASC, is_tenant_l DESC, removed ASC
-		";                                                                   // Kompletní sjednocený dotaz bez násobných JOINů
+		ORDER BY kind_order ASC, fallback_order ASC, is_tenant_l DESC, removed ASC;
+		";                                                                   // Optimalizovaná dávka bez ;WITH CTE
 
 		$raw_rows = sqlarray_simple($sql);                                   // Načtení všech dat jedním dotazem
 		if (!is_array($raw_rows) OR empty($raw_rows)) {                      // Pokud dotaz nevrátil žádné záznamy
@@ -1000,13 +1161,13 @@ HTML;
 	/**
 	 * Dynamický HTML generátor formulářových prvků na základě metadat v DB.
 	 * Zajišťuje vizuální vykreslení datových typů, maximálních délek, zamykání polí
-	 * i interaktivního Markdown / HTML editoru pro sloupce s příznakem is_html = 1.
+	 * i Preview náhledu s modálním Markdown / HTML editorem na popředí pro sloupce s is_html = 1.
 	 * 
 	 * @param string $column_name    Název sloupce (klíč v databázi, např. 'caption')
 	 * @param string $value          Aktuální hodnota k zobrazení
 	 * @param bool   $is_mine        Příznak, zda tenant vytvořil pro tento záznam svůj vlastní 'A' override
 	 * @param bool   $force_readonly Vynucení režimu pouze pro čtení z nadřazeného panelu
-	 * @return string Vygenerovaný HTML string (např. tag <input>, <select> nebo editor)
+	 * @return string Vygenerovaný HTML string (např. tag <input>, <select> nebo Preview box s modálem)
 	 */
 	public function render_dynamic_input(string $column_name, string $value, bool $is_mine = true, bool $force_readonly = false): string { // Vykreslení formulářového prvku
 		$meta = $this->get_column_meta($column_name);                        // Načtení metadat sloupce
@@ -1095,7 +1256,7 @@ HTML;
 			return "<select name=\"{$safe_name}\" {$lvl_style}>{$options_html}</select>"; // Aktivní select úrovně licence
 		}
 
-		// 2. Speciální podpora pro sloupec source_code v tabulce meta_phrase (výběr PHP třídy/stránky z meta_object)
+		// 2. Speciální podpora pro sloupec source_code v tabulce meta_phrase (výběr PHP třídy/stránky z meta_object přes @fl)
 		if ($this->storage_table === 'meta_phrase' AND $column_name === 'source_code') { // Roletka pro source_code
 			$eff_value = ($value === '') ? 'global_phrase' : $value;         // Prázdný source_code mapujeme na global_phrase
 			$safe_eff_val = htmlspecialchars($eff_value);                    // Ošetřená hodnota pro hidden pole
@@ -1104,15 +1265,16 @@ HTML;
 			$options_html = "<option value=\"global_phrase\" {$sel_global}>{$lbl_global}</option>"; // Výchozí volba global_phrase
 
 			$src_rows = sqlarray_simple("
-				WITH fl AS (
-					SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-				)
+				SET NOCOUNT ON;
+				DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+				INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000;
+
 				SELECT a.builtin_code, COALESCE(tr.caption, a.caption, '') AS caption
 				FROM meta_object a
 				OUTER APPLY (
 					SELECT TOP 1 l.caption
 					FROM meta_object l
-					JOIN fl ON fl.[language] = l.[language]
+					JOIN @fl fl ON fl.[language] = l.[language]
 					WHERE l.original = a.original
 					  AND l.record_type = 'L'
 					  AND l.removed = 0
@@ -1126,7 +1288,7 @@ HTML;
 				  AND a.object_owner = 0x00
 				  AND a.record_type = 'A'
 				  AND a.removed = 0
-				ORDER BY a.builtin_code
+				ORDER BY a.builtin_code;
 			");                                                              // Načtení lokalizovaných PHP tříd mimo global_phrase
 			if (is_array($src_rows)) {                                       // Kontrola platného pole výsledků
 				foreach ($src_rows as $r_src) {                              // Průchod registrovanými PHP třídami
@@ -1144,15 +1306,17 @@ HTML;
 			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>"; // Aktivní select
 		}
 
-		// 3. Generování <select> seznamů pro číselníky napojené v metadatech (referenced_codetable) s překlady dle f_language_list
+		// 3. Generování <select> seznamů pro číselníky napojené v metadatech (referenced_codetable) přes @fl
 		if (!empty($meta['referenced_codetable'])) {                         // Pokud je sloupec napojen na číselník
 			$options_html = "<option value=\"\">{$lbl_select}</option>";     // Prázdná výchozí volba číselníku
 			$safe_ct = charliteral($meta['referenced_codetable']);           // Bezpečný literál číselníku
 			$opt_rows = sqlarray_simple("
-				WITH fl AS (
-					SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-				),
-				ranked_ct AS (
+				SET NOCOUNT ON;
+				DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+				INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000;
+
+				SELECT c.value_code, COALESCE(tr.caption, c.caption, c.value_code) AS caption
+				FROM (
 					SELECT original, value_code, caption, sort_code,
 						ROW_NUMBER() OVER (PARTITION BY value_code ORDER BY CASE WHEN object_owner = {$org_sql} THEN 0 ELSE 1 END) AS rn
 					FROM meta_codetable
@@ -1161,13 +1325,11 @@ HTML;
 					  AND record_type = 'A'
 					  AND removed = 0
 					  AND inactive = 0
-				)
-				SELECT c.value_code, COALESCE(tr.caption, c.caption, c.value_code) AS caption
-				FROM ranked_ct c
+				) c
 				OUTER APPLY (
 					SELECT TOP 1 l.caption
 					FROM meta_codetable l
-					JOIN fl ON fl.[language] = l.[language]
+					JOIN @fl fl ON fl.[language] = l.[language]
 					WHERE l.original = c.original
 					  AND l.record_type = 'L'
 					  AND l.removed = 0
@@ -1176,7 +1338,7 @@ HTML;
 					ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
 				) tr
 				WHERE c.rn = 1
-				ORDER BY c.sort_code, caption
+				ORDER BY c.sort_code, caption;
 			");                                                              // Dotaz na položky číselníku s překladem a izolací tenanta
 			
 			if (is_array($opt_rows)) {                                       // Kontrola platného pole položek číselníku
@@ -1192,7 +1354,7 @@ HTML;
 			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>"; // Aktivní select číselníku
 		}
 
-		// 4. Generování <select> seznamů pro relační odkazy na jiné logické třídy (referenced_class) s překlady dle f_language_list
+		// 4. Generování <select> seznamů pro relační odkazy na jiné logické třídy (referenced_class) přes @fl a @table
 		if (!empty($meta['referenced_class'])) {                             // Pokud sloupec odkazuje na jinou třídu
 			$options_html = "<option value=\"\">{$lbl_select}</option>";     // Prázdná výchozí volba relace
 			$ref_class_uuid = guidliteral((string)$meta['referenced_class']); // UUID odkazované logické třídy
@@ -1214,15 +1376,16 @@ HTML;
 
 				if ($ref_table === 'meta_class') {                           // Načtení lokalizovaných položek z meta_class
 					$items = sqlarray_simple("
-						WITH fl AS (
-							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-						)
+						SET NOCOUNT ON;
+						DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+						INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000;
+
 						SELECT a.original, a.class_name AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
 						FROM meta_class a
 						OUTER APPLY (
 							SELECT TOP 1 l.caption
 							FROM meta_class l
-							JOIN fl ON fl.[language] = l.[language]
+							JOIN @fl fl ON fl.[language] = l.[language]
 							WHERE l.original = a.original
 							  AND l.record_type = 'L'
 							  AND l.removed = 0
@@ -1231,20 +1394,21 @@ HTML;
 							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
 						) tr
 						WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0 {$exclude_self}
-						ORDER BY a.class_name
+						ORDER BY a.class_name;
 					");                                                      // Dotaz na třídy s překladem
 				} elseif ($ref_table === 'meta_object') {                    // Načtení lokalizovaných položek z meta_object
 					$obj_type_cond = ($column_name === 'target_object') ? "AND a.object_type = 'P'" : ""; // Pro cíl v menu jen stránky 'P'
 					$items = sqlarray_simple("
-						WITH fl AS (
-							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-						)
+						SET NOCOUNT ON;
+						DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+						INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000;
+
 						SELECT a.original, a.builtin_code AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
 						FROM meta_object a
 						OUTER APPLY (
 							SELECT TOP 1 l.caption
 							FROM meta_object l
-							JOIN fl ON fl.[language] = l.[language]
+							JOIN @fl fl ON fl.[language] = l.[language]
 							WHERE l.original = a.original
 							  AND l.record_type = 'L'
 							  AND l.removed = 0
@@ -1253,19 +1417,20 @@ HTML;
 							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
 						) tr
 						WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0 {$obj_type_cond} {$exclude_self}
-						ORDER BY a.object_type, a.builtin_code
+						ORDER BY a.object_type, a.builtin_code;
 					");                                                      // Dotaz na objekty s překladem
 				} elseif ($ref_table === 'meta_column') {                    // Načtení lokalizovaných položek z meta_column
 					$items = sqlarray_simple("
-						WITH fl AS (
-							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-						)
+						SET NOCOUNT ON;
+						DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+						INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000;
+
 						SELECT a.original, a.column_name AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
 						FROM meta_column a
 						OUTER APPLY (
 							SELECT TOP 1 l.caption
 							FROM meta_column l
-							JOIN fl ON fl.[language] = l.[language]
+							JOIN @fl fl ON fl.[language] = l.[language]
 							WHERE l.original = a.original
 							  AND l.record_type = 'L'
 							  AND l.removed = 0
@@ -1274,36 +1439,54 @@ HTML;
 							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
 						) tr
 						WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0 {$exclude_self}
-						ORDER BY a.column_name
+						ORDER BY a.column_name;
 					");                                                      // Dotaz na sloupce s překladem
-				} elseif ($ref_table === 'meta_menu') {                      // Načtení stromu položek menu s ochranou proti zacyklení
+				} elseif ($ref_table === 'meta_menu') {                      // Načtení stromu položek menu s ochranou proti zacyklení přes @valid_mnu a @descendants
 					$curr_sql = ($curr_guid !== '' AND $curr_guid !== 'NEW') ? guidliteral($curr_guid) : '0x00'; // Aktuálně editovaný uzel
 					$items = sqlarray_simple("
-						WITH fl AS (
-							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-						),
-						ranked_mnu AS (
+						SET NOCOUNT ON;
+						DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+						INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000;
+
+						DECLARE @valid_mnu TABLE (
+							original uniqueidentifier NOT NULL PRIMARY KEY,
+							builtin_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+							parent_uuid uniqueidentifier NULL,
+							sort_code varchar(20) COLLATE DATABASE_DEFAULT NOT NULL,
+							caption varchar(200) COLLATE DATABASE_DEFAULT NULL
+						);
+
+						INSERT INTO @valid_mnu (original, builtin_code, parent_uuid, sort_code, caption)
+						SELECT original, builtin_code, parent_uuid, sort_code, caption
+						FROM (
 							SELECT a.original, a.builtin_code, a.parent_uuid, a.sort_code, a.caption,
 								ROW_NUMBER() OVER (PARTITION BY a.original ORDER BY CASE WHEN a.object_owner = {$org_sql} THEN 0 ELSE 1 END) AS rn
 							FROM meta_menu a
 							WHERE a.object_owner IN ({$org_sql}, 0x00)
 							  AND a.record_type = 'A'
 							  AND a.removed = 0
-						),
-						valid_mnu AS (
-							SELECT * FROM ranked_mnu WHERE rn = 1
-						),
-						descendants AS (
-							SELECT original FROM valid_mnu WHERE original = {$curr_sql}
-							UNION ALL
-							SELECT m.original FROM valid_mnu m JOIN descendants d ON m.parent_uuid = d.original
-						)
+						) x
+						WHERE x.rn = 1;
+
+						DECLARE @descendants TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
+						INSERT INTO @descendants (original)
+						SELECT original FROM @valid_mnu WHERE original = {$curr_sql};
+
+						WHILE @@ROWCOUNT > 0
+						BEGIN
+							INSERT INTO @descendants (original)
+							SELECT m.original
+							FROM @valid_mnu m
+							JOIN @descendants d ON m.parent_uuid = d.original
+							WHERE NOT EXISTS (SELECT 1 FROM @descendants ex WHERE ex.original = m.original);
+						END
+
 						SELECT r.original, r.builtin_code AS code_col, COALESCE(tr.caption, r.caption, '') AS caption
-						FROM valid_mnu r
+						FROM @valid_mnu r
 						OUTER APPLY (
 							SELECT TOP 1 l.caption
 							FROM meta_menu l
-							JOIN fl ON fl.[language] = l.[language]
+							JOIN @fl fl ON fl.[language] = l.[language]
 							WHERE l.original = r.original
 							  AND l.record_type = 'L'
 							  AND l.removed = 0
@@ -1311,15 +1494,17 @@ HTML;
 							  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
 							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
 						) tr
-						WHERE r.original NOT IN (SELECT original FROM descendants)
-						ORDER BY CASE WHEN r.parent_uuid IS NULL THEN 0 ELSE 1 END, r.sort_code, r.builtin_code
+						WHERE NOT EXISTS (SELECT 1 FROM @descendants d WHERE d.original = r.original)
+						ORDER BY CASE WHEN r.parent_uuid IS NULL THEN 0 ELSE 1 END, r.sort_code, r.builtin_code;
 					");                                                      // Dotaz na nadřízené položky menu bez vlastního podstromu
 				} else {
 					$items = sqlarray_simple("
-						WITH fl AS (
-							SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000
-						),
-						ranked_ref AS (
+						SET NOCOUNT ON;
+						DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+						INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000;
+
+						SELECT r.original, r.code_col, COALESCE(tr.caption, r.caption, '') AS caption
+						FROM (
 							SELECT a.original, '' AS code_col, a.caption,
 								ROW_NUMBER() OVER (PARTITION BY a.original ORDER BY CASE WHEN a.object_owner = {$org_sql} THEN 0 ELSE 1 END) AS rn
 							FROM {$ref_table} a
@@ -1327,13 +1512,11 @@ HTML;
 							  AND a.record_type = 'A'
 							  AND a.removed = 0
 							  {$exclude_self}
-						)
-						SELECT r.original, r.code_col, COALESCE(tr.caption, r.caption, '') AS caption
-						FROM ranked_ref r
+						) r
 						OUTER APPLY (
 							SELECT TOP 1 l.caption
 							FROM {$ref_table} l
-							JOIN fl ON fl.[language] = l.[language]
+							JOIN @fl fl ON fl.[language] = l.[language]
 							WHERE l.original = r.original
 							  AND l.record_type = 'L'
 							  AND l.removed = 0
@@ -1342,7 +1525,7 @@ HTML;
 							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
 						) tr
 						WHERE r.rn = 1
-						ORDER BY caption
+						ORDER BY caption;
 					");                                                      // Obecný dotaz na entitu s překladem a izolací tenanta
 				}
 
@@ -1364,14 +1547,19 @@ HTML;
 			return "<select name=\"{$safe_name}\" {$attr_string}>{$options_html}</select>"; // Aktivní select relace
 		}
 
-		// 5. Podpora formátovaného textu (Markdown / HTML) pro sloupce s příznakem is_html = 1
+		// 5. Podpora formátovaného textu (Markdown / HTML) pro sloupce s příznakem is_html = 1:
+		//    V detailu zobrazuje kompaktní Preview náhled a na kliknutí na "Upravit" otevře modální editor na popředí.
 		if (!empty($meta['is_html'])) {                                      // Sloupec podporuje formátovaný text (Markdown / HTML)
-			if ($is_readonly) {                                              // V uzamčeném režimu vykreslíme bezpečný náhled
+			if ($is_readonly) {                                              // V uzamčeném režimu vykreslíme bezpečný náhled bez tlačítka Upravit
 				$rendered_view = rich_text::render_formatted($value, true);  // Zformátovaný náhled se štítkem formátu
+				if ($rendered_view === '') {                                 // Pokud je hodnota v readonly režimu prázdná
+					$lbl_empty = htmlspecialchars($this->phrase('lbl_empty_richtext', '(Prázdné)')); // Popisek prázdné hodnoty
+					$rendered_view = "<span style=\"color: #94a3b8; font-style: italic; font-size: 12px;\">{$lbl_empty}</span>"; // Šedý text
+				}
 				return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$safe_val}\">"
-					. "<div style=\"padding: 8px 10px; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; min-height: 38px;\">{$rendered_view}</div>"; // Readonly box
+					. "<div style=\"padding: 8px 10px; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; min-height: 36px;\">{$rendered_view}</div>"; // Readonly Preview box
 			}
-			return rich_text::render_editor($column_name, $value, $meta);    // Interaktivní Markdown / WYSIWYG editor
+			return rich_text::render_editor($column_name, $value, $meta);    // Preview box s tlačítkem Upravit a modálním editorem na popředí
 		}
 
 		// Výběr správného prvku podle 'input_type' uloženého v databázi

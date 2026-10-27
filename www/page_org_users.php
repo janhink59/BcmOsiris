@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 16:15
+ * Verze: 2026-10-27 19:55
  * Soubor: page_org_users.php
  * Stránka: page_org_users.php
  * Účel: Master-Detail rozhraní pro správu uživatelů aktuálního tenanta.
@@ -10,13 +10,18 @@
  *       obousměrné schvalování přístupu mezi organizacemi (žádosti a pozvánky).
  *
  * Vazby na okolí:
- * - Dědí z abstract_page_master_detail (využívá $this->phrase(), render_audit_trail()
- *   a centrální JS filtrování levého panelu).
+ * - Dědí z abstract_page_master_detail (využívá $this->phrase(), render_audit_trail(),
+ *   asynchronní načítání detailu loadDetailPanel() a centrální JS filtrování levého panelu).
  * - Využívá abstract_button pro vykreslení akčních tlačítek.
+ * - Využívá rich_text pro vykreslení a editaci formátované poznámky (note).
  * - Volá uložené procedury page_org_users (čtení seznamu i detailu přes
  *   sqlarray_simple a sqlfirstrow) a form_org_users (zápis).
  *
  * Změny:
+ * 2026-10-27 19:55 - Napojení řádků v render_master() a tlačítek "+ Nový / Pozvat uživatele"
+ *                    a "Zahodit změny" na asynchronní funkci loadDetailPanel() (zamezení
+ *                    nechtěného refreshe levého panelu a ztráty filtru #master-filter).
+ *                  - Pole poznámky (note) napojeno na třídu rich_text (Preview + modální editor).
  * 2026-10-22 16:15 - Odstraněn duplicitní inline <script> pro #master-filter
  *                    v render_master() (filtrování řeší centrálně předek).
  * 2026-10-18 18:15 - Oprava kolize otevřeného SQLSRV statementu ($dbquery v OsirisLib.php)
@@ -28,19 +33,14 @@
  *                  - Podpora obousměrného schvalování přístupu (koncepty 'D'):
  *                    schválení/odmítnutí žádosti uživatele a odeslání/zrušení pozvánky
  *                    pro existujícího uživatele z jiné organizace (bez přepsání jeho dat).
- *                  - Odstraněny zastaralé procedurální helpery pageitem/td1_input
- *                    a důsledně aplikována Anti-LaTeX pravidla (OR/AND, komentáře).
- * 2026-10-16 08:35 - Zapojena komponenta abstract_button a lokalizace všech textů,
- *                    popisků pageitem(), stavů a hlášek přes $this->phrase().
- *                  - Doplněna ochrana proti slučování řádků (Anti-LaTeX komentáře).
- * 2026-10-15 22:58 - Doplněno volání parent::__construct() a pojistka isset($_POST['btn_save'])
- *                    v process_save() proti nechtěnému zacyklení redirectu.
- *                  - Sjednoceny obalové kontejnery .md-master-header/.md-master-content
- *                    a .md-detail-header/.md-detail-content.
  * =============================================================================
  */
 
 declare(strict_types=1);
+
+if (file_exists(__DIR__ . '/rich_text.php')) {
+	require_once __DIR__ . '/rich_text.php';
+}
 
 class page_org_users extends abstract_page_master_detail {
 
@@ -56,7 +56,7 @@ class page_org_users extends abstract_page_master_detail {
 
 		global $dbsession;                                                   // Globální kontext relace
 		
-		$this->page_title = $this->phrase('page_title', [], 'Správa uživatelů organizace'); // Lokalizovaný titulek stránky
+		$this->page_title =$this->phrase('page_title', [], 'Správa uživatelů organizace'); // Lokalizovaný titulek stránky
 		
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role v relaci
 		
@@ -75,7 +75,7 @@ class page_org_users extends abstract_page_master_detail {
 		// Parametry UI z requestu
 		$this->show_removed_users = (bool)sessioninput('show_removed_users', 4); // Příznak zobrazení zrušených účtů
 		$raw_guid = trim((string)getinput('update_guid', 'raw'));            // Načtení identifikátoru vybraného záznamu
-		$this->update_guid = ($raw_guid !== '') ? $raw_guid : null;          // Vybraný záznam z URL/POST
+		$this->update_guid = ($raw_guid !== '') ?$raw_guid : null;          // Vybraný záznam z URL/POST
 	}
 
 	/**
@@ -98,6 +98,13 @@ class page_org_users extends abstract_page_master_detail {
 			return;                                                          // Bez odeslání formuláře neukládáme
 		}
 
+		// Ošetření a případná konverze formátované poznámky (note) přes třídu rich_text
+		$raw_note = trim((string)($_POST['note'] ?? ''));                    // Surový text poznámky z formuláře
+		if ($raw_note !== '' AND class_exists('rich_text') AND method_exists('rich_text', 'normalize_for_storage')) { // Normalizace rich_text
+			$fmt_note = (string)($_POST['note__target_format'] ?? 'auto');   // Zvolený cílový formát poznámky
+			$raw_note = (string)rich_text::normalize_for_storage($raw_note, $fmt_note ?: 'auto'); // Konverze a sanitizace
+		}
+
 		// Načtení a sanitizace osobních údajů účtu (user_account)
 		$login_name        = charliteral(trim((string)($_POST['login_name'] ?? '')), 100);        // Přihlašovací jméno
 		$user_title_before = charliteral(trim((string)($_POST['user_title_before'] ?? '')), 40);  // Titul před jménem
@@ -109,7 +116,7 @@ class page_org_users extends abstract_page_master_detail {
 		$mobile            = charliteral(trim((string)($_POST['mobile'] ?? '')), 50);             // Mobilní telefon
 		$department_name   = charliteral(trim((string)($_POST['department_name'] ?? '')), 150);   // Oddělení / útvar
 		$job_title         = charliteral(trim((string)($_POST['job_title'] ?? '')), 150);         // Pracovní pozice
-		$note              = charliteral(trim((string)($_POST['note'] ?? '')));                   // Poznámka k účtu
+		$note              = charliteral($raw_note);                         // Poznámka k účtu
 
 		// Načtení oprávnění v organizaci (user_organization_access)
 		$is_orgadmin       = (!empty($_POST['is_orgadmin'])) ? 1 : 0;        // Příznak administrátora organizace
@@ -192,8 +199,10 @@ class page_org_users extends abstract_page_master_detail {
 		$lbl_b_admin  = htmlspecialchars($this->phrase('badge_role_admin', [], 'Admin')); // Štítek Admin
 		$lbl_b_trans  = htmlspecialchars($this->phrase('badge_role_trans', [], 'Překlady')); // Štítek Překlady
 
+		$new_url = 'index.php?page=page_org_users&update_guid=NEW';          // Cílová URL pro nového uživatele
 		$btn_new = new abstract_button('btn_new_user', '+ Nový / Pozvat uživatele', 'page_org_users'); // Tlačítko nového uživatele
-		$btn_new->set_href('index.php?page=page_org_users&update_guid=NEW'); // Cílová URL pro nového uživatele
+		$btn_new->set_href($new_url)                                         // Nastavení odkazu tlačítka
+			->set_onclick("if(window.loadDetailPanel){loadDetailPanel('{$new_url}');return false;}"); // Asynchronní otevření bez refreshe levého panelu
 		$btn_new_html = $btn_new->render();                                  // Vykreslení tlačítka
 		
 		echo <<<HTML
@@ -233,6 +242,7 @@ HTML;
 		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
 			foreach ($rows as $row) {                                        // Průchod řádky seznamu uživatelů v paměti
 				$uuid = (string)$row['user_uuid'];                           // Originální UUID uživatele
+				$safe_uuid = htmlspecialchars($uuid);                        // Ošetřené UUID pro atribut data-uuid
 				$rec_type = (string)$row['record_type'];                     // Typ záznamu ('A' nebo 'D')
 				$app_status = (string)$row['approval_status'];               // Stav schválení ('A', 'F', 'R')
 				$is_user_req = !empty($row['is_user_request']);              // Zda žádost podal sám uživatel
@@ -280,7 +290,7 @@ HTML;
 
 				$row_url = htmlspecialchars("index.php?page=page_org_users&update_guid=" . urlencode($uuid)); // Cílová URL řádku
 				
-				echo "<tr {$id_attr} class='{$row_class}' style='cursor: pointer;' onclick=\"document.location='{$row_url}'\">";
+				echo "<tr {$id_attr} class='{$row_class}' data-uuid='{$safe_uuid}' style='cursor: pointer;' onclick=\"if(window.loadDetailPanel){loadDetailPanel('{$row_url}', this);}else{document.location='{$row_url}';}\">";
 				echo "<td><strong>{$display_name}</strong> <span style=\"color:#64748b; font-size:11px;\">({$safe_login})</span></td>";
 				echo "<td>{$roles_html}</td>";
 				echo "<td>{$status_html}</td>";
@@ -368,9 +378,11 @@ HTML;
 
 		// Sestavení tlačítek v hlavičce detailu podle stavu záznamu
 		$header_buttons = [];                                                // Pole HTML tlačítek v hlavičce
+		$discard_url = 'index.php?page=page_org_users';                      // URL pro zahození změn
 
 		$btn_discard = new abstract_button('btn_discard', 'Zahodit změny', 'abstract_button', '', 'btn-danger'); // Tlačítko zahození změn
-		$btn_discard->set_href('index.php?page=page_org_users')->set_onclick('isFormDirty = false;'); // Odkaz bez varování dirty
+		$btn_discard->set_href($discard_url)                                 // Cílová URL při zahození změn
+			->set_onclick("isFormDirty = false; if(window.loadDetailPanel){loadDetailPanel('{$discard_url}');return false;}"); // Asynchronní zavření detailu
 		$header_buttons[] = $btn_discard->render();                          // Přidání tlačítka Zahodit změny
 
 		if ($is_draft AND $is_user_req) {                                    // Příchozí žádost uživatele o přístup -> Schválit / Odmítnout
@@ -489,7 +501,8 @@ HTML;
 		$lbl_mob   = htmlspecialchars($this->phrase('lbl_mobile', [], 'Mobil')); // Popisek mobilu
 		$lbl_dept  = htmlspecialchars($this->phrase('lbl_department', [], 'Oddělení / Útvar')); // Popisek oddělení
 		$lbl_job   = htmlspecialchars($this->phrase('lbl_job_title', [], 'Pracovní pozice')); // Popisek pozice
-		$lbl_note  = htmlspecialchars($this->phrase('lbl_user_note', [], 'Poznámka')); // Popisek poznámky
+		$lbl_note_raw = $this->phrase('lbl_user_note', [], 'Poznámka');      // Surový popisek poznámky
+		$lbl_note  = htmlspecialchars($lbl_note_raw);                        // Ošetřený popisek poznámky
 
 		$v_login = htmlspecialchars((string)($datarow['login_name'] ?? ''));        // Hodnota login_name
 		$v_tbef  = htmlspecialchars((string)($datarow['user_title_before'] ?? '')); // Hodnota user_title_before
@@ -501,7 +514,21 @@ HTML;
 		$v_mob   = htmlspecialchars((string)($datarow['mobile'] ?? ''));            // Hodnota mobile
 		$v_dept  = htmlspecialchars((string)($datarow['department_name'] ?? ''));   // Hodnota department_name
 		$v_job   = htmlspecialchars((string)($datarow['job_title'] ?? ''));         // Hodnota job_title
-		$v_note  = htmlspecialchars((string)($datarow['note'] ?? ''));              // Hodnota note
+		$raw_note_val = (string)($datarow['note'] ?? '');                           // Surová hodnota poznámky
+		$v_note  = htmlspecialchars($raw_note_val);                                 // Ošetřená hodnota note
+
+		// Vykreslení poznámky přes rich_text (Preview + modální editor na popředí)
+		if (class_exists('rich_text')) {                                     // Pokud je dostupná třída rich_text
+			if ($personal_readonly) {                                        // V uzamčeném režimu před schválením přístupu
+				$ro_view = rich_text::render_formatted($raw_note_val, true); // Zformátovaný readonly náhled
+				$note_input_html = "<input type=\"hidden\" name=\"note\" value=\"{$v_note}\">"
+					. "<div style=\"padding: 8px 10px; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; min-height: 36px;\">{$ro_view}</div>"; // Readonly box
+			} else {
+				$note_input_html = rich_text::render_editor('note', $raw_note_val, ['label' => $lbl_note_raw, 'input_rows' => 4]); // Preview s modálním editorem
+			}
+		} else {
+			$note_input_html = "<textarea name=\"note\" rows=\"3\" {$pers_ro_attr}>{$v_note}</textarea>"; // Fallback textarea
+		}
 
 		echo <<<HTML
 				<h3 style="margin-top: 20px; color: #004488; font-size: 15px;">{$grp_pers}</h3>
@@ -548,7 +575,7 @@ HTML;
 					</tr>
 					<tr>
 						<td><strong>{$lbl_note}:</strong></td>
-						<td><textarea name="note" rows="3" {$pers_ro_attr}>{$v_note}</textarea></td>
+						<td>{$note_input_html}</td>
 					</tr>
 				</table>
 HTML;

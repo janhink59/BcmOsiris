@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 22:40
+ * Verze: 2026-10-27 16:10
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -25,16 +25,20 @@
  *    - Pomocí objektu `entity_manager` je z databáze automaticky zjištěno, 
  *      jaké sloupce se mají zobrazit, jak se validují a jak se ukládají.
  *
- * 2. PRG Vzor (Post-Redirect-Get):
+ * 2. Asynchronní načítání detailního panelu (`ajax_panel=detail`) a perzistence filtru:
+ *    - Kliknutí na řádek v levém panelu (nebo na tlačítka "+ Nový" a "Zahodit změny")
+ *      volá klientskou funkci `loadDetailPanel()`, která přes `fetch()` načte pouze
+ *      HTML pravého panelu `.md-detail`, vykoná případné vnořené `<script>` tagy
+ *      a upraví URL přes `history.pushState()`. Levý panel se vůbec nepřekresluje
+ *      a jeho scroll ani filtr se nepohnou.
+ *    - Text filtru `#master-filter` se automaticky ukládá do `sessionStorage`
+ *      a obnovuje i po plném uložení formuláře (POST -> PRG redirect).
+ *
+ * 3. PRG Vzor (Post-Redirect-Get):
  *    - Každé odeslání formuláře (`POST` s tlačítkem `btn_save`) je zachyceno
  *      v `abstract_page::render()` a předáno do `process_save()`.
  *    - Metoda `process_save()` zavolá autonomní RAC zápis a NÁSLEDNĚ provede
  *      striktní přesměrování, čímž zabrání dvojitému uložení při stisku F5.
- *
- * 3. Moderní Flexbox CSS (Bez závislosti na vnějších frameworcích):
- *    - Layout používá `flex-direction: column` pro interní panely (`md-master`
- *      a `md-detail`), což umožňuje fixní hlavičky a rolovatelný obsah.
- *    - Tabulky v obou panelech drží záhlaví vizuálně připnutá přes `position: sticky`.
  *
  * 4. Automatizované skupiny ve formuláři ($form_groups), Readonly ($is_readonly) a vkládání ($allow_insert):
  *    - Potomek může v konstruktoru definovat pole `$this->form_groups`,
@@ -51,21 +55,15 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-27 16:10 - Doplněno asynchronní načítání pravého detailu (ajax_panel=detail,
+ *                    loadDetailPanel) s podporou update_guid i draft_uuid, automatické
+ *                    vykonání inline <script> tagů v detailu, delegované AJAX zachycení
+ *                    odkazů "+ Nový" a "Zahodit změny" a trvalé uchování filtru
+ *                    #master-filter v sessionStorage.
  * 2026-10-22 22:40 - Oprava volání čtecích metod entity_manageru v render_master()
  *                    a render_detail() na $this->em->fetch_rows() a $this->em->fetch_row().
  * 2026-10-22 17:45 - Přidána vlastnost $allow_insert pro zákaz vkládání nových
  *                    záznamů (update_guid=NEW) u vybraných tříd (např. page_organization).
- * 2026-10-21 15:05 - Klientské filtrování #master-filter přesunuto do centrálního
- *                    delegovaného listeneru v render_body() (funguje pro všechny potomky
- *                    i po AJAX obnově levého panelu bez duplikace <script> bloku).
- * 2026-10-20 13:10 - Doplněn přepínač "Zobrazit i zrušené" (show_removed) do hlavičky
- *                    levého Master panelu s vizuálním odlišením zrušených záznamů.
- *                  - V detailním panelu doplněno automatické vykreslení checkboxu
- *                    removed (s JS potvrzením a kontrolou oprávnění v entity_manager)
- *                    pro zrušení nebo obnovení záznamu či jazykové mutace.
- * 2026-10-17 01:05 - Integrace schvalovacího cyklu (SSC): podpora tlačítek pro uložení
- *                    konceptu ('D'), postoupení ke schválení ('F'), přímé uložení ('A')
- *                    a smazání konceptu bez zápisu do historie.
  * =============================================================================
  */
 
@@ -141,7 +139,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 
 	/**
 	 * Hlavní bod vstupu životního cyklu stránky.
-	 * Ošetřuje inicializaci entity_manageru a AJAX požadavky před vykreslením těla.
+	 * Ošetřuje inicializaci entity_manageru a AJAX požadavky pro levý i pravý panel.
 	 */
 	public function render(): void {
 		$this->init_phrases();                                               // Inicializace správce frází
@@ -156,12 +154,19 @@ abstract class abstract_page_master_detail extends abstract_page {
 			$this->em = new entity_manager($this->class_name);               // Vytvoření instance entity_manageru
 		}
 
-		if (isset($_GET['ajax_panel']) AND $_GET['ajax_panel'] === 'master') { // Detekce AJAX požadavku pro levý panel
-			$this->render_master();                                          // Vykreslení pouze levého panelu
-			exit;                                                            // Okamžité ukončení skriptu
+		if (isset($_GET['ajax_panel'])) {                                    // Detekce asynchronního požadavku na jeden z panelů
+			$ajax_target = (string)$_GET['ajax_panel'];                      // Cílový panel ('master' nebo 'detail')
+			if ($ajax_target === 'master') {                                 // Požadavek na překreslení levého panelu
+				$this->render_master();                                      // Vykreslení pouze levého panelu
+				exit;                                                        // Okamžité ukončení skriptu
+			}
+			if ($ajax_target === 'detail') {                                 // Požadavek na načtení pouze pravého detailu
+				$this->render_detail();                                      // Vykreslení pouze pravého detailního panelu
+				exit;                                                        // Okamžité ukončení skriptu
+			}
 		}
 		
-		parent::render();                                                    // Spuštění vykreslení v předkovi
+		parent::render();                                                    // Spuštění vykreslení celé stránky v předkovi
 	}
 
 	/**
@@ -222,17 +227,20 @@ abstract class abstract_page_master_detail extends abstract_page {
 
 	/**
 	 * Implementace abstraktní metody rodiče. 
-	 * Obsahuje CSS, základní dvoupanelový HTML skelet a centrální JS obsluhu levého panelu.
+	 * Obsahuje CSS, základní dvoupanelový HTML skelet a centrální JS obsluhu obou panelů.
 	 */
 	final protected function render_body(): void {
 		$err_ajax_net = addslashes($this->phrase('err_ajax_network', [], 'Chyba sítě při AJAX volání')); // JS chybová hláška sítě
 		$err_ajax_ref = addslashes($this->phrase('err_ajax_refresh', [], 'Chyba při obnově master panelu:')); // JS chybová hláška obnovy
+		$err_ajax_det = addslashes($this->phrase('err_ajax_detail', [], 'Chyba při načítání detailu:')); // JS chybová hláška detailu
+		$unsaved_confirm = addslashes($this->phrase('msg_unsaved_changes', [], 'Máte neuložené změny. Opravdu chcete stránku opustit?')); // Varování
 
 		echo <<<HTML
 		<style>
 			.page-panel { max-width: 95% !important; padding: 0 !important; display: flex; flex-direction: row; height: calc(100vh - 120px); overflow: hidden; }
 			.md-master { flex: 0 0 45%; min-width: 400px; border-right: 1px solid #ddd; background-color: #fafafa; padding: 20px; display: flex; flex-direction: column; overflow: hidden; }
-			.md-detail { flex: 1; padding: 20px 30px; background-color: #ffffff; display: flex; flex-direction: column; overflow: hidden; }
+			.md-detail { flex: 1; padding: 20px 30px; background-color: #ffffff; display: flex; flex-direction: column; overflow: hidden; transition: opacity 0.12s ease; }
+			.md-detail.md-loading { opacity: 0.55; pointer-events: none; }
 			.md-master-header, .md-sticky-header-master { flex: 0 0 auto; border-bottom: 2px solid #eee; margin-bottom: 10px; padding-bottom: 10px; }
 			.md-master-content { flex: 1 1 auto; overflow-y: auto; padding-right: 5px; }
 			.md-detail-header, .md-sticky-header-detail { flex: 0 0 auto; border-bottom: 2px solid #004488; display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; margin-bottom: 20px; gap: 10px; flex-wrap: wrap; }
@@ -260,7 +268,7 @@ HTML;
 
 		echo <<<HTML
 		</div>
-		<div class="md-detail">
+		<div class="md-detail" id="md-detail-container">
 HTML;
 		$this->render_detail();                                              // Vykreslení pravého panelu
 
@@ -268,20 +276,59 @@ HTML;
 		</div>
 		
 		<script>
-			// Javascript: Pokud je levý panel dlouhý, automaticky odscrolluje na právě vybraný aktivní řádek.
+			// Sestavení unikátního klíče v sessionStorage pro uchování filtru levého panelu
+			function getMasterFilterStorageKey() {
+				const u = new URL(window.location.href);
+				const page = u.searchParams.get('page') || 'default';
+				const pCls = u.searchParams.get('parent_class') || '';
+				const pObj = u.searchParams.get('parent_object') || '';
+				const fCls = u.searchParams.get('filter_class') || '';
+				return 'bcm_mf_' + page + '_' + pCls + '_' + pObj + '_' + fCls;
+			}
+
+			// Aplikuje text filtru #master-filter na řádky v #master-list
+			function applyMasterFilter(term) {
+				const list = document.getElementById('master-list');
+				if (!list) return;
+				const cleanTerm = (term || '').toLowerCase();
+				if (cleanTerm === '' && typeof window.applyMenuTreeVisibility === 'function') {
+					window.applyMenuTreeVisibility();
+					return;
+				}
+				list.querySelectorAll('tr').forEach(function(row) {
+					row.style.display = row.textContent.toLowerCase().includes(cleanTerm) ? '' : 'none';
+				});
+			}
+
+			// Obnoví uložený filtr ze sessionStorage (např. po uložení záznamu a PRG redirectu)
+			function restoreMasterFilterFromStorage() {
+				const input = document.getElementById('master-filter');
+				if (!input) return;
+				try {
+					const saved = sessionStorage.getItem(getMasterFilterStorageKey());
+					if (saved !== null && saved !== '') {
+						input.value = saved;
+						applyMasterFilter(saved);
+					}
+				} catch (e) {}
+			}
+
+			// Pokud je levý panel dlouhý, automaticky odscrolluje na právě vybraný aktivní řádek
 			function scrollToActiveRow() {
 				const activeRow = document.getElementById("active-row");
 				const scrollingContainer = document.querySelector(".md-master-content");
 				
-				if (activeRow && scrollingContainer) {
+				if (activeRow && scrollingContainer && activeRow.style.display !== 'none') {
 					const containerRect = scrollingContainer.getBoundingClientRect();
 					const rowRect = activeRow.getBoundingClientRect();
-					const offset = rowRect.top - containerRect.top;
-					scrollingContainer.scrollTop += offset - (containerRect.height / 2) + (rowRect.height / 2);
+					if (rowRect.top < containerRect.top || rowRect.bottom > containerRect.bottom) {
+						const offset = rowRect.top - containerRect.top;
+						scrollingContainer.scrollTop += offset - (containerRect.height / 2) + (rowRect.height / 2);
+					}
 				}
 			}
 
-			// Javascript: Přepnutí zobrazení zrušených záznamů (show_removed) v URL
+			// Přepnutí zobrazení zrušených záznamů (show_removed) v URL
 			function toggleShowRemoved(checked) {
 				const url = new URL(window.location.href);
 				if (checked) {
@@ -292,20 +339,146 @@ HTML;
 				window.location.href = url.toString();
 			}
 
-			// Javascript: Centrální klientské filtrování tabulky #master-list přes #master-filter
+			// Centrální klientské filtrování tabulky #master-list přes #master-filter s uložením do sessionStorage
 			document.addEventListener('input', function(e) {
 				if (e.target && e.target.id === 'master-filter') {
-					const term = e.target.value.toLowerCase();
-					const list = document.getElementById('master-list');
-					if (list) {
-						list.querySelectorAll('tr').forEach(row => {
-							row.style.display = row.textContent.toLowerCase().includes(term) ? '' : 'none';
-						});
-					}
+					const val = e.target.value;
+					try {
+						sessionStorage.setItem(getMasterFilterStorageKey(), val);
+					} catch (err) {}
+					applyMasterFilter(val);
 				}
 			});
 
-			// Javascript: Voláno pro asynchronní překreslení (refresh) levého panelu.
+			// Aktualizace zvýraznění aktivního řádku v levém panelu podle cílové URL nebo kliknutého řádku
+			function updateActiveMasterRow(targetUrlObj, clickedRow) {
+				const list = document.getElementById('master-list');
+				if (!list) return;
+				const targetGuid = (targetUrlObj.searchParams.get('update_guid') || targetUrlObj.searchParams.get('draft_uuid') || '').toLowerCase();
+
+				list.querySelectorAll('tr').forEach(function(tr) {
+					tr.classList.remove('md-row-active', 'md-row-Active-removed');
+					if (tr.id === 'active-row') {
+						tr.removeAttribute('id');
+					}
+				});
+
+				let activeTr = clickedRow || null;
+				if (!activeTr && targetGuid !== '' && targetGuid !== 'new') {
+					list.querySelectorAll('tr').forEach(function(tr) {
+						const rowUuid = (tr.getAttribute('data-uuid') || '').toLowerCase();
+						if (rowUuid !== '' && rowUuid === targetGuid) {
+							activeTr = tr;
+						}
+					});
+				}
+
+				if (activeTr) {
+					activeTr.id = 'active-row';
+					if (activeTr.classList.contains('md-row-removed')) {
+						activeTr.classList.add('md-row-active', 'md-row-Active-removed');
+					} else {
+						activeTr.classList.add('md-row-active');
+					}
+				}
+			}
+
+			// Spustí vnořené <script> elementy uvnitř asynchronně načteného detailního panelu
+			function executeDetailScripts(container) {
+				if (!container) return;
+				container.querySelectorAll('script').forEach(function(oldScript) {
+					const newScript = document.createElement('script');
+					Array.from(oldScript.attributes).forEach(function(attr) {
+						newScript.setAttribute(attr.name, attr.value);
+					});
+					newScript.textContent = oldScript.textContent;
+					oldScript.parentNode.replaceChild(newScript, oldScript);
+				});
+			}
+
+			// Asynchronní načtení pouze pravého detailního panelu bez refreshe levého panelu
+			window.loadDetailPanel = function(targetUrl, clickedRow, pushHistory) {
+				if (typeof pushHistory === 'undefined') {
+					pushHistory = true;
+				}
+				if (typeof isFormDirty !== 'undefined' && isFormDirty) {
+					if (!confirm('{$unsaved_confirm}')) {
+						return false;
+					}
+					isFormDirty = false;
+				}
+
+				const detailContainer = document.getElementById('md-detail-container');
+				if (!detailContainer) {
+					window.location.href = targetUrl;
+					return false;
+				}
+
+				const cleanUrlObj = new URL(targetUrl, window.location.href);
+				cleanUrlObj.searchParams.delete('ajax_panel');
+
+				const fetchUrlObj = new URL(cleanUrlObj.toString());
+				fetchUrlObj.searchParams.set('ajax_panel', 'detail');
+
+				updateActiveMasterRow(cleanUrlObj, clickedRow || null);
+				detailContainer.classList.add('md-loading');
+
+				fetch(fetchUrlObj.toString(), {
+					headers: {
+						'X-Requested-With': 'XMLHttpRequest'
+					}
+				})
+				.then(function(response) {
+					if (!response.ok) throw new Error("{$err_ajax_net}");
+					return response.text();
+				})
+				.then(function(html) {
+					detailContainer.innerHTML = html;
+					detailContainer.classList.remove('md-loading');
+					executeDetailScripts(detailContainer);
+					if (typeof isFormDirty !== 'undefined') {
+						isFormDirty = false;
+					}
+					if (pushHistory) {
+						window.history.pushState({ mdUrl: cleanUrlObj.toString() }, '', cleanUrlObj.toString());
+					}
+				})
+				.catch(function(error) {
+					detailContainer.classList.remove('md-loading');
+					console.error('{$err_ajax_det}', error);
+					window.location.href = cleanUrlObj.toString();
+				});
+
+				return false;
+			};
+
+			// Podpora tlačítek Zpět / Vpřed v prohlížeči při asynchronním přepínání záznamů
+			window.addEventListener('popstate', function() {
+				window.loadDetailPanel(window.location.href, null, false);
+			});
+
+			// Delegované zachycení tlačítek "+ Nový" v levém panelu a "Zahodit změny" v pravém panelu
+			document.addEventListener('click', function(e) {
+				const link = e.target.closest('a.btn');
+				if (!link) return;
+				const href = link.getAttribute('href');
+				if (!href || href === '#' || link.getAttribute('target')) return;
+
+				try {
+					const targetUrl = new URL(href, window.location.href);
+					const currUrl = new URL(window.location.href);
+					if (targetUrl.pathname === currUrl.pathname && targetUrl.searchParams.get('page') === currUrl.searchParams.get('page')) {
+						const inMaster = link.closest('#md-master-container');
+						const inDetailDiscard = link.closest('#md-detail-container') && link.classList.contains('btn-danger');
+						if (inMaster || inDetailDiscard) {
+							e.preventDefault();
+							window.loadDetailPanel(targetUrl.toString(), null, true);
+						}
+					}
+				} catch (err) {}
+			});
+
+			// Asynchronní překreslení (refresh) levého panelu se zachováním filtru
 			function refreshMasterPanel() {
 				const url = new URL(window.location.href);
 				url.searchParams.set('ajax_panel', 'master');
@@ -315,23 +488,25 @@ HTML;
 						'X-Requested-With': 'XMLHttpRequest'
 					}
 				})
-				.then(response => {
+				.then(function(response) {
 					if (!response.ok) throw new Error("{$err_ajax_net}");
 					return response.text();
 				})
-				.then(html => {
+				.then(function(html) {
 					const masterPanel = document.getElementById("md-master-container");
 					if (masterPanel) {
 						masterPanel.innerHTML = html;
+						restoreMasterFilterFromStorage();
 						scrollToActiveRow();
 					}
 				})
-				.catch(error => {
+				.catch(function(error) {
 					console.error('{$err_ajax_ref}', error);
 				});
 			}
 
 			document.addEventListener("DOMContentLoaded", function() {
+				restoreMasterFilterFromStorage();
 				setTimeout(scrollToActiveRow, 50);
 			});
 		</script>
@@ -421,6 +596,7 @@ HTML;
 		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
 			foreach ($rows as $row) {                                        // Průchod jednotlivými řádky seznamu
 				$uuid = (string)$row['original'];                            // Originální UUID řádku
+				$safe_uuid = htmlspecialchars($uuid);                        // Ošetřené UUID pro atribut data-uuid
 				$is_rem = (!empty($row['removed']) OR !empty($row['l_removed'])); // Zda je zrušen hlavní záznam nebo překlad
 				$is_act = (strcasecmp($uuid, $update_guid) === 0);           // Zda jde o právě vybraný řádek
 				if ($is_act AND $is_rem) {                                   // Aktivní zrušený řádek
@@ -451,7 +627,7 @@ HTML;
 				}
 
 				$row_url = htmlspecialchars("index.php?page={$page_param}{$url_suffix}&update_guid={$uuid}"); // Cílová URL řádku
-				echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">\n"; // Otevření řádku
+				echo "\t\t\t\t\t\t<tr class=\"{$rowClass}\" {$rowIdAttr} data-uuid=\"{$safe_uuid}\" style=\"cursor: pointer;\" onclick=\"loadDetailPanel('{$row_url}', this);\">\n"; // Řádek s AJAX načtením detailu
 				
 				$first_col = true;                                           // Příznak prvního sloupce pro vložení štítku
 				foreach ($list_columns as $col => $header) {                 // Výpis hodnot buněk aktuálního řádku

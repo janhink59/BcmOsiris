@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-21 15:05
+ * Verze: 2026-10-27 19:55
  * Soubor: page_organization_licence.php
  * Stránka: page_organization_licence.php
  * Účel: Master-Detail rozhraní pro evidenci žádostí a licencí organizací.
@@ -14,13 +14,16 @@
  *   a propojí jejich záznamy v DB) a stav finálně přepne na 'PROCESSED'.
  *
  * Vazby na okolí:
- * - Dědí z abstract_page_master_detail (využívá $this->phrase(), render_audit_trail()
- *   a centrální JS filtrování levého panelu).
+ * - Dědí z abstract_page_master_detail (využívá $this->phrase(), render_audit_trail(),
+ *   asynchronní načítání detailu loadDetailPanel() a centrální JS filtrování levého panelu).
  * - Využívá abstract_button pro vykreslení akčních tlačítek.
  * - Čte data přes sqlarray_simple() a sqlfirstrow() (bez otevřených kurzorů).
  * - Volá proceduru p_process_organization_licence při schválení licence.
  *
  * Změny:
+ * 2026-10-27 19:55 - Napojení řádků v render_master() a tlačítek "+ Nová licence"
+ *                    a "Zahodit změny" na asynchronní funkci loadDetailPanel() (zamezení
+ *                    nechtěného refreshe levého panelu a ztráty filtru #master-filter).
  * 2026-10-21 15:05 - Odstraněny historické helpery pageitem(), td1_label(), td1_input(),
  *                    td1_value() a fetch_datarow() z OsirisLib.php.
  *                  - Všechna čtení převedena na sqlarray_simple() a sqlfirstrow().
@@ -151,8 +154,10 @@ class page_organization_licence extends abstract_page_master_detail {
 		$th_email = htmlspecialchars($this->phrase('th_email', [], 'E-mail'));                // Záhlaví sloupce e-mailu
 		$th_state = htmlspecialchars($this->phrase('th_licence_state', [], 'Stav licence'));  // Záhlaví sloupce stavu licence
 
+		$new_url = 'index.php?page=page_organization_licence&update_guid=NEW'; // Odkaz pro založení licence
 		$btn_new = new abstract_button('btn_new_licence', '+ Nová licence', 'page_organization_licence'); // Tlačítko nové licence
-		$btn_new->set_href('index.php?page=page_organization_licence&update_guid=NEW'); // Odkaz pro založení licence
+		$btn_new->set_href($new_url)                                         // Nastavení cílové URL
+			->set_onclick("if(window.loadDetailPanel){loadDetailPanel('{$new_url}');return false;}"); // Asynchronní otevření bez refreshe levého panelu
 		$btn_new_html = $btn_new->render();                                  // Vykreslení HTML tlačítka
 
 		echo <<<HTML
@@ -187,6 +192,7 @@ HTML;
 		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
 			foreach ($rows as $row) {                                        // Průchod načtenými licencemi
 				$uuid = (string)$row['original'];                            // Originální UUID licence
+				$safe_uuid = htmlspecialchars($uuid);                        // Ošetřené UUID pro atribut data-uuid
 				$is_active = ($this->update_guid !== null AND strcasecmp($uuid, $this->update_guid) === 0); // Aktivní záznam
 				$row_class = $is_active ? 'md-row-active' : '';              // CSS třída aktivního řádku
 				$id_attr = $is_active ? 'id="active-row"' : '';              // HTML id aktivního řádku
@@ -197,7 +203,7 @@ HTML;
 				$state_code = (string)$row['licence_state'];                 // Kód stavu licence
 				$state_label = htmlspecialchars($this->states_opt[$state_code] ?? $state_code); // Přeložený stav licence
 
-				echo "<tr class=\"{$row_class}\" {$id_attr} style=\"cursor: pointer;\" onclick=\"document.location='{$row_url}'\">";
+				echo "<tr class=\"{$row_class}\" {$id_attr} data-uuid=\"{$safe_uuid}\" style=\"cursor: pointer;\" onclick=\"if(window.loadDetailPanel){loadDetailPanel('{$row_url}', this);}else{document.location='{$row_url}';}\">";
 				echo "<td><strong>{$safe_cap}</strong></td>";
 				echo "<td>{$safe_login}</td>";
 				echo "<td>{$safe_email}</td>";
@@ -260,9 +266,11 @@ HTML;
 
 		$safe_update_guid = htmlspecialchars($this->update_guid);            // Ošetřené ID záznamu pro skryté pole
 		$detail_heading = htmlspecialchars($this->phrase('detail_heading', [], 'Detail organizace a licencování')); // Nadpis detailu
+		$discard_url = 'index.php?page=page_organization_licence';           // Cílová URL při zahození změn
 
 		$btn_discard = new abstract_button('btn_discard', 'Zahodit změny', 'abstract_button', '', 'btn-danger'); // Tlačítko zahození změn
-		$btn_discard->set_href('index.php?page=page_organization_licence')->set_onclick('isFormDirty = false;'); // Odkaz bez varování dirty
+		$btn_discard->set_href($discard_url)                                 // Nastavení odkazu
+			->set_onclick("isFormDirty = false; if(window.loadDetailPanel){loadDetailPanel('{$discard_url}');return false;}"); // Asynchronní zavření detailu
 
 		$btn_save = new abstract_button('btn_save', 'Uložit změny', 'abstract_button', '', 'btn-success'); // Tlačítko uložení
 		$btn_save->set_type('submit')->set_name_value('btn_save', '1');      // Nastavení submit atributů

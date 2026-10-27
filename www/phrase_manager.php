@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 17:45
+ * Verze: 2026-10-27 16:10
  * Soubor: phrase_manager.php
  * Třída: phrase_manager
  * Účel: Centralizovaný správce pro dávkové načítání, kešování, lokalizaci
@@ -20,15 +20,14 @@
  *   pro vykreslování tlačítek ve třídě `abstract_button`.
  *
  * Změny:
- * 2026-10-22 17:45 - Přepracováno načítání frází v load_sources(): odstraněny dynamické
- *                    LEFT JOINy pro jazyky; záznamy 'A' a 'L' (s fallback_order < 1000
- *                    z dbo.f_language_list) se načtou jedním dotazem do dvou polí v PHP
- *                    (pole originálů 'A' a podřízené pole 'L' seřazené dle fallback_order).
- *                  - Opraveny všechny chybějící mezery před znakem $.
+ * 2026-10-27 16:10 - V metodě load_sources() nahrazeny vícenásobně vyhodnocované CTE
+ *                    (;WITH s, fl, sy, my, mix) za indexované tabulkové proměnné
+ *                    (@fl a @mix s PRIMARY KEY original) a přímý Index Seek.
+ * 2026-10-22 17:45 - Přepracováno načítání frází v load_sources(): záznamy 'A' a 'L'
+ *                    (s fallback_order < 1000 z dbo.f_language_list) se načtou
+ *                    do dvou polí v PHP.
  * 2026-10-20 11:35 - Nahrazení bezejmenného source_code = '' pevným identifikátorem
  *                    'global_phrase' v lookup_chain, load_sources i auto_register_phrase.
- * 2026-10-19 14:45 - Čtení z DB v check_table_exists() a load_sources() převedeno
- *                    na sqlfirstrow() a sqlarray_simple() kvůli ochraně $dbquery.
  * =============================================================================
  */
 
@@ -125,9 +124,9 @@ class phrase_manager {
 	}
 
 	/**
-	 * Načte jedním jednoduchým SQL dotazem všechny 'A' a 'L' záznamy (s fallback_order < 1000)
-	 * pro zadané zdrojové třídy (source_code), uloží je do dvou polí v PHP (pole 'A' podle original
-	 * a podřízené pole 'L' podle jazyka seřazené dle fallback_order) a vyhodnotí překlady.
+	 * Načte jedním optimalizovaným dotazem (s využitím tabulkových proměnných @fl a @mix)
+	 * všechny 'A' a 'L' záznamy (s fallback_order < 1000) pro zadané zdrojové třídy (source_code),
+	 * uloží je do dvou polí v PHP a vyhodnotí překlady.
 	 *
 	 * @param array<int, string> $sources Seznam identifikátorů source_code
 	 */
@@ -160,29 +159,63 @@ class phrase_manager {
 		$safe_lang = charliteral($curr_lang, 2);                             // SQL literál aktuálního jazyka
 
 		$sql = "
-		WITH s AS (
-			SELECT ISNULL((SELECT TOP 1 organization FROM dbsession WHERE spid = @@SPID), 0x00) AS organization_uuid
-		),
-		fl AS (
-			SELECT [language], fallback_order
-			FROM dbo.f_language_list({$safe_lang})
-			WHERE fallback_order < 1000
-		),
-		sy AS (
-			SELECT rc.*
+		SET NOCOUNT ON;
+
+		DECLARE @org_uuid uniqueidentifier = ISNULL((SELECT TOP 1 organization FROM dbsession WHERE spid = @@SPID), 0x00);
+
+		DECLARE @fl TABLE (
+			[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+			fallback_order int NOT NULL
+		);
+		INSERT INTO @fl ([language], fallback_order)
+		SELECT [language], fallback_order
+		FROM dbo.f_language_list({$safe_lang})
+		WHERE fallback_order < 1000;
+
+		DECLARE @sy TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			sys_uuid uniqueidentifier NOT NULL
+		);
+		INSERT INTO @sy (original, sys_uuid)
+		SELECT rc.original, rc.uuid
+		FROM meta_phrase rc
+		WHERE rc.object_owner = 0x00
+		  AND rc.record_type = 'A'
+		  AND rc.removed = 0
+		  AND rc.inactive = 0
+		  AND rc.source_code IN ({$in_clause});
+
+		DECLARE @my TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			my_uuid uniqueidentifier NOT NULL
+		);
+		IF @org_uuid <> 0x00
+		BEGIN
+			INSERT INTO @my (original, my_uuid)
+			SELECT rc.original, rc.uuid
 			FROM meta_phrase rc
-			WHERE rc.object_owner = 0x00 AND rc.record_type = 'A' AND rc.removed = 0 AND rc.inactive = 0 AND rc.source_code IN ({$in_clause})
-		),
-		my AS (
-			SELECT rc.*
-			FROM s JOIN meta_phrase rc ON rc.object_owner = s.organization_uuid AND rc.object_owner <> 0x00 AND rc.record_type = 'A'
-			WHERE rc.removed = 0 AND rc.inactive = 0 AND rc.source_code IN ({$in_clause})
-		),
-		mix AS (
-			SELECT sy.* FROM sy LEFT JOIN my ON my.original = sy.original WHERE my.original IS NULL
-			UNION ALL
-			SELECT * FROM my
-		)
+			WHERE rc.object_owner = @org_uuid
+			  AND rc.record_type = 'A'
+			  AND rc.removed = 0
+			  AND rc.inactive = 0
+			  AND rc.source_code IN ({$in_clause});
+		END
+
+		DECLARE @mix TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			win_uuid uniqueidentifier NOT NULL,
+			sys_uuid uniqueidentifier NULL
+		);
+		INSERT INTO @mix (original, win_uuid, sys_uuid)
+		SELECT my.original, my.my_uuid, sy.sys_uuid
+		FROM @my my
+		LEFT JOIN @sy sy ON sy.original = my.original
+		UNION ALL
+		SELECT sy.original, sy.sys_uuid, sy.sys_uuid
+		FROM @sy sy
+		LEFT JOIN @my my ON my.original = sy.original
+		WHERE my.original IS NULL;
+
 		SELECT
 			'A' AS row_kind,
 			m.original,
@@ -195,9 +228,10 @@ class phrase_manager {
 			COALESCE(NULLIF(CAST(m.helptext AS NVARCHAR(MAX)), ''), CAST(o.helptext AS NVARCHAR(MAX)), '') AS helptext,
 			COALESCE(NULLIF(CAST(m.svg_icon AS NVARCHAR(MAX)), ''), CAST(o.svg_icon AS NVARCHAR(MAX)), '') AS svg_icon,
 			COALESCE(NULLIF(m.css_class, ''), o.css_class, '') AS css_class
-		FROM mix m
-		LEFT JOIN sy o ON o.original = m.original
-		LEFT JOIN fl ON fl.[language] = m.[language]
+		FROM @mix mk
+		JOIN meta_phrase m ON m.uuid = mk.win_uuid
+		LEFT JOIN meta_phrase o ON o.uuid = mk.sys_uuid
+		LEFT JOIN @fl fl ON fl.[language] = m.[language]
 
 		UNION ALL
 
@@ -213,12 +247,16 @@ class phrase_manager {
 			CAST(l.helptext AS NVARCHAR(MAX)) AS helptext,
 			'' AS svg_icon,
 			'' AS css_class
-		FROM s
-		CROSS JOIN mix m
-		JOIN meta_phrase l ON l.original = m.original AND l.record_type = 'L' AND l.removed = 0 AND (l.object_owner = 0x00 OR l.object_owner = s.organization_uuid)
-		JOIN fl ON fl.[language] = l.[language]
-		ORDER BY row_kind ASC, fallback_order ASC, is_tenant DESC
-		";                                                                   // Jednotný dotaz pro 'A' i 'L' záznamy frází
+		FROM @mix mk
+		JOIN meta_phrase m ON m.uuid = mk.win_uuid
+		JOIN meta_phrase l
+			ON l.original = mk.original
+			AND l.record_type = 'L'
+			AND l.removed = 0
+			AND (l.object_owner = 0x00 OR l.object_owner = @org_uuid)
+		JOIN @fl fl ON fl.[language] = l.[language]
+		ORDER BY row_kind ASC, fallback_order ASC, is_tenant DESC;
+		";                                                                   // Optimalizovaný dotaz pro 'A' i 'L' záznamy frází bez CTE
 
 		$rows = sqlarray_simple($sql);                                       // Načtení všech řádků do paměti
 		if (!is_array($rows)) {                                              // Kontrola platného výsledku
@@ -254,7 +292,7 @@ class phrase_manager {
 		}
 
 		// 2. Vyhodnocení výsledné jazykové verze pro každý 'original' typu 'A'
-		foreach ($a_rows as $orig => $a_row) {                               // Průchod všemi 'A' záznamy
+		foreach ($a_rows as $orig => $a_row) {                               // Průchod všemi 'A' záznamů
 			$src = trim((string)$a_row['source_code']);                      // Zdrojová třída fráze
 			if ($src === '') {                                               // Pojistka pro prázdný zdroj
 				$src = self::GLOBAL_SOURCE;                                  // Mapování na global_phrase
@@ -383,7 +421,7 @@ class phrase_manager {
 	}
 
 	/**
-	 * Bezpečně nahradí zástupné symboly {$var} v textu hodnotami z pole $vars nebo$GLOBALS.
+	 * Bezpečně nahradí zástupné symboly {$var} v textu hodnotami z pole $vars nebo $GLOBALS.
 	 * Nepoužívá nebezpečný eval().
 	 *
 	 * @param string               $text Text šablony obsahující {$promenne}

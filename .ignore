@@ -1,0 +1,8 @@
+ocfg_*.php
+BcmOsirisDb*.sql*
+config_*.php
+vendor/
+www/www.zip
+BcmOsiris*.txt
+/js/
+~*

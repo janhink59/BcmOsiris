@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-20 11:35
+ * Verze: 2026-10-27 19:55
  * Soubor: page_meta_phrase.php
  * Třída: page_meta_phrase
  * Účel: Správa a lokalizace systémových i klientských textových frází,
@@ -19,6 +19,9 @@
  *   kde globální fráze používají pevný identifikátor `'global_phrase'`.
  *
  * Změny:
+ * 2026-10-27 19:55 - Tlačítko "+ Nová fráze" v render_master_top() napojeno na
+ *                    asynchronní funkci loadDetailPanel() pro otevření detailu
+ *                    bez refreshe levého panelu a bez ztráty filtru #master-filter.
  * 2026-10-20 11:35 - Přepnutí filtru globálních frází z bezejmenného '' na třídu
  *                    'global_phrase' a zamezení duplicitního výpisu v roletce.
  * 2026-10-19 14:45 - Čtení seznamu zdrojových tříd v render_master_top() převedeno
@@ -84,7 +87,9 @@ class page_meta_phrase extends abstract_page_master_detail {
 			$url_suffix = $this->get_context_url_suffix();                   // Přívažek URL pro zachování filtru
 			$new_url = "index.php?page=page_meta_phrase{$url_suffix}&update_guid=NEW"; // Cílová adresa pro novou frázi
 			$btn_new = new abstract_button('btn_new_phrase', '+ Nová fráze', 'page_meta_phrase'); // Tlačítko nové fráze
-			$btn_new->set_href($new_url)->set_style('width: 100%; justify-content: center; margin-bottom: 10px;'); // Stylování tlačítka
+			$btn_new->set_href($new_url)                                     // Nastavení cílové URL
+				->set_onclick("if(window.loadDetailPanel){loadDetailPanel('{$new_url}');return false;}") // Asynchronní otevření detailu
+				->set_style('width: 100%; justify-content: center; margin-bottom: 10px;'); // Stylování tlačítka
 			echo $btn_new->render();                                         // Vykreslení tlačítka nad filtrem
 		}
 

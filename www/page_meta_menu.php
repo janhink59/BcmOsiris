@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-24 20:35
+ * Verze: 2026-10-27 19:40
  * Soubor: page_meta_menu.php
  * Třída: page_meta_menu
  * Účel: Správa struktury uživatelského menu (meta_menu) – úprava nadřízenosti
@@ -16,17 +16,23 @@
  *   výhradně vývojářům (`active_role = 'D'`), zatímco překladové sloupce (`caption`,
  *   `description`, `helptext`) může lokalizovat každý oprávněný uživatel.
  * - Levý panel (`render_master()`) podporuje:
- *   1. Klientské rozbalování a sbalování větví stromu (Collapse / Expand) čistě v JS
+ *   1. Asynchronní načítání detailu (`loadDetailPanel`) bez refreshe levého stromu.
+ *   2. Klientské rozbalování a sbalování větví stromu (Collapse / Expand) čistě v JS
  *      s uchováním stavu v `sessionStorage` bez zápisu do databáze.
- *   2. Přesouvání položek metodou Drag & Drop (Varianta 1): přetažení položky v levém
+ *   3. Přesouvání položek metodou Drag & Drop (Varianta 1): přetažení položky v levém
  *      panelu vypočítá nový `parent_uuid` a lexikografický `sort_code` a předvyplní
  *      tyto dvě položky do detailního formuláře vpravo (se zapnutím `isFormDirty = true`)
- *      bez přímého zápisu do databáze.
+ *      bez přímého zápisu do databáze (včetně podpory AJAX načtení neotevřené položky).
  *
  * Změny:
- * 2026-10-24 20:35 - Doplněno klientské rozbalování/sbalování větví (Collapse/Expand) v JS.
- *                  - Doplněna podpora Drag & Drop (Varianta 1 – úprava polí `parent_uuid`
- *                    a `sort_code` v detailním formuláři bez okamžitého zápisu do DB).
+ * 2026-10-27 19:40 - Napojení řádků stromu, tlačítka + Nová položka menu a Drag & Dropu
+ *                    neotevřené položky na asynchronní loadDetailPanel() z předka.
+ *                  - Nahrazena statická konstanta currentOpenOrig dynamickou funkcí
+ *                    getCurrentOpenOrig() čtoucí otevřené UUID přímo z DOMu detailu.
+ *                  - V render_detail_top() odstraněn wrapper DOMContentLoaded, aby
+ *                    zvýraznění polí zafungovalo i při AJAX načtení detailu.
+ * 2026-10-24 20:35 - Doplněno klientské rozbalování/sbalování větví (Collapse/Expand) v JS
+ *                    a podpora Drag & Drop (Varianta 1).
  * 2026-10-24 11:55 - První verze stránky pro správu stromu menu.
  * =============================================================================
  */
@@ -101,10 +107,10 @@ class page_meta_menu extends abstract_page_master_detail {
 		$note = htmlspecialchars($this->phrase('msg_menu_hierarchy_hint', [], 'Tip: Položky, které mají podřízené uzly, fungují v navigaci automaticky jako složky (rozcestníky). Cílová stránka (target_object) se uplatní u koncových položek.')); // Text nápovědy
 		echo "<div style=\"color: #475569; font-size: 12px; margin-bottom: 12px;\">{$note}</div>\n"; // Výpis nápovědy
 
-		if ($this->has_dnd_preview) {                                        // Při otevření z Drag & Dropu označíme formulář jako neuložený
+		if ($this->has_dnd_preview) {                                        // Při otevření z Drag & Dropu označíme formulář jako neuložený (funguje i přes AJAX)
 			echo <<<HTML
 			<script>
-				document.addEventListener("DOMContentLoaded", function() {
+				setTimeout(function() {
 					isFormDirty = true;
 					const pSel = document.querySelector('.md-detail form [name="parent_uuid"]');
 					const sInp = document.querySelector('.md-detail form [name="sort_code"]');
@@ -114,7 +120,7 @@ class page_meta_menu extends abstract_page_master_detail {
 							el.style.borderColor = '#16a34a';
 						}
 					});
-				});
+				}, 20);
 			</script>
 HTML;
 		}
@@ -130,8 +136,11 @@ HTML;
 
 		$url_suffix = $this->get_context_url_suffix();                       // Přívažek URL pro zachování kontextu
 		$new_url = "index.php?page=page_meta_menu{$url_suffix}&update_guid=NEW"; // Cílová adresa pro novou položku
+		$js_new_url = addslashes($new_url);                                  // Ošetřená URL pro JS volání loadDetailPanel
 		$btn_new = new abstract_button('btn_new_menu_item', '+ Nová položka menu', 'page_meta_menu'); // Tlačítko nové položky
-		$btn_new->set_href($new_url)->set_style('width: 100%; justify-content: center; margin-bottom: 10px;'); // Styl tlačítka
+		$btn_new->set_href($new_url)                                         // Nastavení odkazu tlačítka
+			->set_onclick("if (window.loadDetailPanel) { window.loadDetailPanel('{$js_new_url}'); return false; }") // Asynchronní načtení detailu
+			->set_style('width: 100%; justify-content: center; margin-bottom: 10px;'); // Styl tlačítka
 		echo $btn_new->render();                                             // Vykreslení tlačítka nad seznamem
 	}
 
@@ -400,8 +409,9 @@ HTML;
 						data-code="{$safe_code}"
 						data-level="{$level}"
 						data-is-folder="{$folder_flag}"
+						data-row-url="{$row_url}"
 						style="cursor: pointer;"
-						onclick="document.location='{$row_url}'">
+						onclick="if (window.loadDetailPanel) { window.loadDetailPanel('{$row_url}', this); } else { document.location='{$row_url}'; }">
 						<td class="cell-tree-caption" style="padding-left: calc(6px + {$indent_px}px);">{$grip_html}{$toggle_html}<span class="tree-caption-text">{$cap_html}</span>{$ssc_badge}</td>
 						<td style="font-family: monospace; font-size: 12px; color: #475569;">{$safe_code}</td>
 						<td class="cell-tree-sort" style="text-align: center; font-family: monospace; font-size: 12px;">{$safe_sort}</td>
@@ -411,7 +421,7 @@ HTML;
 		}
 
 		$js_base_url = addslashes("index.php?page={$page_param}{$url_suffix}"); // Základní URL pro přechod na neaktivní přetažený řádek
-		$js_curr_guid = addslashes(strtolower($update_guid));                // Normalizované UUID právě otevřeného záznamu
+		$js_curr_guid = addslashes(strtolower($update_guid));                // Výchozí normalizované UUID právě otevřeného záznamu
 		$js_can_dnd = $this->can_edit_structure ? 'true' : 'false';          // Zda je povolen Drag & Drop
 
 		echo <<<HTML
@@ -422,9 +432,22 @@ HTML;
 		<script>
 			(function() {
 				const STORAGE_KEY = 'bcm_meta_menu_collapsed';
-				const currentOpenOrig = '{$js_curr_guid}';
+				const initialOpenOrig = '{$js_curr_guid}';
 				const canDragDrop = {$js_can_dnd};
 				const basePageUrl = '{$js_base_url}';
+
+				// Dynamicky zjistí právě otevřenou položku v detailu (odolné vůči AJAX přepínání detailu)
+				function getCurrentOpenOrig() {
+					const inp = document.querySelector('.md-detail form input[name="update_guid"]');
+					if (inp && inp.value && inp.value !== 'NEW') {
+						return inp.value.toLowerCase();
+					}
+					const actRow = document.getElementById('active-row');
+					if (actRow && actRow.dataset.orig) {
+						return actRow.dataset.orig.toLowerCase();
+					}
+					return initialOpenOrig;
+				}
 
 				// Načtení sbalených větví ze sessionStorage prohlížeče
 				function getCollapsedSet() {
@@ -445,16 +468,17 @@ HTML;
 
 				// Zajistí, že předci právě vybraného řádku (#active-row) nebudou sbalení
 				function ensureActiveRowVisible(collapsedSet) {
-					if (!currentOpenOrig) return;
+					const openOrig = getCurrentOpenOrig();
+					if (!openOrig) return;
 					const rowsMap = {};
 					document.querySelectorAll('#master-list tr[data-orig]').forEach(function(r) {
-						rowsMap[r.dataset.orig] = r.dataset.parent || '';
+						rowsMap[r.dataset.orig] = r.dataset.parent ? r.dataset.parent : '';
 					});
-					let p = rowsMap[currentOpenOrig] || '';
+					let p = rowsMap[openOrig] ? rowsMap[openOrig] : '';
 					let guard = 0;
 					while (p !== '' && guard < 50) {
 						collapsedSet.delete(p);
-						p = rowsMap[p] || '';
+						p = rowsMap[p] ? rowsMap[p] : '';
 						guard++;
 					}
 				}
@@ -470,7 +494,7 @@ HTML;
 					const allRows = document.querySelectorAll('#master-list tr[data-orig]');
 
 					allRows.forEach(function(r) {
-						parentLookup[r.dataset.orig] = r.dataset.parent || '';
+						parentLookup[r.dataset.orig] = r.dataset.parent ? r.dataset.parent : '';
 						const btn = r.querySelector('.tree-toggle-btn');
 						if (btn) {
 							btn.textContent = collapsedSet.has(r.dataset.orig) ? '▶' : '▼';
@@ -478,7 +502,7 @@ HTML;
 					});
 
 					allRows.forEach(function(r) {
-						let p = r.dataset.parent || '';
+						let p = r.dataset.parent ? r.dataset.parent : '';
 						let hiddenByAncestor = false;
 						let guard = 0;
 						while (p !== '' && guard < 50) {
@@ -486,7 +510,7 @@ HTML;
 								hiddenByAncestor = true;
 								break;
 							}
-							p = parentLookup[p] || '';
+							p = parentLookup[p] ? parentLookup[p] : '';
 							guard++;
 						}
 						r.style.display = hiddenByAncestor ? 'none' : '';
@@ -517,7 +541,7 @@ HTML;
 						const orig = btn.getAttribute('data-toggle-orig');
 						if (orig) {
 							const row = btn.closest('tr');
-							if (!row || row.dataset.code !== 'home') {
+							if (!row ? true : row.dataset.code !== 'home') {
 								collapsedSet.add(orig);
 							}
 						}
@@ -560,7 +584,7 @@ HTML;
 						added = false;
 						tbody.querySelectorAll('tr[data-orig]').forEach(function(r) {
 							const o = r.dataset.orig;
-							const p = r.dataset.parent || '';
+							const p = r.dataset.parent ? r.dataset.parent : '';
 							if (p !== '' && set.has(p) && !set.has(o)) {
 								set.add(o);
 								added = true;
@@ -578,8 +602,8 @@ HTML;
 
 				// Výpočet nového lexikografického sort_code (po desítkách nebo půlením intervalu)
 				function computeBetweenSortCode(prevCode, nextCode) {
-					const cleanPrev = (prevCode || '').replace(/[^0-9]/g, '');
-					const cleanNext = (nextCode || '').replace(/[^0-9]/g, '');
+					const cleanPrev = (prevCode ? prevCode : '').replace(/[^0-9]/g, '');
+					const cleanNext = (nextCode ? nextCode : '').replace(/[^0-9]/g, '');
 
 					// 1. Prázdná větev -> '010'
 					if (cleanPrev === '' && cleanNext === '') {
@@ -590,7 +614,7 @@ HTML;
 					if (cleanNext === '') {
 						const padLen = Math.max(cleanPrev.length, 3);
 						const paddedPrev = cleanPrev.padEnd(padLen, '0');
-						const prevNum = parseInt(paddedPrev, 10) || 0;
+						const prevNum = parseInt(paddedPrev, 10) ? parseInt(paddedPrev, 10) : 0;
 						const nextTen = (Math.floor(prevNum / 10) + 1) * 10;
 						return String(nextTen).padStart(padLen, '0');
 					}
@@ -600,8 +624,8 @@ HTML;
 					while (len <= 18) {
 						const pStr = cleanPrev === '' ? ''.padEnd(len, '0') : cleanPrev.padEnd(len, '0');
 						const nStr = cleanNext.padEnd(len, '0');
-						const pNum = parseInt(pStr, 10) || 0;
-						const nNum = parseInt(nStr, 10) || 0;
+						const pNum = parseInt(pStr, 10) ? parseInt(pStr, 10) : 0;
+						const nNum = parseInt(nStr, 10) ? parseInt(nStr, 10) : 0;
 
 						if (nNum - pNum > 1) {
 							const mid = Math.floor((pNum + nNum) / 2);
@@ -610,21 +634,21 @@ HTML;
 								res = res.replace(/0+$/, '');
 								if (res.length < 3) res = res.padEnd(3, '0');
 							}
-							if ((cleanPrev === '' || res > prevCode) && res < nextCode) {
+							if ((cleanPrev === '' ? true : res > prevCode) && res < nextCode) {
 								return res;
 							}
 						}
 						len++;
 					}
 
-					return (prevCode || '000') + '5';
+					return (prevCode ? prevCode : '000') + '5';
 				}
 
 				// Určí zónu puštění myši nad cílovým řádkem ('before', 'after', 'inside')
 				function resolveDropMode(targetRow, clientY) {
 					const rect = targetRow.getBoundingClientRect();
 					const relY = clientY - rect.top;
-					const height = rect.height || 30;
+					const height = rect.height ? rect.height : 30;
 					const isFolder = (targetRow.dataset.isFolder === '1');
 					const isRootHome = (targetRow.dataset.code === 'home');
 
@@ -639,9 +663,69 @@ HTML;
 					return (relY < height * 0.5) ? 'before' : 'after';
 				}
 
+				// Přepočet pořadí a odsazení všech řádků v tabulce #master-list v DOMu
+				function reorderTreeDom(movedRow, newParentOrig, newParentUuid, newSortCode) {
+					movedRow.dataset.parent = newParentOrig;
+					movedRow.dataset.parentUuid = newParentUuid;
+					movedRow.dataset.sort = newSortCode;
+					const sortCell = movedRow.querySelector('.cell-tree-sort');
+					if (sortCell) {
+						sortCell.textContent = newSortCode;
+					}
+
+					if (newParentOrig !== '') {
+						const cSet = getCollapsedSet();
+						if (cSet.has(newParentOrig)) {
+							cSet.delete(newParentOrig);
+							saveCollapsedSet(cSet);
+						}
+					}
+
+					const allRows = Array.from(tbody.querySelectorAll('tr[data-orig]'));
+					const byParent = {};
+					allRows.forEach(function(r) {
+						const p = r.dataset.parent ? r.dataset.parent : '';
+						if (!byParent[p]) byParent[p] = [];
+						byParent[p].push(r);
+					});
+
+					Object.keys(byParent).forEach(function(p) {
+						byParent[p].sort(function(a, b) {
+							const sa = a.dataset.sort ? a.dataset.sort : '';
+							const sb = b.dataset.sort ? b.dataset.sort : '';
+							if (sa !== sb) return sa < sb ? -1 : 1;
+							return (a.dataset.code ? a.dataset.code : '').localeCompare(b.dataset.code ? b.dataset.code : '');
+						});
+					});
+
+					const orderedRows = [];
+					const visitedSet = new Set();
+					function walkDomTree(pKey, lvl) {
+						const list = byParent[pKey] ? byParent[pKey] : [];
+						list.forEach(function(r) {
+							const o = r.dataset.orig;
+							if (visitedSet.has(o)) return;
+							visitedSet.add(o);
+							r.dataset.level = String(lvl);
+							const capCell = r.querySelector('.cell-tree-caption');
+							if (capCell) {
+								capCell.style.paddingLeft = 'calc(6px + ' + (lvl * 18) + 'px)';
+							}
+							orderedRows.push(r);
+							walkDomTree(o, lvl + 1);
+						});
+					}
+					walkDomTree('', 0);
+					orderedRows.forEach(function(r) {
+						tbody.appendChild(r);
+					});
+
+					window.applyMenuTreeVisibility();
+				}
+
 				tbody.addEventListener('dragstart', function(e) {
 					const tr = e.target.closest('tr[data-orig]');
-					if (!tr || tr.dataset.code === 'home') {
+					if (!tr ? true : tr.dataset.code === 'home') {
 						e.preventDefault();
 						return;
 					}
@@ -666,7 +750,7 @@ HTML;
 				tbody.addEventListener('dragover', function(e) {
 					if (!draggedRow) return;
 					const targetRow = e.target.closest('tr[data-orig]');
-					if (!targetRow || draggedDescendants.has(targetRow.dataset.orig)) {
+					if (!targetRow ? true : draggedDescendants.has(targetRow.dataset.orig)) {
 						clearDropIndicators();
 						return;
 					}
@@ -690,7 +774,7 @@ HTML;
 					if (!draggedRow) return;
 					const targetRow = e.target.closest('tr[data-orig]');
 					clearDropIndicators();
-					if (!targetRow || draggedDescendants.has(targetRow.dataset.orig)) {
+					if (!targetRow ? true : draggedDescendants.has(targetRow.dataset.orig)) {
 						return;
 					}
 					e.preventDefault();
@@ -708,38 +792,46 @@ HTML;
 					if (mode === 'inside') {
 						newParentOrig = targetRow.dataset.orig;
 						newParentUuid = targetRow.dataset.uuid;
-						// Najdeme stávající přímé potomky cílové složky (mimo tažený uzel)
 						const existingChildren = Array.from(tbody.querySelectorAll('tr[data-orig]')).filter(function(r) {
-							return (r.dataset.parent || '') === newParentOrig && r.dataset.orig !== dragOrig;
+							return (r.dataset.parent ? r.dataset.parent : '') === newParentOrig && r.dataset.orig !== dragOrig;
 						});
 						if (existingChildren.length > 0) {
-							prevSort = existingChildren[existingChildren.length - 1].dataset.sort || '';
+							const lastChild = existingChildren[existingChildren.length - 1];
+							prevSort = lastChild.dataset.sort ? lastChild.dataset.sort : '';
 						}
 					} else {
-						newParentOrig = targetRow.dataset.parent || '';
-						newParentUuid = targetRow.dataset.parentUuid || '';
+						newParentOrig = targetRow.dataset.parent ? targetRow.dataset.parent : '';
+						newParentUuid = targetRow.dataset.parentUuid ? targetRow.dataset.parentUuid : '';
 						const siblings = Array.from(tbody.querySelectorAll('tr[data-orig]')).filter(function(r) {
-							return (r.dataset.parent || '') === newParentOrig && r.dataset.orig !== dragOrig;
+							return (r.dataset.parent ? r.dataset.parent : '') === newParentOrig && r.dataset.orig !== dragOrig;
 						});
 						const tIdx = siblings.indexOf(targetRow);
 						if (mode === 'before') {
-							prevSort = (tIdx > 0) ? (siblings[tIdx - 1].dataset.sort || '') : '';
-							nextSort = targetRow.dataset.sort || '';
+							prevSort = (tIdx > 0 && siblings[tIdx - 1].dataset.sort) ? siblings[tIdx - 1].dataset.sort : '';
+							nextSort = targetRow.dataset.sort ? targetRow.dataset.sort : '';
 						} else {
-							prevSort = targetRow.dataset.sort || '';
-							nextSort = (tIdx >= 0 && tIdx + 1 < siblings.length) ? (siblings[tIdx + 1].dataset.sort || '') : '';
+							prevSort = targetRow.dataset.sort ? targetRow.dataset.sort : '';
+							nextSort = (tIdx >= 0 && tIdx + 1 < siblings.length && siblings[tIdx + 1].dataset.sort) ? siblings[tIdx + 1].dataset.sort : '';
 						}
 					}
 
 					const newSortCode = computeBetweenSortCode(prevSort, nextSort);
+					const activeOrig = getCurrentOpenOrig();
 
-					// Pokud přetahujeme položku, která ještě není vpravo otevřená, otevřeme ji s předvyplněnými poli
-					if (dragOrig !== currentOpenOrig) {
+					// Aktualizujeme pořadí a odsazení v levém stromu ihned
+					reorderTreeDom(draggedRow, newParentOrig, newParentUuid, newSortCode);
+
+					// Pokud přetahujeme položku, která ještě není vpravo otevřená, načteme její detail přes AJAX s předvyplněnými poli
+					if (dragOrig !== activeOrig) {
 						const targetUrl = basePageUrl
 							+ '&update_guid=' + encodeURIComponent(dragUuid)
 							+ '&dnd_parent=' + encodeURIComponent(newParentUuid)
 							+ '&dnd_sort=' + encodeURIComponent(newSortCode);
-						window.location.href = targetUrl;
+						if (window.loadDetailPanel) {
+							window.loadDetailPanel(targetUrl, draggedRow);
+						} else {
+							window.location.href = targetUrl;
+						}
 						return;
 					}
 
@@ -773,66 +865,6 @@ HTML;
 					}
 
 					isFormDirty = true;
-
-					// Aktualizace datových atributů a vizuální přeskládání stromu v levém panelu
-					draggedRow.dataset.parent = newParentOrig;
-					draggedRow.dataset.parentUuid = newParentUuid;
-					draggedRow.dataset.sort = newSortCode;
-					const sortCell = draggedRow.querySelector('.cell-tree-sort');
-					if (sortCell) {
-						sortCell.textContent = newSortCode;
-					}
-
-					// Rozbalíme cílovou složku, pokud do ní byla položka vložena
-					if (newParentOrig !== '') {
-						const cSet = getCollapsedSet();
-						if (cSet.has(newParentOrig)) {
-							cSet.delete(newParentOrig);
-							saveCollapsedSet(cSet);
-						}
-					}
-
-					// Přepočet pořadí a odsazení všech řádků v tabulce #master-list
-					const allRows = Array.from(tbody.querySelectorAll('tr[data-orig]'));
-					const byParent = {};
-					allRows.forEach(function(r) {
-						const p = r.dataset.parent || '';
-						if (!byParent[p]) byParent[p] = [];
-						byParent[p].push(r);
-					});
-
-					Object.keys(byParent).forEach(function(p) {
-						byParent[p].sort(function(a, b) {
-							const sa = a.dataset.sort || '';
-							const sb = b.dataset.sort || '';
-							if (sa !== sb) return sa < sb ? -1 : 1;
-							return (a.dataset.code || '').localeCompare(b.dataset.code || '');
-						});
-					});
-
-					const orderedRows = [];
-					const visitedSet = new Set();
-					function walkDomTree(pKey, lvl) {
-						const list = byParent[pKey] || [];
-						list.forEach(function(r) {
-							const o = r.dataset.orig;
-							if (visitedSet.has(o)) return;
-							visitedSet.add(o);
-							r.dataset.level = String(lvl);
-							const capCell = r.querySelector('.cell-tree-caption');
-							if (capCell) {
-								capCell.style.paddingLeft = 'calc(6px + ' + (lvl * 18) + 'px)';
-							}
-							orderedRows.push(r);
-							walkDomTree(o, lvl + 1);
-						});
-					}
-					walkDomTree('', 0);
-					orderedRows.forEach(function(r) {
-						tbody.appendChild(r);
-					});
-
-					window.applyMenuTreeVisibility();
 				});
 			})();
 		</script>

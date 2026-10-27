@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-26 13:55
+ * Verze: 2026-10-27 19:40
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  * Účel: Zápisová, klonovací a schvalovací (SSC) část třídy entity_manager.
@@ -14,8 +14,8 @@
  *   `$this->col_types`, `$this->col_nulls`, `$this->columns_meta`, `$this->class_meta`,
  *   `$this->is_initialized`) a její metody `phrase()`, `is_metadata_entity()`
  *   a `evaluate_remove_permission()`.
- * - Využívá třídu `rich_text` (`rich_text.php`) pro normalizaci a bezpečnostní
- *   sanitizaci formátovaných sloupců (`is_html = 1`) při ukládání z POSTu.
+ * - Využívá třídu `rich_text` (`rich_text.php`) pro normalizaci, konverzi (Markdown ⇄ HTML)
+ *   a bezpečnostní sanitizaci formátovaných sloupců (`is_html = 1`) při ukládání z POSTu.
  * - Volán z `abstract_page_master_detail::process_save()` a `page_approval::process_save()`.
  *
  * KLÍČOVÉ KONCEPTY:
@@ -32,14 +32,14 @@
  *    striktní kontrolou vlastnictví (`object_owner`) a jazyka relace schvalovatele.
  *
  * Změny:
+ * 2026-10-27 19:40 - V metodě extract_post_data() sjednoceno čtení cílového formátu
+ *                    z pole {$colname}__target_format a přímé volání metody
+ *                    rich_text::normalize_for_storage($raw_val, $fmt_hint).
+ *                  - Oprava porovnání zděděné hodnoty s předkem v save_post_data()
+ *                    (odzdvojení vnitřních apostrofů před porovnáním s DB hodnotou).
  * 2026-10-26 13:55 - V metodě extract_post_data() doplněno napojení na třídu rich_text
- *                    pro sloupce s příznakem is_html = 1 (podpora konverze a sanitizace
- *                    Markdown / HTML textu před uložením do databáze).
- * 2026-10-24 11:30 - Doplněna kompletní podpora příznaku `removed` v konceptech ('D'/'F')
- *                    v metodě save_post_data() ($d_post_data['removed'], klonování i zrušených
- *                    'A' záznamů při návrhu obnovy) a v metodách approve_draft() a reject_draft()
- *                    (schvalování a odmítání návrhů se změnou removed v primárním i sekundárním jazyce).
- * 2026-10-22 16:30 - Vyčlenění zápisových a SSC metod do traitu entity_manager_write.
+ *                    pro sloupce s příznakem is_html = 1.
+ * 2026-10-24 11:30 - Doplněna kompletní podpora příznaku `removed` v konceptech ('D'/'F').
  * =============================================================================
  */
 
@@ -124,17 +124,17 @@ trait entity_manager_write {
 
 			// Ošetření a případná konverze formátovaného textu (Markdown / HTML) přes třídu rich_text
 			if (!empty($meta['is_html']) AND class_exists('rich_text')) {    // Pokud sloupec podporuje formátovaný text
-				$fmt_key_a = $colname . '_format';                           // Možný klíč formátu 1
-				$fmt_key_b = $colname . '__format';                          // Možný klíč formátu 2
-				$fmt_key_c = 'rt_format_' . $colname;                        // Možný klíč formátu 3
-				$fmt_hint = (string)($_POST[$fmt_key_a] ?? $_POST[$fmt_key_b] ?? $_POST[$fmt_key_c] ?? ''); // Zvolený režim editoru
-				if (method_exists('rich_text', 'extract_post_value')) {      // Pokud existuje přímý extraktor POST hodnoty
-					$raw_val = (string)rich_text::extract_post_value($colname, $raw_val); // Extrakce a sanitizace
-				} elseif (method_exists('rich_text', 'prepare_for_save')) {  // Pokud existuje metoda prepare_for_save
-					$raw_val = (string)rich_text::prepare_for_save($raw_val, $fmt_hint); // Příprava pro uložení do DB
-				} elseif (method_exists('rich_text', 'sanitize_for_save')) { // Pokud existuje metoda sanitize_for_save
-					$raw_val = (string)rich_text::sanitize_for_save($raw_val, $fmt_hint); // Sanitizace před uložením
-				} elseif (method_exists('rich_text', 'sanitize_html') AND method_exists('rich_text', 'detect_format')) { // Kombinace detekce a sanitizace
+				$fmt_key_target = $colname . '__target_format';              // Primární klíč cílového formátu z rich_text
+				$fmt_key_a = $colname . '_format';                           // Záložní klíč formátu 1
+				$fmt_key_b = $colname . '__format';                          // Záložní klíč formátu 2
+				$fmt_key_c = 'rt_format_' . $colname;                        // Záložní klíč formátu 3
+				$fmt_hint = (string)($_POST[$fmt_key_target] ?? $_POST[$fmt_key_a] ?? $_POST[$fmt_key_b] ?? $_POST[$fmt_key_c] ?? 'auto'); // Zvolený režim
+				if ($fmt_hint === '') {                                      // Pokud nebyl formát explicitně zvolen
+					$fmt_hint = 'auto';                                      // Automatická detekce formátu
+				}
+				if (method_exists('rich_text', 'normalize_for_storage')) {   // Primární metoda v rich_text.php
+					$raw_val = (string)rich_text::normalize_for_storage($raw_val, $fmt_hint); // Konverze a sanitizace pro DB
+				} elseif (method_exists('rich_text', 'sanitize_html') AND method_exists('rich_text', 'detect_format')) { // Záložní kombinace
 					$det_fmt = (string)rich_text::detect_format($raw_val);   // Detekce formátu uloženého textu
 					if ($det_fmt === 'html') {                               // Pokud je obsah ve formátu HTML
 						$raw_val = (string)rich_text::sanitize_html($raw_val); // Bezpečnostní sanitizace HTML
@@ -302,7 +302,7 @@ trait entity_manager_write {
 
 			if (!empty($baseline_row) AND isset($baseline_row[$col])) {      // Porovnání s výchozí předlohou
 				$baseline_val = $baseline_row[$col];                         // Hodnota v předloze
-				$compare_val = trim((string)$val, "'");                      // Hodnota k porovnání bez apostrofů
+				$compare_val = str_replace("''", "'", trim((string)$val, "'")); // Hodnota k porovnání bez vnějších apostrofů
 				
 				if (isset($this->col_nulls[$col]) AND $this->col_nulls[$col] !== 'not null') { // Pokud sloupec povoluje NULL
 					if ((string)$compare_val === (string)$baseline_val) {    // Shoda s hodnotou předlohy
