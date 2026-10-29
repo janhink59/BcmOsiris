@@ -1,8 +1,16 @@
 /* =============================================================================
+ * Verze: 2026-10-29 15:30
  * Soubor: p_get_menu_hierarchy.sql
  * Procedura: p_get_menu_hierarchy
  * Účel: Získání kompletního uživatelského menu s vyřešenou hierarchií, 
- *       RAC overridy, lokalizací a vyhodnocením oprávnění.
+ *       RAC overridy, lokalizací přes dbo.f_language_list(@lang) a vyhodnocením
+ *       oprávnění.
+ * Vazby: - Volána z PHP třídy menu_manager (menu_manager.php).
+ *        - Využívá dbsession, meta_menu, meta_object, f_resolve_hierarchy
+ *          a dbo.f_language_list.
+ * Změny: - 2026-10-29 15:30: Lokalizace caption a helptext napojena na indexovanou
+ *          tabulkovou proměnnou @fl z dbo.f_language_list(@lang) s podmínkou
+ *          fallback_order < 1000.
  * ============================================================================= */
 IF OBJECT_ID('p_get_menu_hierarchy', 'P') IS NOT NULL DROP PROCEDURE p_get_menu_hierarchy;
 GO
@@ -18,8 +26,17 @@ BEGIN
 
 	IF @lang IS NULL RETURN;
 
+	-- 0. Načtení řetězce jazyků s fallback_order < 1000 do indexované tabulkové proměnné
+	DECLARE @fl TABLE (
+		[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+		fallback_order int NOT NULL
+	);
+	INSERT INTO @fl ([language], fallback_order)
+	SELECT [language], fallback_order
+	FROM dbo.f_language_list(@lang)
+	WHERE fallback_order < 1000;
+
 	-- 1. Sestavení platné množiny menu (Tenant Override vzor)
-	-- Zabráníme duplicitám před vstupem do hierarchického resolveru
 	SELECT * INTO #mix_menu FROM (
 		SELECT sy.* FROM meta_menu sy 
 		LEFT JOIN meta_menu my ON my.original = sy.original AND my.object_owner = @org AND my.record_type = 'A' AND my.removed = 0 AND my.inactive = 0
@@ -43,7 +60,7 @@ BEGIN
 	INTO #tree
 	FROM f_resolve_hierarchy(@hier_in) h;
 
-	-- 4. Vyhodnocení přístupových práv a lokalizace
+	-- 4. Vyhodnocení přístupových práv a lokalizace přes @fl (fallback_order < 1000)
 	SELECT 
 		t.hierarchy_sort,
 		t.level,
@@ -54,9 +71,8 @@ BEGIN
 		m.svg_icon,
 		m.css_class,
 		m.url_parameters,
-		-- Překlady přes kaskádový COALESCE (lokální tenant -> globální -> 'A' základ)
-		COALESCE(NULLIF(CAST(lv.caption AS NVARCHAR(MAX)), ''), NULLIF(CAST(ls.caption AS NVARCHAR(MAX)), ''), m.caption) AS caption,
-		COALESCE(NULLIF(CAST(lv.helptext AS NVARCHAR(MAX)), ''), NULLIF(CAST(ls.helptext AS NVARCHAR(MAX)), ''), m.helptext) AS helptext,
+		COALESCE(tr_cap.caption, m.caption) AS caption,
+		COALESCE(tr_hlp.helptext, m.helptext) AS helptext,
 		
 		-- Detekce koncového uzlu (Dynamická ochrana proti chybně vyplněným metadatům)
 		CASE WHEN EXISTS (SELECT 1 FROM #tree ch WHERE ch.parent = m.original) THEN 0 ELSE 1 END AS is_leaf,
@@ -90,11 +106,30 @@ BEGIN
 	INTO #menu
 	FROM #tree t
 	JOIN #mix_menu m ON m.original = t.keyvalue
-	LEFT JOIN meta_menu ls ON ls.original = m.original AND ls.object_owner = 0x00 AND ls.record_type = 'L' AND ls.language = @lang AND ls.removed = 0
-	LEFT JOIN meta_menu lv ON lv.original = m.original AND lv.object_owner = @org  AND lv.record_type = 'L' AND lv.language = @lang AND lv.removed = 0;
+	OUTER APPLY (
+		SELECT TOP 1 CAST(l.caption AS NVARCHAR(MAX)) AS caption
+		FROM meta_menu l
+		JOIN @fl fl ON fl.[language] = l.[language]
+		WHERE l.original = m.original
+		  AND l.record_type = 'L'
+		  AND l.removed = 0
+		  AND l.object_owner IN (@org, 0x00)
+		  AND NULLIF(CAST(l.caption AS NVARCHAR(MAX)), '') IS NOT NULL
+		ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org THEN 0 ELSE 1 END ASC
+	) tr_cap
+	OUTER APPLY (
+		SELECT TOP 1 CAST(l.helptext AS NVARCHAR(MAX)) AS helptext
+		FROM meta_menu l
+		JOIN @fl fl ON fl.[language] = l.[language]
+		WHERE l.original = m.original
+		  AND l.record_type = 'L'
+		  AND l.removed = 0
+		  AND l.object_owner IN (@org, 0x00)
+		  AND NULLIF(CAST(l.helptext AS NVARCHAR(MAX)), '') IS NOT NULL
+		ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org THEN 0 ELSE 1 END ASC
+	) tr_hlp;
 
 	-- 5. Výpočet viditelnosti větví (Bottom-Up)
-	-- Složka je viditelná a aktivní, pokud má alespoň jednoho dostupného potomka
 	SELECT 
 		m.*,
 		CASE 

@@ -1,22 +1,31 @@
--- =============================================================================
--- Verze: 2026-10-22 17:45
--- Soubor: table_organization.sql
--- Tabulka: organization (Organizace)
--- Popis:	Základní kámen multi-tenantní architektury CRMM. Definuje jednotlivé 
---			klienty (tenanty) v systému. Vlastníkem (object_owner) systémového 
---			záznamu je 0x00, ostatní záznamy organizací vlastní samy sebe.
--- Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
--- Změny:
--- - 2026-10-22 17:45: Doplněno idempotentní dotvoření chybějících symetrických
---   'L' záznamů pro všechny existující organizace (včetně 0x00).
--- =============================================================================
+/* =============================================================================
+ * Verze: 2026-10-29 15:30
+ * Soubor: table_organization.sql
+ * Tabulka: organization (Organizace a její nastavení)
+ * Popis:	Základní kámen multi-tenantní architektury CRMM. Definuje jednotlivé 
+ *			klienty (tenanty) v systému. Vlastníkem (object_owner) systémového 
+ *			záznamu je 0x00, ostatní záznamy organizací vlastní samy sebe
+ *			(object_owner = original) a jsou plně pod kontrolou administrátora
+ *			dané organizace (OrgAdmin 'A').
+ *			Licenční omezení (licence_level, login_disabled) jsou vyčleněna
+ *			výhradně v tabulce organization_licence.
+ *			Tabulka přímo obsahuje i regionální, formátovací a CRMM výpočtové
+ *			parametry organizace (nahrazuje dřívější tabulku organization_settings).
+ * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
+ * Změny:
+ * - 2026-10-29 15:30: Vyčleněny sloupce licence_level a login_disabled do
+ *   tabulky organization_licence. Doplněny regionální, formátovací a CRMM
+ *   výpočtové parametry organizace a unikátní index uq_organization_draft.
+ * - 2026-10-22 17:45: Doplněno idempotentní dotvoření chybějících symetrických
+ *   'L' záznamů pro všechny existující organizace (včetně 0x00).
+ * ============================================================================= */
 
 -- Podmíněné odstranění tabulky, pokud v ní nejsou poslední změny
-if not exists(select * from v_syscolumns where tabname='organization' and colname='shortname')
-	execute dropni 'organization'
+IF NOT EXISTS(SELECT * FROM v_syscolumns WHERE tabname='organization' AND colname='shortname')
+	EXECUTE dropni 'organization';
 GO
 
-if object_id('organization') is null
+IF OBJECT_ID('organization') IS NULL
 CREATE TABLE organization (
 	-- -------------------------------------------------------------------------
 	-- Standardní RAC a SSC sloupce
@@ -56,15 +65,13 @@ CREATE TABLE organization (
 	who_modified uuid NOT NULL DEFAULT 0x00,
 
 	-- -------------------------------------------------------------------------
-	-- Specifické byznys sloupce organizace
+	-- Specifické identifikační, fakturační a adresní sloupce organizace
 	-- -------------------------------------------------------------------------
 	note varchar(max) NOT NULL DEFAULT '',
-	login_disabled bit NOT NULL DEFAULT 0,
 	
 	-- Detekce domovského SSO tenanta v multi-tenantním prostředí (pro IdP)
 	login_domain varchar(200) NOT NULL DEFAULT '',		
 	
-	licence_level tinyint NOT NULL DEFAULT 0,
 	register_id bigint NULL DEFAULT 0,
 	tax_id varchar(40) NOT NULL DEFAULT '',
 	invoice_info varchar(max) NOT NULL DEFAULT '',
@@ -77,6 +84,31 @@ CREATE TABLE organization (
 	address_state varchar(40) NOT NULL DEFAULT '',
 	www_address varchar(200) NOT NULL DEFAULT '',
 
+	-- -------------------------------------------------------------------------
+	-- Regionální a formátovací nastavení organizace
+	-- -------------------------------------------------------------------------
+	preferred_language varchar(2) NOT NULL DEFAULT 'cs',
+	currency_unit varchar(40) NOT NULL DEFAULT 'tis. Kč',
+	currency_digits tinyint NOT NULL DEFAULT 2,
+	currency_before bit NOT NULL DEFAULT 0,
+	format_date varchar(20) NOT NULL DEFAULT 'dd.MM.yyyy',
+	format_time varchar(20) NOT NULL DEFAULT 'HH:mm:ss',
+	time_zone varchar(100) NOT NULL DEFAULT 'Europe/Prague',
+	thousand_separator varchar(1) NOT NULL DEFAULT ' ',
+	decimal_separator varchar(1) NOT NULL DEFAULT ',',
+	export_delimiter varchar(1) NOT NULL DEFAULT ';',
+
+	-- -------------------------------------------------------------------------
+	-- Metodické a výpočtové parametry CRMM (limity škál a finanční prahy)
+	-- -------------------------------------------------------------------------
+	max_threat_score decimal(9,4) NOT NULL DEFAULT 13.0000,
+	max_vulnerability_score decimal(9,4) NOT NULL DEFAULT 6.5000,
+	max_impact_score decimal(9,4) NOT NULL DEFAULT 25.5000,
+	max_risk_score decimal(9,4) NOT NULL DEFAULT 40.7500,
+	max_impact_financial decimal(18,2) NULL,
+	residual_risk_min_financial decimal(18,2) NULL,
+	evaluation_method varchar(40) NOT NULL DEFAULT '',
+
 	-- Média a logotyp
 	logo_data varbinary(max) NULL,
 	logo_filename varchar(255) NOT NULL DEFAULT '',
@@ -87,10 +119,37 @@ CREATE TABLE organization (
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajištění RAC architektury
+-- Zajištění chybějících sloupců a odstranění vyčleněných licenčních sloupců
 -- -----------------------------------------------------------------------------
+EXEC sp_drop_column 'organization', 'licence_level';
+EXEC sp_drop_column 'organization', 'login_disabled';
+GO
 
--- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál
+EXEC p_create_missing_column 'organization', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'organization', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'organization', 'import_origin', 'varchar(255) NULL';
+EXEC p_create_missing_column 'organization', 'preferred_language', 'varchar(2) NOT NULL DEFAULT ''cs''';
+EXEC p_create_missing_column 'organization', 'currency_unit', 'varchar(40) NOT NULL DEFAULT ''tis. Kč''';
+EXEC p_create_missing_column 'organization', 'currency_digits', 'tinyint NOT NULL DEFAULT 2';
+EXEC p_create_missing_column 'organization', 'currency_before', 'bit NOT NULL DEFAULT 0';
+EXEC p_create_missing_column 'organization', 'format_date', 'varchar(20) NOT NULL DEFAULT ''dd.MM.yyyy''';
+EXEC p_create_missing_column 'organization', 'format_time', 'varchar(20) NOT NULL DEFAULT ''HH:mm:ss''';
+EXEC p_create_missing_column 'organization', 'time_zone', 'varchar(100) NOT NULL DEFAULT ''Europe/Prague''';
+EXEC p_create_missing_column 'organization', 'thousand_separator', 'varchar(1) NOT NULL DEFAULT '' ''';
+EXEC p_create_missing_column 'organization', 'decimal_separator', 'varchar(1) NOT NULL DEFAULT '',''';
+EXEC p_create_missing_column 'organization', 'export_delimiter', 'varchar(1) NOT NULL DEFAULT '';''';
+EXEC p_create_missing_column 'organization', 'max_threat_score', 'decimal(9,4) NOT NULL DEFAULT 13.0000';
+EXEC p_create_missing_column 'organization', 'max_vulnerability_score', 'decimal(9,4) NOT NULL DEFAULT 6.5000';
+EXEC p_create_missing_column 'organization', 'max_impact_score', 'decimal(9,4) NOT NULL DEFAULT 25.5000';
+EXEC p_create_missing_column 'organization', 'max_risk_score', 'decimal(9,4) NOT NULL DEFAULT 40.7500';
+EXEC p_create_missing_column 'organization', 'max_impact_financial', 'decimal(18,2) NULL';
+EXEC p_create_missing_column 'organization', 'residual_risk_min_financial', 'decimal(18,2) NULL';
+EXEC p_create_missing_column 'organization', 'evaluation_method', 'varchar(40) NOT NULL DEFAULT ''''';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC a SSC architektury
+-- -----------------------------------------------------------------------------
 EXEC sp_create_index 
 	@tname = 'organization', 
 	@iname = 'uq_organization_active', 
@@ -99,13 +158,20 @@ EXEC sp_create_index
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
 GO
 
--- Zajištění unikátnosti jazykových verzí (Language) pro daného vlastníka a originál
 EXEC sp_create_index 
 	@tname = 'organization', 
 	@iname = 'uq_organization_language', 
 	@colnames = 'original, object_owner, language', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''L'' AND removed = 0';
+GO
+
+EXEC sp_create_index 
+	@tname = 'organization', 
+	@iname = 'uq_organization_draft', 
+	@colnames = 'original, object_owner, language, draft_author', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''D'' AND removed = 0';
 GO
 
 -- -----------------------------------------------------------------------------
@@ -139,12 +205,12 @@ GO
 INSERT INTO organization (
 	uuid, object_owner, original, record_type, approval_status, [language],
 	caption, shortname, description_text, help_text, note,
-	login_domain, licence_level, who_created, who_modified
+	login_domain, who_created, who_modified
 )
 SELECT
 	NEWID(), a.object_owner, a.original, 'L', 'A', a.[language],
 	a.caption, a.shortname, a.description_text, a.help_text, a.note,
-	a.login_domain, a.licence_level, a.who_created, a.who_modified
+	a.login_domain, a.who_created, a.who_modified
 FROM organization a
 WHERE a.record_type = 'A'
   AND a.removed = 0

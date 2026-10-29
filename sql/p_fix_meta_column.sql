@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-26 13:55
+ * Verze: 2026-10-29 16:00
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -20,26 +20,17 @@ GO
  *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
  *
  * Změny:
+ * - 2026-10-29 16:00: V sekci 5b doplněno napojení sloupce preferred_language
+ *   na třídu language, aby entity_manager v nastavení organizace generoval
+ *   roletku podporovaných jazyků.
  * - 2026-10-26 13:55: V sekci 5 doplněno výchozí nastavení příznaku is_html = 1
  *   v globálním slovníku (sys_global_columns) pro dlouhé popisné sloupce
  *   (description, description_text, helptext, help_text, note), pokud záznam
  *   nebyl ručně upraven uživatelem (who_modified = 0x00).
  * - 2026-10-24 23:45: Osiřelé systémové objekty v meta_object (T, V, F), meta_class
- *   (např. zrušené pohledy vrepo_*) a meta_column, které již neodpovídají živé
- *   databázové struktuře v_syscolumns, se označují příznakem removed = 1 s časem
- *   běhu dávky (date_modified = @batch_time). Naopak pokud se dříve zrušený
- *   objekt, třída či sloupec v databázi znovu objeví, automaticky se obnoví
- *   z koše (removed = 0, date_modified = @batch_time).
- *   Doplněna výchozí česká lokalizace sloupce days_in_trash v sys_global_columns.
- * - 2026-10-24 13:15: V sekci 5b doplněno automatické napojení rekurzivní vazby
- *   referenced_class = parent_class pro sloupce s názvem parent_uuid (např. v meta_menu
- *   a asset_class), aby entity_manager automaticky generoval stromovou roletku <select>.
- * - 2026-10-22 16:30: Přidán sloupec shortname do #list_order (pro přehledné zobrazení
- *   zkratky v levém panelu organizací a tříd aktiv) a skryty interní sloupce loga
- *   (logo_data, logo_filename, logo_mime_type) v sys_global_columns.
- * - 2026-10-21 14:25: Odstraněny opuštěné záznamy sloupců iconname, svg_code a svg_name
- *   z meta_column (sjednoceno na svg_icon). Odstraněna trojitá duplicita výpočtu
- *   vlastností sloupců z v_syscolumns pomocí dočasné tabulky #syscol_attr.
+ *   a meta_column se označují příznakem removed = 1 s časem běhu dávky (@batch_time).
+ *   Pokud se dříve zrušený objekt v databázi znovu objeví, automaticky se obnoví
+ *   z koše (removed = 0).
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -157,7 +148,7 @@ BEGIN
 			WHEN typename = 'date' THEN '120px'
 			WHEN typename = 'smalldatetime' THEN '150px'
 			WHEN typename IN ('datetime', 'datetime2') THEN '180px'
-			WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '100px'
+			WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '120px'
 			ELSE '100%'
 		END AS calc_input_width
 	INTO #syscol_attr
@@ -194,7 +185,7 @@ BEGIN
 		  AND s.meta_obj_type = mo.object_type COLLATE DATABASE_DEFAULT
 	  );
 
-	-- 1b. Označení osiřelých fyzických objektů (removed: 0 -> 1), které již v DB neexistují (např. zrušené vrepo_*)
+	-- 1b. Označení osiřelých fyzických objektů (removed: 0 -> 1), které již v DB neexistují (např. zrušené organization_settings)
 	UPDATE mo
 	SET mo.removed = 1,
 		mo.date_modified = @batch_time
@@ -317,7 +308,7 @@ BEGIN
 		WHERE original = @c_class AND object_owner = 0x00 AND removed = 1;
 	END
 
-	-- 2c. Označení osiřelých systémových tříd (removed: 0 -> 1, např. vrepo_*), jejichž úložný objekt neexistuje nebo je zrušený
+	-- 2c. Označení osiřelých systémových tříd (removed: 0 -> 1), jejichž úložný objekt neexistuje nebo je zrušený
 	UPDATE mc
 	SET mc.removed = 1,
 		mc.date_modified = @batch_time
@@ -550,7 +541,6 @@ BEGIN
 	insert into #list_order(column_name)
 	values('source_code'), ('builtin_code'), ('column_name'), ('class_name'), ('caption'), ('shortname'), ('title')
 
-	-- Nastavení položky "list_order" dle výše uvedeného seznamu
 	update meta_column
 		set list_order=lc.list_order
 	from meta_column
@@ -576,7 +566,7 @@ BEGIN
 	  AND who_modified = 0x00
 	  AND column_name IN ('description', 'description_text', 'helptext', 'help_text', 'note');
 
-	-- Výchozí česká lokalizace pro nový sloupec days_in_trash v globálním slovníku (pokud nebyla ručně upravena)
+	-- Výchozí česká lokalizace pro sloupec days_in_trash v globálním slovníku
 	UPDATE meta_column
 	SET caption = 'Dny v koši (days_in_trash)',
 		label = 'Dny v koši',
@@ -600,8 +590,7 @@ BEGIN
 		'logo_data', 'logo_filename', 'logo_mime_type'
 	  );
 
-	-- Sloupec vektorových ikon (svg_icon) necháme ve formuláři viditelný (hidden = 0) a chráněný (is_protected = 1),
-	-- aby entity_manager v detailním panelu vykreslil jeho neredigovatelný vizuální náhled.
+	-- Sloupec vektorových ikon (svg_icon) necháme ve formuláři viditelný (hidden = 0) a chráněný (is_protected = 1)
 	UPDATE meta_column
 	SET hidden = 0,
 		is_protected = 1
@@ -612,7 +601,6 @@ BEGIN
 
 	-- -------------------------------------------------------------------------
 	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class V GLOBÁLNÍM SLOVNÍKU A STROMECH
-	--     Zajistí automatické vykreslení <select> prvků v entity_manageru.
 	-- -------------------------------------------------------------------------
 	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
 	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');

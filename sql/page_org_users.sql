@@ -3,17 +3,18 @@ IF OBJECT_ID('page_org_users') IS NOT NULL
 GO
 
 /* =============================================================================
- * Verze: 2026-10-18 12:55
+ * Verze: 2026-10-29 16:00
  * Soubor: page_org_users.sql
  * Procedura: page_org_users
  * Účel: Načítá seznam uživatelů tenanta (včetně žádostí o přístup a pozvánek 'D')
- *       a oddělené detaily osobního účtu (user_account) a oprávnění v organizaci
- *       (user_organization_access) pro Master-Detail obrazovku page_org_users.php.
+ *       a oddělené detaily osobního účtu (user_account) a oprávnění + zařazení
+ *       v organizaci (user_organization_access) pro Master-Detail obrazovku
+ *       page_org_users.php.
  * Architektura: Nezávislá na parametrech organizace, kontext čerpá z dbsession.
  * Změny:
- * - 2026-10-18 12:55: Doplněno načítání konceptů ('D') v seznamu i detailu,
- *   doplněny všechny osobní sloupce z user_account, oprávnění right_translate
- *   a globální příznaky účtu pro oddělené zobrazení ve formuláři.
+ * - 2026-10-29 16:00: Sloupce department_name, job_title, manager_uuid, note,
+ *   working_date a evaluation_method se v detailu načítají z tabulky
+ *   user_organization_access (ou) místo z user_account (u).
  * ============================================================================= */
 CREATE PROCEDURE dbo.page_org_users
 	@subpage VARCHAR(50),
@@ -34,7 +35,6 @@ BEGIN
 	FROM dbo.dbsession 
 	WHERE spid = @@SPID;
 
-	-- Bezpečnostní záchytná brzda
 	IF @current_org IS NULL
 	BEGIN
 		RAISERROR('Přístup odepřen: Nelze identifikovat aktivní relaci (dbsession).', 16, 1);
@@ -44,8 +44,6 @@ BEGIN
 	-- 2. Zpracování pro levý panel (Master - Seznam uživatelů, žádostí a pozvánek)
 	IF @subpage = 'list'
 	BEGIN
-		-- Pokud má uživatel historický odebraný přístup (A, removed=1) a současně novou žádost/pozvánku (D, removed=0),
-		-- vybereme pro zobrazení v seznamu prioritně aktivní řádek (removed ASC, record_type D před A při removed=1).
 		;WITH ranked_access AS (
 			SELECT
 				ou.*,
@@ -74,6 +72,8 @@ BEGIN
 			ou.approval_note,
 			ou.is_orgadmin,
 			ou.right_translate,
+			ou.department_name,
+			ou.job_title,
 			ou.removed AS access_removed,
 			CASE WHEN ou.record_type = 'D' AND ou.draft_author = u.original THEN 1 ELSE 0 END AS is_user_request
 		FROM ranked_access ou
@@ -102,21 +102,24 @@ BEGIN
 			u.email,
 			u.phone,
 			u.mobile,
-			u.department_name,
-			u.job_title,
-			u.note,
 			-- Globální systémové příznaky účtu (user_account)
 			u.is_system_admin,
 			u.is_developer,
 			u.allow_local_login,
 			u.inactive AS deactivate_global,
-			-- Oprávnění a stav schvalování v aktuální organizaci (user_organization_access)
+			-- Oprávnění, organizační zařazení a pracovní parametry v aktuální organizaci (user_organization_access)
 			ou.record_type,
 			ou.approval_status,
 			ou.draft_author,
 			ou.approval_note,
 			ou.is_orgadmin,
 			ou.right_translate,
+			ou.department_name,
+			ou.job_title,
+			ou.manager_uuid,
+			ou.note,
+			ou.working_date,
+			ou.evaluation_method,
 			ou.removed AS remove_access,
 			CASE WHEN ou.record_type = 'D' AND ou.draft_author = u.original THEN 1 ELSE 0 END AS is_user_request,
 			-- Auditní stopa

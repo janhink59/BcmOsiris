@@ -2,34 +2,38 @@ EXECUTE dropni 'form_org_users', 'P'
 GO
 
 /* =============================================================================
- * Verze: 2026-10-18 17:15
+ * Verze: 2026-10-29 16:00
  * Soubor: form_org_users.sql
  * Procedura: form_org_users
  * Účel: Bezpečné uložení, úprava, pozvání nebo schválení přístupu uživatele
- *       v rámci tenanta s oddělením osobních dat (user_account) od oprávnění
- *       v organizaci (user_organization_access).
+ *       v rámci tenanta s oddělením osobních dat osoby (user_account) od
+ *       oprávnění, zařazení a pracovního nastavení v organizaci (user_organization_access).
  * 
  * Architektura a bezpečnost:
  * - Oboustranný souhlas (SSC):
  *   1. Pokud orgadmin přidává nového uživatele a zadaný @login_name již v tabulce
  *      user_account existuje (z jiné organizace), procedura NEZASAHUJE do jeho
  *      osobních dat v user_account, ale založí v user_organization_access koncept
- *      pozvánky (record_type = 'D', approval_status = 'F', draft_author = @current_user_account),
- *      který musí uživatel sám přijmout na stránce page_change_user_context.
+ *      pozvánky (record_type = 'D', approval_status = 'F', draft_author = @current_user_account)
+ *      včetně organizačního zařazení (department_name, job_title, note, working_date,
+ *      evaluation_method), který musí uživatel přijmout na stránce page_change_user_context.
  *   2. Pokud uživatel požádal o přístup do této organizace (record_type = 'D',
  *      draft_author = @resolved_user_uuid), orgadmin může žádost schválit (@action = 'APPROVE')
  *      nebo odmítnout (@action = 'REJECT').
- *   3. Při schválení přístupu do systémové organizace (0x00) se uživateli v user_account
- *      automaticky nastaví is_system_admin = 1 (pokud nebyl zvolen Developer) a volitelně
- *      is_developer = @is_developer, protože v 0x00 uživatel pracuje přirozeně jako Sysadmin / Developer.
+ *   3. Právo přidělit globální roli Developer (@is_developer = 1) má kromě Sysadmina
+ *      a Developera ('S', 'D') také OrgAdmin ('A') organizace, která má nejvyšší
+ *      licenční úroveň Developer (dbsession.licence_level = 255).
  *   4. Jakmile je přístup uživatele v organizaci schválen (record_type = 'A' AND removed = 0),
  *      mají orgadmini této organizace právo upravovat i jeho osobní údaje v user_account,
- *      zatímco oprávnění (is_orgadmin, right_translate, remove_access) řídí vždy jen pro svou organizaci.
- * - Ochrana proti eskalaci privilegií: Běžný admin (A) nemůže přidělovat 
- *   ani odebírat globální role (S, D). Tyto parametry jsou pro něj ignorovány.
+ *      zatímco oprávnění a zařazení v user_organization_access řídí vždy jen pro svou organizaci.
  * - Ochrana před sebevražedným zásahem: Uživatel nemůže sám sebe deaktivovat, 
  *   zbavit se org. administrátora ani globálních rolí.
  * - Audit: who_created/who_modified přebírá UUID z login_session_uuid.
+ *
+ * Změny:
+ * - 2026-10-29 16:00: Sloupce department_name, job_title, note a nové pracovní
+ *   parametry working_date a evaluation_method se ukládají do user_organization_access.
+ *   Doplněna podpora přidělení příznaku is_developer v organizaci s licence_level = 255.
  * ============================================================================= */
 CREATE PROCEDURE form_org_users
 	@organization_uuid uniqueidentifier,
@@ -46,6 +50,8 @@ CREATE PROCEDURE form_org_users
 	@department_name varchar(150) = '',
 	@job_title varchar(150) = '',
 	@note varchar(max) = '',
+	@working_date date = NULL,
+	@evaluation_method varchar(40) = '',
 	@is_orgadmin bit = 0,
 	@right_translate bit = 0,
 	@is_system_admin bit = 0,
@@ -62,15 +68,17 @@ BEGIN
 	DECLARE @resolved_user_uuid uniqueidentifier = NULLIF(@user_original, 0x00);
 	DECLARE @is_new_selection bit = CASE WHEN @resolved_user_uuid IS NULL THEN 1 ELSE 0 END;
 	
-	-- Získání kontextu přístupu a identity přihlášeného správce PŘÍMO ze session
+	-- Získání kontextu přístupu, úrovně licence a identity přihlášeného správce PŘÍMO ze session
 	DECLARE @login_session_uuid uniqueidentifier;
 	DECLARE @current_user_account uniqueidentifier;
 	DECLARE @active_role varchar(1);
+	DECLARE @sess_licence_level tinyint = 0;
 	DECLARE @sess_lang varchar(2) = 'cs';
 	
 	SELECT	@login_session_uuid = login_session_uuid,
 		@current_user_account = user_account,
 		@active_role = active_role,
+		@sess_licence_level = licence_level,
 		@sess_lang = [language]
 	FROM	dbsession 
 	WHERE	spid = @@SPID;
@@ -81,10 +89,21 @@ BEGIN
 		RETURN;
 	END
 
+	-- Zda smí přihlášený správce měnit příznak is_developer (role S/D nebo organizace s licencí Developer = 255)
+	DECLARE @can_grant_developer bit = CASE
+		WHEN @active_role IN ('S', 'D') THEN 1
+		WHEN @active_role = 'A' AND @sess_licence_level = 255 THEN 1
+		ELSE 0
+	END;
+
 	SET @login_name = LTRIM(RTRIM(ISNULL(@login_name, '')));
 	SET @first_name = LTRIM(RTRIM(ISNULL(@first_name, '')));
 	SET @last_name = LTRIM(RTRIM(ISNULL(@last_name, '')));
 	SET @email = LTRIM(RTRIM(ISNULL(@email, '')));
+	SET @department_name = LTRIM(RTRIM(ISNULL(@department_name, '')));
+	SET @job_title = LTRIM(RTRIM(ISNULL(@job_title, '')));
+	SET @note = ISNULL(@note, '');
+	SET @evaluation_method = LTRIM(RTRIM(ISNULL(@evaluation_method, '')));
 	SET @approval_note = LTRIM(RTRIM(ISNULL(@approval_note, '')));
 
 	-- Pokud jde o zadání v režimu "+ Nový uživatel", pokusíme se najít existující účet podle unikátního login_name
@@ -158,12 +177,19 @@ BEGIN
 
 		BEGIN TRAN;
 
-		-- Pokud schvaluje Sysadmin/Developer (zejména v 0x00), uložíme rovnou i globální příznaky účtu
 		IF @active_role IN ('S', 'D')
 		BEGIN
 			UPDATE user_account
 			SET is_system_admin = @is_system_admin,
 				is_developer = @is_developer,
+				date_modified = GETDATE(),
+				who_modified = @login_session_uuid
+			WHERE original = @resolved_user_uuid AND record_type = 'A';
+		END
+		ELSE IF @can_grant_developer = 1
+		BEGIN
+			UPDATE user_account
+			SET is_developer = @is_developer,
 				date_modified = GETDATE(),
 				who_modified = @login_session_uuid
 			WHERE original = @resolved_user_uuid AND record_type = 'A';
@@ -180,6 +206,11 @@ BEGIN
 				is_orgadmin = @is_orgadmin,
 				right_translate = @right_translate,
 				last_role = @approved_role,
+				department_name = @department_name,
+				job_title = @job_title,
+				note = @note,
+				working_date = @working_date,
+				evaluation_method = @evaluation_method,
 				date_modified = GETDATE(),
 				who_modified = @login_session_uuid
 			WHERE user_account_uuid = @resolved_user_uuid
@@ -198,6 +229,11 @@ BEGIN
 				is_orgadmin = @is_orgadmin,
 				right_translate = @right_translate,
 				last_role = @approved_role,
+				department_name = @department_name,
+				job_title = @job_title,
+				note = @note,
+				working_date = @working_date,
+				evaluation_method = @evaluation_method,
 				date_modified = GETDATE(),
 				who_modified = @login_session_uuid
 			WHERE uuid = @req_uuid;
@@ -213,7 +249,6 @@ BEGIN
 	-- =========================================================================
 	-- VĚTEV 3: STANDARDNÍ ZÁPIS / POZVÁNKA (@action = 'SAVE')
 	-- =========================================================================
-	-- Načtení stávajících globálních rolí a stavu členství v aktuální organizaci
 	DECLARE @current_sysadmin bit = 0;
 	DECLARE @current_developer bit = 0;
 	DECLARE @current_allow_local bit = 1;
@@ -243,8 +278,10 @@ BEGIN
 	IF @active_role NOT IN ('S', 'D')
 	BEGIN
 		SET @is_system_admin = @current_sysadmin;
-		SET @is_developer = @current_developer;
-		IF @resolved_user_uuid IS NOT NULL SET @allow_local_login = @current_allow_local;
+		IF @can_grant_developer = 0
+			SET @is_developer = @current_developer;
+		IF @resolved_user_uuid IS NOT NULL
+			SET @allow_local_login = @current_allow_local;
 	END
 
 	-- BEZPEČNOSTNÍ POJISTKA 2: Ochrana před ztrátou kontroly nad vlastním účtem
@@ -295,14 +332,14 @@ BEGIN
 			uuid, object_owner, original, record_type, approval_status,
 			caption, login_name, email,
 			user_title_before, first_name, last_name, user_title_after,
-			phone, mobile, department_name, job_title, note,
+			phone, mobile,
 			allow_local_login, is_system_admin, is_developer, inactive,
 			last_login_organization, who_created, who_modified
 		) VALUES (
 			@resolved_user_uuid, 0x00, @resolved_user_uuid, 'A', 'A',
 			@full_caption, @login_name, @email,
 			@user_title_before, @first_name, @last_name, @user_title_after,
-			@phone, @mobile, @department_name, @job_title, @note,
+			@phone, @mobile,
 			@allow_local_login, @is_system_admin, @is_developer, @deactivate_global,
 			@organization_uuid, @login_session_uuid, @login_session_uuid
 		);
@@ -312,12 +349,13 @@ BEGIN
 		INSERT INTO user_organization_access (
 			uuid, object_owner, original, record_type, approval_status,
 			user_account_uuid, organization_uuid, is_orgadmin, right_translate,
-			last_role, removed, who_created, who_modified
+			last_role, department_name, job_title, note, working_date, evaluation_method,
+			removed, who_created, who_modified
 		) VALUES (
 			@new_acc_orig, @organization_uuid, @new_acc_orig, 'A', 'A',
 			@resolved_user_uuid, @organization_uuid, @is_orgadmin, @right_translate,
-			@default_role, 0,
-			@login_session_uuid, @login_session_uuid
+			@default_role, @department_name, @job_title, @note, @working_date, @evaluation_method,
+			0, @login_session_uuid, @login_session_uuid
 		);
 
 		COMMIT;
@@ -325,7 +363,7 @@ BEGIN
 	END
 
 	-- B. ÚČET JIŽ V USER_ACCOUNT EXISTUJE, ALE DOSUD NEMÁ SCHVÁLENÝ PŘÍSTUP V TÉTO ORGANIZACI
-	--    Orgadmin nesmí přepsat jeho osobní údaje bez souhlasu uživatele -> vytvoří/aktualizuje pozvánku 'D'!
+	--    Orgadmin nesmí přepsat jeho osobní údaje v user_account bez souhlasu uživatele -> vytvoří/aktualizuje pozvánku 'D'!
 	IF @has_active_membership = 0 AND NOT EXISTS (
 		SELECT 1 FROM user_organization_access
 		WHERE user_account_uuid = @resolved_user_uuid
@@ -354,6 +392,14 @@ BEGIN
 					who_modified = @login_session_uuid
 				WHERE original = @resolved_user_uuid AND record_type = 'A';
 			END
+			ELSE IF @can_grant_developer = 1
+			BEGIN
+				UPDATE user_account
+				SET is_developer = @is_developer,
+					date_modified = GETDATE(),
+					who_modified = @login_session_uuid
+				WHERE original = @resolved_user_uuid AND record_type = 'A';
+			END
 
 			UPDATE user_organization_access
 			SET record_type = 'A',
@@ -363,6 +409,11 @@ BEGIN
 				is_orgadmin = @is_orgadmin,
 				right_translate = @right_translate,
 				last_role = @default_role,
+				department_name = @department_name,
+				job_title = @job_title,
+				note = @note,
+				working_date = @working_date,
+				evaluation_method = @evaluation_method,
 				date_modified = GETDATE(),
 				who_modified = @login_session_uuid
 			WHERE user_account_uuid = @resolved_user_uuid
@@ -379,13 +430,18 @@ BEGIN
 			  AND removed = 0
 		)
 		BEGIN
-			-- Aktualizace existující pozvánky vystavené orgadminem
+			-- Aktualizace existující pozvánky vystavené orgadminem (včetně organizačního zařazení)
 			UPDATE user_organization_access
 			SET approval_status = 'F',
 				draft_author = @current_user_account,
 				approval_note = @approval_note,
 				is_orgadmin = @is_orgadmin,
 				right_translate = @right_translate,
+				department_name = @department_name,
+				job_title = @job_title,
+				note = @note,
+				working_date = @working_date,
+				evaluation_method = @evaluation_method,
 				date_modified = GETDATE(),
 				who_modified = @login_session_uuid
 			WHERE user_account_uuid = @resolved_user_uuid
@@ -402,13 +458,14 @@ BEGIN
 				uuid, object_owner, original, record_type, approval_status,
 				draft_author, approval_note, [language],
 				user_account_uuid, organization_uuid, is_orgadmin, right_translate,
-				last_role, removed, who_created, who_modified
+				last_role, department_name, job_title, note, working_date, evaluation_method,
+				removed, who_created, who_modified
 			) VALUES (
 				NEWID(), @organization_uuid, @inv_orig, 'D', 'F',
 				@current_user_account, @approval_note, @sess_lang,
 				@resolved_user_uuid, @organization_uuid, @is_orgadmin, @right_translate,
-				@default_role, 0,
-				@login_session_uuid, @login_session_uuid
+				@default_role, @department_name, @job_title, @note, @working_date, @evaluation_method,
+				0, @login_session_uuid, @login_session_uuid
 			);
 		END
 
@@ -421,7 +478,7 @@ BEGIN
 	END
 
 	-- C. UŽIVATEL JE SCHVÁLENÝM ČLENEM TÉTO ORGANIZACE (record_type = 'A')
-	--    Orgadmin této organizace smí upravovat jeho osobní údaje v user_account i lokální práva v organizaci.
+	--    Orgadmin této organizace smí upravovat jeho osobní údaje v user_account i lokální práva a zařazení v organizaci.
 	UPDATE user_account
 	SET caption = @full_caption,
 		email = @email,
@@ -431,9 +488,6 @@ BEGIN
 		user_title_after = @user_title_after,
 		phone = @phone,
 		mobile = @mobile,
-		department_name = @department_name,
-		job_title = @job_title,
-		note = @note,
 		allow_local_login = @allow_local_login,
 		is_system_admin = @is_system_admin,
 		is_developer = @is_developer,
@@ -446,6 +500,11 @@ BEGIN
 	SET is_orgadmin = @is_orgadmin,
 		right_translate = @right_translate,
 		last_role = @default_role,
+		department_name = @department_name,
+		job_title = @job_title,
+		note = @note,
+		working_date = @working_date,
+		evaluation_method = @evaluation_method,
 		removed = @remove_access,
 		date_modified = GETDATE(),
 		who_modified = @login_session_uuid
@@ -453,9 +512,16 @@ BEGIN
 	  AND organization_uuid = @organization_uuid
 	  AND record_type = 'A';
 
-	-- Aktualizace příznaku přepínání kontextu v aktivních relacích upravovaného uživatele
-	UPDATE wwwsession SET change_context_allowed = 1 WHERE user_account = @resolved_user_uuid;
-	UPDATE dbsession SET change_context_allowed = 1 WHERE user_account = @resolved_user_uuid;
+	-- Aktualizace příznaku přepínání kontextu a případného pracovního data v aktivních relacích upravovaného uživatele
+	UPDATE wwwsession
+	SET change_context_allowed = 1,
+		working_date = CASE WHEN organization = @organization_uuid THEN ISNULL(@working_date, CAST(GETDATE() AS date)) ELSE working_date END
+	WHERE user_account = @resolved_user_uuid;
+
+	UPDATE dbsession
+	SET change_context_allowed = 1,
+		working_date = CASE WHEN organization = @organization_uuid THEN ISNULL(@working_date, CAST(GETDATE() AS date)) ELSE working_date END
+	WHERE user_account = @resolved_user_uuid;
 
 	COMMIT;
 END

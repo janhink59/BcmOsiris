@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-27 16:10
+ * Verze: 2026-10-29 16:40
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – čtecí, metadatová a UI vrstva (STI Architektura).
  *       Zápisové a schvalovací metody jsou vyčleněny do traitu entity_manager_write
@@ -29,17 +29,19 @@
  *    `load_metadata()`, `fetch_rows()` i `render_dynamic_input()` materializované
  *    tabulkové proměnné (`DECLARE @t TABLE`) s primárními klíči, které umožňují
  *    provádět přímé Index Seek operace nad fyzickými tabulkami.
+ * 3. Uzamčení klíčových sloupců z meta_original_keys
+ *    Klíčové sloupce určující deterministický hash `original` lze zadat výhradně při
+ *    zakládání nového záznamu (`update_guid === 'NEW'`); u existujících záznamů jsou uzamčeny.
  * 
  * Změny:
- * 2026-10-27 16:10 - Kompletní náhrada neefektivních CTE (;WITH) v metodách load_metadata(),
- *                    fetch_rows() a render_dynamic_input() za indexované tabulkové
- *                    proměnné (DECLARE @t TABLE s PRIMARY KEY) a přímé protlačení
- *                    podmínek WHERE (original, parent_class, source_code) k Index Seeku.
- * 2026-10-27 14:35 - V metodě render_dynamic_input() upraveno vykreslování sloupců
- *                    s is_html = 1 na čistý Preview box v tabulce detailu s modálním
- *                    Toast UI Editorem na popředí (přes rich_text::render_editor).
- * 2026-10-24 13:15 - V evaluate_remove_permission() doplněna ochrana kořenové položky
- *                    menu 'home' a ochrana proti zrušení složky menu s aktivními potomky.
+ * 2026-10-29 16:40 - Načítání klíčových sloupců z meta_original_keys ($this->original_key_cols)
+ *                    a jejich automatické uzamčení (readonly) v render_dynamic_input()
+ *                    pro všechny již existující záznamy (mimo update_guid === 'NEW').
+ *                  - Doplněna roletka <select> pro sloupec preferred_language z číselníku
+ *                    podporovaných jazyků a zobecněna ochrana proti zacyklení (@descendants)
+ *                    pro všechny stromové tabulky se sloupcem parent_uuid.
+ * 2026-10-27 16:10 - Kompletní náhrada neefektivních CTE (;WITH) za indexované tabulkové
+ *                    proměnné (DECLARE @t TABLE s PRIMARY KEY).
  * =============================================================================
  */
 
@@ -63,6 +65,7 @@ class entity_manager {
 	private array $physical_cols = [];                                       // Seznam fyzických sloupců tabulky
 	private array $col_types = [];                                           // Datové typy fyzických sloupců
 	private array $col_nulls = [];                                           // Příznaky nullability fyzických sloupců
+	private array $original_key_cols = [];                                   // Klíčové sloupce z meta_original_keys (uzamčené mimo NEW)
 
 	/**
 	 * Konstruktor třídy.
@@ -111,6 +114,16 @@ class entity_manager {
 	 */
 	public function has_physical_column(string $column_name): bool {         // Kontrola existence fyzického sloupce
 		return in_array($column_name, $this->physical_cols, true);           // Vyhledání v poli fyzických sloupců
+	}
+
+	/**
+	 * Vrátí pole klíčových sloupců (z meta_original_keys nebo link), které definují
+	 * deterministický klíč original a nesmí se u existujících záznamů měnit.
+	 *
+	 * @return array<int, string>
+	 */
+	public function get_original_key_columns(): array {
+		return $this->original_key_cols;                                     // Vrácení seznamu klíčových sloupců
 	}
 
 	/**
@@ -185,7 +198,7 @@ class entity_manager {
 	}
 
 	/**
-	 * Načte metadata logické třídy, identifikuje fyzickou tabulku 
+	 * Načte metadata logické třídy, identifikuje fyzickou tabulku, klíčové sloupce z meta_original_keys
 	 * a načte definici sloupců pomocí indexovaných tabulkových proměnných a dvoupolového vyhodnocení.
 	 */
 	private function load_metadata(): void {
@@ -297,14 +310,29 @@ class entity_manager {
 		$this->storage_table = (string)$row['storage_table_name'];           // Název fyzické tabulky
 		$class_uuid = guidliteral($main_cls_orig);                           // SQL literál UUID třídy
 
-		// 2. Načtení fyzického databázového schématu z v_syscolumns
-		$syscols = sqlarray_simple("SELECT colname, typename, nulls FROM v_syscolumns WHERE tabname = " . charliteral($this->storage_table) . " AND iscomputed = 0 AND is_identity = 0"); // Fyzické sloupce
+		// 2. Načtení fyzického databázového schématu z v_syscolumns a klíčových sloupců z meta_original_keys
+		$safe_tab = charliteral($this->storage_table);                       // SQL literál fyzické tabulky
+		$syscols = sqlarray_simple("SELECT colname, typename, nulls FROM v_syscolumns WHERE tabname = {$safe_tab} AND iscomputed = 0 AND is_identity = 0"); // Fyzické sloupce
 		if (is_array($syscols)) {                                            // Kontrola platného pole fyzických sloupců
 			foreach ($syscols as $c) {                                       // Průchod fyzickými sloupci tabulky
 				$cname = (string)$c['colname'];                              // Název fyzického sloupce
 				$this->physical_cols[] = $cname;                             // Zařazení do seznamu fyzických sloupců
 				$this->col_types[$cname] = (string)$c['typename'];           // Datový typ sloupce
 				$this->col_nulls[$cname] = strtolower(trim((string)$c['nulls'])); // Příznak nullability sloupce
+			}
+		}
+
+		if ($this->storage_table === 'link') {                               // Speciální 3složkový klíč tabulky link
+			$this->original_key_cols = ['link_def', 'from_object', 'to_object']; // Klíčové sloupce vazby
+		} else {
+			$mok_row = sqlfirstrow("SELECT key1_column, key2_column FROM meta_original_keys WHERE table_name = {$safe_tab}"); // Dotaz na klíčové sloupce
+			if (!empty($mok_row)) {                                          // Pokud je tabulka v meta_original_keys
+				if (!empty($mok_row['key1_column'])) {                       // První klíčový sloupec
+					$this->original_key_cols[] = (string)$mok_row['key1_column']; // Zařazení 1. klíčového sloupce
+				}
+				if (!empty($mok_row['key2_column'])) {                       // Druhý volitelný klíčový sloupec
+					$this->original_key_cols[] = (string)$mok_row['key2_column']; // Zařazení 2. klíčového sloupce
+				}
 			}
 		}
 
@@ -1161,6 +1189,7 @@ HTML;
 	/**
 	 * Dynamický HTML generátor formulářových prvků na základě metadat v DB.
 	 * Zajišťuje vizuální vykreslení datových typů, maximálních délek, zamykání polí
+	 * (včetně uzamčení klíčových sloupců z meta_original_keys mimo update_guid === 'NEW')
 	 * i Preview náhledu s modálním Markdown / HTML editorem na popředí pro sloupce s is_html = 1.
 	 * 
 	 * @param string $column_name    Název sloupce (klíč v databázi, např. 'caption')
@@ -1194,6 +1223,7 @@ HTML;
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role uživatele v relaci
 		$org_sql = guidliteral((string)($dbsession['organization'] ?? '0x00')); // SQL literál aktivní organizace
 		$safe_lang = charliteral($this->lang_manager->get_current_language(), 2); // SQL literál aktivního jazyka
+		$curr_guid = trim((string)getinput('update_guid'));                  // Identifikátor právě otevřeného záznamu
 
 		$type = $meta['input_type'] ?: 'text';                               // Výchozí typ prvku je text
 		$safe_name = htmlspecialchars($column_name);                         // Ošetřený název prvku
@@ -1215,7 +1245,11 @@ HTML;
 		
 		$is_readonly = $force_readonly;                                      // Výchozí stav uzamčení dle panelu
 		
-		if (!empty($meta['is_computed'])) {                                  // Kontrola vypočítávaného sloupce
+		// ZÁKAZ ZMĚNY KLÍČOVÝCH SLOUPCŮ PO VYTVOŘENÍ ZÁZNAMU:
+		// Klíčové sloupce z meta_original_keys (a link) lze zadat výhradně při zakládání nového záznamu (update_guid === 'NEW').
+		if ($curr_guid !== '' AND $curr_guid !== 'NEW' AND in_array($column_name, $this->original_key_cols, true)) { // Existující záznam
+			$is_readonly = true;                                             // Uzamčení klíčového sloupce u existujícího záznamu
+		} elseif (!empty($meta['is_computed'])) {                            // Kontrola vypočítávaného sloupce
 			$is_readonly = true;                                             // Vypočítávaný sloupec nelze měnit
 		} elseif ($this->is_metadata_entity() AND $active_role !== 'D' AND empty($meta['translate'])) { // Ochrana metadat mimo roli D
 			$is_readonly = true;                                             // Uzamčení funkčního atributu metadat
@@ -1254,6 +1288,23 @@ HTML;
 				return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$safe_val}\"><select {$lvl_style}>{$options_html}</select>"; // Zamčený select
 			}
 			return "<select name=\"{$safe_name}\" {$lvl_style}>{$options_html}</select>"; // Aktivní select úrovně licence
+		}
+
+		// 1b. Speciální podpora pro sloupec preferred_language (roletka ze statické tabulky language)
+		if ($column_name === 'preferred_language') {                         // Roletka pro preferovaný jazyk organizace
+			$eff_lang = ($value !== '') ? $value : 'cs';                     // Výchozí hodnota čeština
+			$safe_eff_lang = htmlspecialchars($eff_lang);                    // Ošetřený kód jazyka pro hidden pole
+			$options_html = '';                                              // HTML voleb jazyků
+			foreach ($this->lang_manager->get_languages() as $l_code => $l_row) { // Průchod podporovanými jazyky z keše
+				$l_cap = (string)($l_row['caption'] ?? $l_code);             // Název jazyka
+				$sel = ((string)$l_code === $eff_lang) ? 'selected' : '';    // Označení vybraného jazyka
+				$options_html .= "<option value=\"" . htmlspecialchars((string)$l_code) . "\" {$sel}>" . htmlspecialchars("{$l_cap} ({$l_code})") . "</option>"; // Volba jazyka
+			}
+			$lng_style = $is_readonly ? "disabled style=\"background-color: #f4f4f4; width: 220px; padding: 6px;\"" : "style=\"width: 220px; padding: 6px;\""; // Styl roletky
+			if ($is_readonly) {                                              // Zamčená roletka jazyka
+				return "<input type=\"hidden\" name=\"{$safe_name}\" value=\"{$safe_eff_lang}\"><select {$lng_style}>{$options_html}</select>"; // Zamčený select
+			}
+			return "<select name=\"{$safe_name}\" {$lng_style}>{$options_html}</select>"; // Aktivní select jazyka
 		}
 
 		// 2. Speciální podpora pro sloupec source_code v tabulce meta_phrase (výběr PHP třídy/stránky z meta_object přes @fl)
@@ -1369,7 +1420,6 @@ HTML;
 				$ref_table = (string)$rc_row['ref_table'];                   // Fyzická tabulka cílové třídy
 
 				$exclude_self = '';                                          // Podmínka vyloučení sebe sama u stromů
-				$curr_guid = trim((string)getinput('update_guid'));          // Aktuálně editovaný záznam
 				if ($ref_table === $this->storage_table AND $curr_guid !== '' AND $curr_guid !== 'NEW') { // Kontrola rekurzivní vazby
 					$exclude_self = " AND a.original <> " . guidliteral($curr_guid); // Zamezení cyklickému odkazu na sebe
 				}
@@ -1441,27 +1491,32 @@ HTML;
 						WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0 {$exclude_self}
 						ORDER BY a.column_name;
 					");                                                      // Dotaz na sloupce s překladem
-				} elseif ($ref_table === 'meta_menu') {                      // Načtení stromu položek menu s ochranou proti zacyklení přes @valid_mnu a @descendants
+				} elseif ($ref_table === $this->storage_table AND $column_name === 'parent_uuid' AND $this->has_physical_column('parent_uuid')) { // Zobecněná stromová vazba s ochranou proti zacyklení
 					$curr_sql = ($curr_guid !== '' AND $curr_guid !== 'NEW') ? guidliteral($curr_guid) : '0x00'; // Aktuálně editovaný uzel
+					$code_expr = $this->has_physical_column('builtin_code')
+						? 'a.builtin_code'
+						: ($this->has_physical_column('shortname') ? 'a.shortname' : "''"); // Výraz pro technický kód uzlu
+					$sort_expr = $this->has_physical_column('sort_code') ? 'a.sort_code' : "''"; // Výraz pro řadicí kód uzlu
+
 					$items = sqlarray_simple("
 						SET NOCOUNT ON;
 						DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
 						INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$safe_lang}) WHERE fallback_order < 1000;
 
-						DECLARE @valid_mnu TABLE (
+						DECLARE @valid_nodes TABLE (
 							original uniqueidentifier NOT NULL PRIMARY KEY,
-							builtin_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+							code_col varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
 							parent_uuid uniqueidentifier NULL,
-							sort_code varchar(20) COLLATE DATABASE_DEFAULT NOT NULL,
+							sort_code varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
 							caption varchar(200) COLLATE DATABASE_DEFAULT NULL
 						);
 
-						INSERT INTO @valid_mnu (original, builtin_code, parent_uuid, sort_code, caption)
-						SELECT original, builtin_code, parent_uuid, sort_code, caption
+						INSERT INTO @valid_nodes (original, code_col, parent_uuid, sort_code, caption)
+						SELECT original, code_col, parent_uuid, sort_code, caption
 						FROM (
-							SELECT a.original, a.builtin_code, a.parent_uuid, a.sort_code, a.caption,
+							SELECT a.original, {$code_expr} AS code_col, a.parent_uuid, {$sort_expr} AS sort_code, a.caption,
 								ROW_NUMBER() OVER (PARTITION BY a.original ORDER BY CASE WHEN a.object_owner = {$org_sql} THEN 0 ELSE 1 END) AS rn
-							FROM meta_menu a
+							FROM [{$ref_table}] a
 							WHERE a.object_owner IN ({$org_sql}, 0x00)
 							  AND a.record_type = 'A'
 							  AND a.removed = 0
@@ -1470,22 +1525,22 @@ HTML;
 
 						DECLARE @descendants TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
 						INSERT INTO @descendants (original)
-						SELECT original FROM @valid_mnu WHERE original = {$curr_sql};
+						SELECT original FROM @valid_nodes WHERE original = {$curr_sql};
 
 						WHILE @@ROWCOUNT > 0
 						BEGIN
 							INSERT INTO @descendants (original)
 							SELECT m.original
-							FROM @valid_mnu m
+							FROM @valid_nodes m
 							JOIN @descendants d ON m.parent_uuid = d.original
 							WHERE NOT EXISTS (SELECT 1 FROM @descendants ex WHERE ex.original = m.original);
 						END
 
-						SELECT r.original, r.builtin_code AS code_col, COALESCE(tr.caption, r.caption, '') AS caption
-						FROM @valid_mnu r
+						SELECT r.original, r.code_col, COALESCE(tr.caption, r.caption, '') AS caption
+						FROM @valid_nodes r
 						OUTER APPLY (
 							SELECT TOP 1 l.caption
-							FROM meta_menu l
+							FROM [{$ref_table}] l
 							JOIN @fl fl ON fl.[language] = l.[language]
 							WHERE l.original = r.original
 							  AND l.record_type = 'L'
@@ -1495,8 +1550,8 @@ HTML;
 							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
 						) tr
 						WHERE NOT EXISTS (SELECT 1 FROM @descendants d WHERE d.original = r.original)
-						ORDER BY CASE WHEN r.parent_uuid IS NULL THEN 0 ELSE 1 END, r.sort_code, r.builtin_code;
-					");                                                      // Dotaz na nadřízené položky menu bez vlastního podstromu
+						ORDER BY CASE WHEN r.parent_uuid IS NULL THEN 0 ELSE 1 END, r.sort_code, r.code_col, caption;
+					");                                                      // Dotaz na nadřízené uzly stromu bez vlastního podstromu
 				} else {
 					$items = sqlarray_simple("
 						SET NOCOUNT ON;

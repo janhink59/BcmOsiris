@@ -2,7 +2,7 @@ EXECUTE dropni 'page_change_user_context', 'P'
 GO
 
 /* =============================================================================
- * Verze: 2026-10-18 17:15
+ * Verze: 2026-10-29 16:00
  * Soubor: page_change_user_context.sql
  * Účel: Datová a akční procedura pro stránku změny kontextu uživatele
  *       a obousměrné schvalování přístupu mezi organizacemi (žádosti a pozvánky).
@@ -10,17 +10,11 @@ GO
  * - Volána z PHP třídy page_change_user_context (page_change_user_context.php).
  * - Čte kontext přihlášeného uživatele z tabulky dbsession pro aktuální @@SPID.
  * - Čte a modifikuje záznamy v tabulce user_organization_access (včetně konceptů 'D')
- *   a čte tabulky organization, user_account a pohled v_user_organization_access.
+ *   a čte tabulky organization, organization_licence, user_account a pohled
+ *   v_user_organization_access.
  * Změny:
- * - Přidána podpora pro čtení globálních systémových rolí (S, D) 
- *   a filtrace systémové organizace z běžného výpisu.
- * - 2026-10-18 12:55: Doplněny větve 'available_orgs', 'pending_requests',
- *   'request_access', 'accept_invitation', 'reject_invitation' a 'cancel_request'
- *   pro oboustranně odsouhlasené přiřazení existujícího uživatele do další organizace.
- * - 2026-10-18 17:15: Uživatelům s oprávněním orgadmina (is_orgadmin = 1 ve vlastní
- *   organizaci) se v 'available_orgs' nabízí i systémová organizace (0x00).
- *   Povoleno podání žádosti i přijetí pozvánky pro 0x00 (při přijetí pozvánky
- *   do 0x00 získá uživatel v user_account příznak is_system_admin = 1).
+ * - 2026-10-29 16:00: Ve větvi 'available_orgs' nahrazena kontrola o.login_disabled = 0
+ *   kontrolou v tabulce organization_licence (kam byl sloupec login_disabled přesunut).
  * ============================================================================= */
 
 CREATE PROCEDURE page_change_user_context
@@ -66,8 +60,6 @@ BEGIN
 	-- 1. Seznam aktivních schválených klientských organizací uživatele
 	IF @subpage = 'main'
 	BEGIN
-		-- Načtení pouze klientských organizací, do kterých má tento uživatel schválený přístup.
-		-- Záměrně vyřazujeme 0x00, které má v UI vlastní dedikovanou sekci.
 		SELECT	organization, 
 			organization_name, 
 			current_organization,
@@ -81,7 +73,6 @@ BEGIN
 	-- 2. Globální systémové role uživatele
 	ELSE IF @subpage = 'system_roles'
 	BEGIN
-		-- Zjištění globálních oprávnění pro vykreslení prvního (systémového) řádku
 		SELECT	is_system_admin,
 			is_developer
 		FROM	user_account
@@ -96,11 +87,21 @@ BEGIN
 			o.caption AS organization_name,
 			o.shortname
 		FROM	organization o
+		OUTER APPLY (
+			SELECT TOP 1 ol.login_disabled
+			FROM organization_licence ol
+			WHERE ol.organization_uuid = o.original
+			  AND ol.record_type = 'A'
+			  AND ol.removed = 0
+			  AND ol.inactive = 0
+			  AND ol.licence_state = 'PROCESSED'
+			ORDER BY ol.date_modified DESC
+		) lic
 		WHERE	(o.original <> 0x00 OR @is_any_orgadmin = 1)
 			AND o.record_type = 'A'
 			AND o.removed = 0
 			AND o.inactive = 0
-			AND o.login_disabled = 0
+			AND (o.original = 0x00 OR ISNULL(lic.login_disabled, 0) = 0)
 			AND NOT EXISTS (
 				SELECT 1 FROM user_organization_access a
 				WHERE a.user_account_uuid = @user_account
@@ -149,14 +150,11 @@ BEGIN
 	BEGIN
 		IF @target_org IS NULL RETURN;
 
-		-- O přístup do systémové organizace (0x00) smí žádat pouze uživatel s právem orgadmina
 		IF @target_org = 0x00 AND @is_any_orgadmin = 0 RETURN;
 
-		-- Ověření, že cílová organizace existuje a je aktivní
 		IF NOT EXISTS (SELECT 1 FROM organization WHERE original = @target_org AND record_type = 'A' AND removed = 0 AND inactive = 0)
 			RETURN;
 
-		-- Pokud již má schválený aktivní přístup, nic nezakládáme
 		IF EXISTS (SELECT 1 FROM user_organization_access WHERE user_account_uuid = @user_account AND organization_uuid = @target_org AND record_type = 'A' AND removed = 0)
 			RETURN;
 
@@ -165,7 +163,6 @@ BEGIN
 
 		BEGIN TRAN;
 
-		-- Pokud již existuje koncept 'D' (např. dříve vrácený 'R'), aktualizujeme jej a znovu předáme ke schválení ('F')
 		IF EXISTS (SELECT 1 FROM user_organization_access WHERE user_account_uuid = @user_account AND organization_uuid = @target_org AND record_type = 'D' AND removed = 0)
 		BEGIN
 			UPDATE	user_organization_access
@@ -205,12 +202,23 @@ BEGIN
 		DECLARE @inv_uuid uuid;
 		DECLARE @inv_orgadmin bit = 0;
 		DECLARE @inv_translate bit = 0;
+		DECLARE @inv_dept varchar(150) = '';
+		DECLARE @inv_job varchar(150) = '';
+		DECLARE @inv_mgr uuid = NULL;
+		DECLARE @inv_note varchar(max) = '';
+		DECLARE @inv_wdate date = NULL;
+		DECLARE @inv_eval varchar(40) = '';
 
-		-- Uživatel smí sám schválit pouze pozvánku, kterou vystavil někdo jiný (orgadmin / sysadmin cílové organizace)
 		SELECT TOP 1
 			@inv_uuid = uuid,
 			@inv_orgadmin = is_orgadmin,
-			@inv_translate = right_translate
+			@inv_translate = right_translate,
+			@inv_dept = department_name,
+			@inv_job = job_title,
+			@inv_mgr = manager_uuid,
+			@inv_note = note,
+			@inv_wdate = working_date,
+			@inv_eval = evaluation_method
 		FROM	user_organization_access
 		WHERE	user_account_uuid = @user_account
 			AND organization_uuid = @target_org
@@ -224,7 +232,6 @@ BEGIN
 
 		BEGIN TRAN;
 
-		-- Pokud jde o přijetí pozvánky do systémové organizace (0x00), zajistíme uživateli roli Sysadmin (is_system_admin = 1)
 		IF @target_org = 0x00
 		BEGIN
 			UPDATE	user_account
@@ -234,7 +241,6 @@ BEGIN
 			WHERE	original = @user_account AND record_type = 'A';
 		END
 
-		-- Pokud v DB existuje historický odebraný 'A' záznam (removed = 1), obnovíme jej a smažeme koncept 'D'
 		IF EXISTS (SELECT 1 FROM user_organization_access WHERE user_account_uuid = @user_account AND organization_uuid = @target_org AND record_type = 'A')
 		BEGIN
 			UPDATE	user_organization_access
@@ -246,6 +252,12 @@ BEGIN
 				is_orgadmin = CASE WHEN @target_org = 0x00 THEN 1 ELSE @inv_orgadmin END,
 				right_translate = CASE WHEN @target_org = 0x00 THEN 1 ELSE @inv_translate END,
 				last_role = CASE WHEN @target_org = 0x00 THEN 'S' WHEN @inv_orgadmin = 1 THEN 'A' ELSE 'U' END,
+				department_name = CASE WHEN @inv_dept <> '' THEN @inv_dept ELSE department_name END,
+				job_title = CASE WHEN @inv_job <> '' THEN @inv_job ELSE job_title END,
+				manager_uuid = COALESCE(@inv_mgr, manager_uuid),
+				note = CASE WHEN @inv_note <> '' THEN @inv_note ELSE note END,
+				working_date = COALESCE(@inv_wdate, working_date),
+				evaluation_method = CASE WHEN @inv_eval <> '' THEN @inv_eval ELSE evaluation_method END,
 				date_modified = GETDATE(),
 				who_modified = @login_session_uuid
 			WHERE	user_account_uuid = @user_account
@@ -256,7 +268,6 @@ BEGIN
 		END
 		ELSE
 		BEGIN
-			-- Překlopení pozvánky 'D' na platný schválený přístup 'A'
 			UPDATE	user_organization_access
 			SET	record_type = 'A',
 				approval_status = 'A',
@@ -270,7 +281,6 @@ BEGIN
 			WHERE	uuid = @inv_uuid;
 		END
 
-		-- Zpřístupnění přepínače kontextu v aktivních relacích uživatele
 		UPDATE wwwsession SET change_context_allowed = 1 WHERE user_account = @user_account;
 		UPDATE dbsession SET change_context_allowed = 1 WHERE user_account = @user_account;
 

@@ -1,16 +1,16 @@
-execute p_create_standard_views
-execute p_fix_meta_column
---execute p_generate_primitive_classes
+/* =============================================================================
+ * Verze: 2026-10-29 16:40
+ * Soubor: final_scripts.sql
+ * Účel:   Závěrečné automatické operace spouštěné na konci hlavní sestavovací
+ *         dávky databáze (BcmOsirisDb.sql).
+ *         1. p_create_standard_views - odstraní případné staré pohledy vrepo_%
+ *         2. p_fix_meta_column       - synchronizuje tabulky, třídy a sloupce
+ *                                      v meta_object, meta_class a meta_column
+ *         3. p_empty_trash           - fyzicky vyčistí záznamy v koši (removed = 1)
+ *                                      starší než days_in_trash dnů dle meta_class
+ * ============================================================================= */
 
-GO
---update meta_object set date_created=date_created
---update meta_column set date_created=date_created
---select * from meta_column c
---where parent_object=dbo.f_generate_original('meta_object',0x00,'C','sys_global_columns')
-----where parent_object='8896CCEC-D5F8-4FF0-8066-4FB512FC83F3'
-
---select dbo.f_generate_original('meta_object',0x00,'C','sys_global_columns') xx
-
---select * from meta_object
---where object_type='C'
+EXECUTE p_create_standard_views;
+EXECUTE p_fix_meta_column;
+EXECUTE p_empty_trash;
 GO

@@ -1,11 +1,18 @@
 ﻿/* =============================================================================
- * Verze: 2026-10-05
+ * Verze: 2026-10-29 15:30
  * Soubor: table_user_account.sql
  * Tabulka: user_account (Uživatelské účty)
- * Popis:   Evidence uživatelských účtů s plnou podporou multi-tenancy, RAC a SSC.
- *          Účty jsou nyní vlastněny globálně systémem (object_owner = 0x00).
- *          Přístup do konkrétních tenantů řeší vazební tabulka user_organization_access.
+ * Popis:   Evidence globálních uživatelských účtů (object_owner = 0x00).
+ *          Uchovává čistě globální identitu, kontaktní údaje a autentizaci osoby.
+ *          Přístup do konkrétních tenantů a organizačně závislé zařazení
+ *          (department_name, job_title, manager_uuid, note, working_date,
+ *          evaluation_method) řeší tabulka user_organization_access.
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
+ * Změny:
+ * - 2026-10-29 15:30: Organizačně závislé sloupce (department_name, job_title,
+ *   manager_uuid, note) přesunuty do tabulky user_organization_access.
+ *   Doplněny SSC sloupce draft_author, approval_note, import_origin a index
+ *   uq_user_account_draft.
  * ============================================================================= */
 
 IF OBJECT_ID('user_account') IS NULL
@@ -19,6 +26,8 @@ BEGIN
 		original uuid NOT NULL,
 		record_type varchar(1) NOT NULL DEFAULT 'A',
 		approval_status varchar(1) NOT NULL DEFAULT 'A',
+		draft_author uuid NOT NULL DEFAULT 0x00,
+		approval_note varchar(max) NOT NULL DEFAULT '',
 		inactive bit NOT NULL DEFAULT 0,
 		removed bit NOT NULL DEFAULT 0,
 		language varchar(2) NOT NULL DEFAULT 'cs',
@@ -26,6 +35,7 @@ BEGIN
 		valid_to date NULL,
 		is_template bit NOT NULL DEFAULT 0,
 		template uuid NULL,
+		import_origin varchar(255) NULL,
 		
 		-- -------------------------------------------------------------------------
 		-- Společné textové vlastnosti (podpora UTF-8)
@@ -46,7 +56,7 @@ BEGIN
 		who_modified uuid NOT NULL DEFAULT 0x00,
 
 		-- -------------------------------------------------------------------------
-		-- Specifické byznys sloupce uživatele (Autentizace a Identita)
+		-- Specifické byznys sloupce uživatele (Autentizace a Globální identita)
 		-- -------------------------------------------------------------------------
 		login_name varchar(100) NOT NULL DEFAULT '',
 		email varchar(200) NOT NULL DEFAULT '',
@@ -67,19 +77,13 @@ BEGIN
 		-- Kontext poslední navštívené organizace (pro automatické přihlášení)
 		last_login_organization uuid NULL,
 		
-		-- Osobní a kontaktní údaje
+		-- Osobní a kontaktní údaje osoby
 		user_title_before varchar(40) NOT NULL DEFAULT '',
 		first_name varchar(100) NOT NULL DEFAULT '',
 		last_name varchar(100) NOT NULL DEFAULT '',
 		user_title_after varchar(40) NOT NULL DEFAULT '',
 		phone varchar(50) NOT NULL DEFAULT '',
 		mobile varchar(50) NOT NULL DEFAULT '',
-		
-		-- Organizační struktura uživatele (volné vazby)
-		department_name varchar(150) NOT NULL DEFAULT '',
-		job_title varchar(150) NOT NULL DEFAULT '',
-		manager_uuid uuid NULL,
-		note varchar(max) NOT NULL DEFAULT '',
 
 		CONSTRAINT pk_user_account PRIMARY KEY (uuid)
 	);
@@ -88,17 +92,18 @@ END
 GO
 
 -- -----------------------------------------------------------------------------
--- Zajištění chybějících sloupců pro existující databáze (změnový příkaz)
+-- Zajištění chybějících sloupců pro existující databáze
 -- -----------------------------------------------------------------------------
 EXEC p_create_missing_column 'user_account', 'last_login_organization', 'uuid NULL';
 EXEC p_create_missing_column 'user_account', 'is_developer', 'bit NOT NULL DEFAULT 0';
+EXEC p_create_missing_column 'user_account', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'user_account', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'user_account', 'import_origin', 'varchar(255) NULL';
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajištění RAC architektury
+-- Indexy pro zajištění RAC a SSC architektury
 -- -----------------------------------------------------------------------------
-
--- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál.
 EXEC sp_create_index 
 	@tname = 'user_account', 
 	@iname = 'uq_user_account_active', 
@@ -107,7 +112,6 @@ EXEC sp_create_index
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
 GO
 
--- Zajištění unikátnosti jazykových verzí (Language) pro daného vlastníka a originál.
 EXEC sp_create_index 
 	@tname = 'user_account', 
 	@iname = 'uq_user_account_language', 
@@ -116,8 +120,14 @@ EXEC sp_create_index
 	@options = 'WHERE record_type = ''L'' AND removed = 0';
 GO
 
--- Zajištění unikátnosti přihlašovacího jména. Vzhledem k tomu, že object_owner je
--- nyní globálně 0x00, zaručuje tento index unikátnost loginu v celém systému.
+EXEC sp_create_index 
+	@tname = 'user_account', 
+	@iname = 'uq_user_account_draft', 
+	@colnames = 'original, object_owner, language, draft_author', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''D'' AND removed = 0';
+GO
+
 EXEC sp_create_index 
 	@tname = 'user_account', 
 	@iname = 'uq_user_account_login', 
@@ -146,7 +156,6 @@ BEGIN
 END
 ELSE
 BEGIN
-	-- Upgrade pro stávající fiktivní účet (zajištění vývojářské role po updatu struktury)
 	UPDATE user_account 
 	SET is_developer = 1 
 	WHERE original = 0x01 AND record_type = 'A' AND is_developer = 0;

@@ -2,7 +2,8 @@
 GO
 
 /* =============================================================================
- * Verze: 2026-10-22 18:30
+ * Verze: 2026-10-29 15:30
+ * Soubor: p_process_organization_licence.sql
  * Procedura: p_process_organization_licence
  * Účel: Dávkové zpracování schválené licence (APPROVED) a aktivace nového tenanta.
  * 
@@ -11,17 +12,15 @@ GO
  * - Spolehlivě zprostředkuje zápis nové organizace (s vlastní object_owner linií
  *   a symetrickým 'L' záznamem), založí účet pro lokálního administrátora a spáruje
  *   je přístupovými právy přes user_organization_access.
- * - Obsahuje reaktivační UPDATE větev pro bezbolestnou opravu poškozených dat.
- * - Zápis auditních stop (who_created, who_modified) přebírá UUID přístupové vazby
- *   automaticky z tabulky dbsession pro aktuální @@SPID.
+ * - Sloupec licence_level zůstává výhradně v tabulce organization_licence.
+ * - Pokud má licence nejvyšší úroveň Developer (licence_level = 255), nastaví
+ *   zakládanému administrátorovi příznak is_developer = 1 v user_account.
  * 
  * Změny:
- * - 2026-10-22 18:30: Oprava pořadí klauzulí FROM user_account a WHERE při
- *   dohledání globálního účtu administrátora.
- * - 2026-10-22 17:45: Doplněno zakládání a aktualizace symetrického 'L' záznamu
- *   v tabulce organization při aktivaci licence.
- * - Oprava názvu sloupce z user_access_uuid na login_session_uuid pro načtení 
- *   ze session.
+ * - 2026-10-29 15:30: Odstraněn zápis licence_level do tabulky organization
+ *   (licence_level je výhradně v organization_licence). Doplněno přenesení
+ *   preferred_language do organization a automatické nastavení is_developer = 1
+ *   u administrátora při licence_level = 255.
  * ============================================================================= */
 CREATE PROCEDURE p_process_organization_licence
 	@licence_original uniqueidentifier
@@ -81,29 +80,31 @@ BEGIN
 		RETURN;
 	END
 
-	-- Alokace a zápis nového tenanta do organizace
+	DECLARE @grant_dev bit = CASE WHEN @licence_level = 255 THEN 1 ELSE 0 END;
+
+	-- Alokace a zápis nového tenanta do organizace (bez licence_level, které je pouze v licenci)
 	IF @org_uuid IS NULL
 	BEGIN
 		SET @org_uuid = NEWID();
 		
 		INSERT INTO organization (
 			uuid, object_owner, original, record_type, approval_status, [language],
-			caption, shortname, login_domain, licence_level,
+			caption, shortname, login_domain, preferred_language,
 			who_created, who_modified
 		) VALUES (
 			@org_uuid, @org_uuid, @org_uuid, 'A', 'A', @pref_lang,
-			@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @licence_level,
+			@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @pref_lang,
 			@login_session_uuid, @login_session_uuid
 		);
 
 		-- Symetrický 'L' záznam pro výchozí jazyk organizace
 		INSERT INTO organization (
 			uuid, object_owner, original, record_type, approval_status, [language],
-			caption, shortname, login_domain, licence_level,
+			caption, shortname, login_domain, preferred_language,
 			who_created, who_modified
 		) VALUES (
 			NEWID(), @org_uuid, @org_uuid, 'L', 'A', @pref_lang,
-			@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @licence_level,
+			@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @pref_lang,
 			@login_session_uuid, @login_session_uuid
 		);
 	END
@@ -111,10 +112,10 @@ BEGIN
 	BEGIN
 		-- Aktualizační oprava při opětovném průchodu (reaktivace licence)
 		UPDATE organization 
-		SET licence_level = @licence_level,
-			caption = @org_name,
+		SET caption = @org_name,
 			shortname = SUBSTRING(@org_name, 1, 40),
 			login_domain = @login_domain,
+			preferred_language = @pref_lang,
 			date_modified = GETDATE(),
 			who_modified = @login_session_uuid
 		WHERE original = @org_uuid AND record_type = 'A';
@@ -135,11 +136,11 @@ BEGIN
 		BEGIN
 			INSERT INTO organization (
 				uuid, object_owner, original, record_type, approval_status, [language],
-				caption, shortname, login_domain, licence_level,
+				caption, shortname, login_domain, preferred_language,
 				who_created, who_modified
 			) VALUES (
 				NEWID(), @org_uuid, @org_uuid, 'L', 'A', @pref_lang,
-				@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @licence_level,
+				@org_name, SUBSTRING(@org_name, 1, 40), @login_domain, @pref_lang,
 				@login_session_uuid, @login_session_uuid
 			);
 		END
@@ -158,12 +159,22 @@ BEGIN
 		INSERT INTO user_account (
 			uuid, object_owner, original, record_type, approval_status,
 			caption, login_name, email, first_name, last_name,
+			is_developer, last_login_organization,
 			who_created, who_modified
 		) VALUES (
 			@user_uuid, 0x00, @user_uuid, 'A', 'A',
-			@admin_first_name + ' ' + @admin_last_name, @admin_login, @admin_email, @admin_first_name, @admin_last_name,
+			LTRIM(RTRIM(@admin_first_name + ' ' + @admin_last_name)), @admin_login, @admin_email, @admin_first_name, @admin_last_name,
+			@grant_dev, @org_uuid,
 			@login_session_uuid, @login_session_uuid
 		);
+	END
+	ELSE IF @grant_dev = 1
+	BEGIN
+		UPDATE user_account
+		SET is_developer = 1,
+			date_modified = GETDATE(),
+			who_modified = @login_session_uuid
+		WHERE original = @user_uuid AND record_type = 'A' AND is_developer = 0;
 	END
 
 	-- Vytvoření administrátorského přístupového bodu pro novou organizaci
@@ -172,15 +183,15 @@ BEGIN
 		WHERE user_account_uuid = @user_uuid AND organization_uuid = @org_uuid AND record_type = 'A' AND removed = 0
 	)
 	BEGIN
-		DECLARE @access_uuid uniqueidentifier = NEWID();
+		DECLARE @access_uuid uniqueidentifier = dbo.f_generate_original('user_organization_access', @org_uuid, CAST(@user_uuid AS varchar(36)), CAST(@org_uuid AS varchar(36)));
 		
 		INSERT INTO user_organization_access (
 			uuid, object_owner, original, record_type, approval_status,
-			user_account_uuid, organization_uuid, is_orgadmin,
+			user_account_uuid, organization_uuid, is_orgadmin, last_role,
 			who_created, who_modified
 		) VALUES (
 			@access_uuid, @org_uuid, @access_uuid, 'A', 'A',
-			@user_uuid, @org_uuid, 1,
+			@user_uuid, @org_uuid, 1, 'A',
 			@login_session_uuid, @login_session_uuid
 		);
 	END

@@ -1,19 +1,16 @@
 /* =============================================================================
- * Verze: 2026-10-20 11:25
+ * Verze: 2026-10-29 15:30
  * Soubor: table_request_message.sql
  * Popis:   Dočasné zprávy a proměnné requestu vázané na @@SPID v dbsession.
- * Vazby:   - Využívá tabulku dbsession (cizí klíč spid) a tabulku meta_phrase
- *            přes funkci dbo.f_php_phrase pro překlad kódových zpráv.
- *          - Voláno z procedury printt, p_xlsx_meta_object a dalších SQL procedur.
- * Změny:   - 2026-10-15: Doplněna funkce dbo.f_php_phrase(@code) čtoucí jazyk
- *            a organizaci přímo z dbsession a překládající přes meta_phrase.
+ * Vazby:   - Využívá tabulku dbsession (cizí klíč spid), tabulku meta_phrase
+ *            a funkci dbo.f_language_list pro překlad kódových zpráv.
+ *          - Voláno z procedury printt, p_xlsx_meta_object, p_empty_trash
+ *            a dalších SQL procedur.
+ * Změny:   - 2026-10-29 15:30: Funkce dbo.f_php_phrase napojena na fallback
+ *            řetězec z dbo.f_language_list(@lang) s podmínkou fallback_order < 1000.
  *          - 2026-10-20 11:25: Výchozí a fallbackový source_code ve funkci
  *            dbo.f_php_phrase změněn z prázdného '' na 'global_phrase'.
  * ============================================================================= */
-/*
-	Objekty v tomto souboru není třeba uchovávat mezi updaty databáze, protože se jedná o dočasné zprávy pro uživatele.
-	Všechno nejdřív dropnu.
-*/
 
 execute dropni 'request_message'
 execute dropni 'request_variable'
@@ -56,7 +53,8 @@ create table request_variable(
 )
 GO
 /*
-	Funkce vrátí přeložený text fráze podle zadaného kódu z tabulky meta_phrase.
+	Funkce vrátí přeložený text fráze podle zadaného kódu z tabulky meta_phrase
+	s využitím jazykového fallback řetězce dbo.f_language_list(@lang) (fallback_order < 1000).
 	Jazyk a aktivní organizaci načítá autonomně z tabulky dbsession pro aktuální @@SPID.
 	Pro globální fráze používá sjednocený source_code = 'global_phrase'.
 */
@@ -80,18 +78,29 @@ begin
 	begin
 		select top 1
 			@result = coalesce(
-				nullif(cast(lv.caption as varchar(6000)), ''),
-				nullif(cast(ls.caption as varchar(6000)), ''),
+				tr.caption,
 				nullif(cast(mv.caption as varchar(6000)), ''),
 				nullif(cast(ms.caption as varchar(6000)), '')
 			)
 		from meta_phrase ms
 		left join meta_phrase mv
-			on mv.original = ms.original and mv.object_owner = @org and mv.record_type = 'A' and mv.removed = 0
-		left join meta_phrase ls
-			on ls.original = ms.original and ls.object_owner = 0x00 and ls.record_type = 'L' and ls.[language] = @lang and ls.removed = 0
-		left join meta_phrase lv
-			on lv.original = ms.original and lv.object_owner = @org and lv.record_type = 'L' and lv.[language] = @lang and lv.removed = 0
+			on mv.original = ms.original
+			and mv.object_owner = @org
+			and mv.record_type = 'A'
+			and mv.removed = 0
+		outer apply (
+			select top 1 cast(l.caption as varchar(6000)) as caption
+			from meta_phrase l
+			join dbo.f_language_list(@lang) fl
+				on fl.[language] = l.[language]
+				and fl.fallback_order < 1000
+			where l.original = ms.original
+			  and l.record_type = 'L'
+			  and l.removed = 0
+			  and l.object_owner in (@org, 0x00)
+			  and nullif(cast(l.caption as varchar(6000)), '') is not null
+			order by fl.fallback_order asc, case when l.object_owner = @org then 0 else 1 end asc
+		) tr
 		where ms.object_owner = 0x00
 		  and ms.record_type = 'A'
 		  and ms.removed = 0
@@ -104,7 +113,6 @@ begin
 end
 GO
 /*
-
 	Procedura pro vložení zprávy o requestu.
 	Je-li zadán neprázdný parametr @code, pak se jedná o unikátní zprávu, opakované volání s tímto parametrem pak slouží k nasčítání hodnoty "intvalue".
 	18.02.2016 - Ochrana proti chybě při volání bez www session
@@ -149,18 +157,8 @@ select counter,
 	charvalue,
 	obj_type,
 	obj_name
---into #r
 from request_message where spid=@@spid
---select * from #r
 order by code, counter
-GO
-/*
-debuglogin 'hink'
-execute init_wwwsession 'debug', @noresult='1'
-execute insert_request_message 'X',2,@obj_name='NN'
-execute insert_request_message 'Y',1,3
-execute select_request_message
-*/
 GO
 create function f_session_variable(@name varchar(250))
 returns varchar(6000)
@@ -174,11 +172,4 @@ create procedure p_session_variable @name varchar(250), @value varchar(6000)=nul
 as
 delete from session_variable from dbsession s, session_variable v where s.spid=@@spid and v.wwwsession=s.wwwsession and v.name=@name
 if @value is not null insert into session_variable(wwwsession,name,charvalue,textvalue) select s.wwwsession, @name, @value, @text from dbsession s where s.spid=@@spid
-GO
---debuglogin 'hink'
---execute p_session_variable 'A','1'
---execute p_session_variable 'B',2
---execute p_session_variable 'B',3
---select * from session_variable
---select dbo.f_session_variable('A'),dbo.f_session_variable('B'),dbo.f_session_variable('C')
 GO

@@ -2,22 +2,24 @@ EXECUTE dropni 'p_set_login', 'P'
 GO
 
 /* =============================================================================
- * Verze: 2026-10-18 12:35
+ * Verze: 2026-10-29 16:00
  * Soubor: p_set_login.sql
  * Procedura: p_set_login
- * Účel: Založení uživatelské relace a inicializace kontextu (tenant, práva).
+ * Účel: Založení uživatelské relace a inicializace kontextu (tenant, práva,
+ *       úroveň licence licence_level a pracovní datum working_date).
  *
  * Vazby:
  * - Voláno primárně při úspěšné autentizaci, nebo pro explicitní změnu kontextu z UI.
+ * - Čte oprávnění a licence_level z pohledu v_user_organization_access
+ *   (který kontroluje i login_disabled = 0 v organization_licence).
  * - Ukládá instanci přihlášení do audit_login_session a předává login_session_uuid 
  *   do aplikační relace (wwwsession -> dbsession).
- * - Pracuje s exkluzivními rolemi (U=User, A=Admin, S=Sysadmin, D=Developer).
  *
  * Změny:
- * - 2026-10-18 12:35: Rozšířeno vyhodnocení @change_context_allowed tak, aby měl
- *   uživatel v horní liště přístup na stránku page_change_user_context i tehdy,
- *   pokud má čekající žádost/pozvánku (record_type = 'D') nebo v systému existuje
- *   další klientská organizace, do které může požádat o přístup.
+ * - 2026-10-29 16:00: Doplněno načítání a ukládání licence_level (pro 0x00 vždy 255)
+ *   a osobního pracovního data working_date z v_user_organization_access do wwwsession.
+ *   Opravena kontrola dostupných organizací pro @change_context_allowed (kontrola
+ *   login_disabled přesunuta z organization do organization_licence).
  * ============================================================================= */
 CREATE PROCEDURE p_set_login
 	@user_uuid uniqueidentifier,
@@ -38,6 +40,8 @@ BEGIN
 	
 	DECLARE @organization uniqueidentifier = NULL;
 	DECLARE @organization_name nvarchar(200) = '';
+	DECLARE @licence_level tinyint = 0;
+	DECLARE @working_date date = CAST(GETDATE() AS date);
 	DECLARE @active_role varchar(1) = 'U';
 	DECLARE @static_right_translate bit = 0;
 	DECLARE @change_context_allowed bit = 0;
@@ -83,8 +87,13 @@ BEGIN
 
 			SET @organization = 0x00;
 			SET @organization_name = 'Systémová organizace';
+			SET @licence_level = 255;
 			SET @active_role = @requested_role;
-			SET @static_right_translate = 1; -- Sysadmin/Developer překládají primární jazyk systému automaticky
+			SET @static_right_translate = 1;
+
+			SELECT TOP 1 @working_date = ISNULL(working_date, CAST(GETDATE() AS date))
+			FROM user_organization_access
+			WHERE user_account_uuid = @user_uuid AND organization_uuid = 0x00 AND record_type = 'A' AND removed = 0;
 
 			-- Paměť poslední použité role pro systémovou vrstvu
 			UPDATE	user_organization_access
@@ -102,7 +111,9 @@ BEGIN
 				@organization_name = v.organization_name,
 				@is_orgadmin = v.is_orgadmin,
 				@last_role = v.last_role,
-				@static_right_translate = v.right_translate
+				@static_right_translate = v.right_translate,
+				@licence_level = v.licence_level,
+				@working_date = ISNULL(v.working_date, CAST(GETDATE() AS date))
 			FROM	v_user_organization_access v
 			WHERE	v.user_account_uuid = @user_uuid
 			  AND	v.organization <> 0x00 -- Izolace jádra od standardního přihlašování
@@ -121,13 +132,14 @@ BEGIN
 				BEGIN
 					SET @organization = 0x00;
 					SET @organization_name = 'Systémová organizace';
+					SET @licence_level = 255;
 					SET @active_role = CASE WHEN @is_developer = 1 THEN 'D' ELSE 'S' END;
 					SET @static_right_translate = 1;
 				END
 				ELSE
 				BEGIN
 					ROLLBACK;
-					RAISERROR ('Uživateli nebyl přidělen přístup do žádné organizace.', 16, 1);
+					RAISERROR ('Uživateli nebyl přidělen přístup do žádné aktivní organizace.', 16, 1);
 					RETURN;
 				END
 			END
@@ -160,7 +172,6 @@ BEGIN
 
 		IF @is_sysadmin = 1 OR @is_developer = 1
 		BEGIN
-			-- S/D mohou měnit kontext, pokud mají i klientské firmy, nebo pokud si mohou volit mezi S a D navzájem
 			IF @org_count > 0 OR (@is_sysadmin = 1 AND @is_developer = 1) SET @change_context_allowed = 1;
 		END
 		ELSE
@@ -168,11 +179,30 @@ BEGIN
 			-- Běžní uživatelé mohou na stránku změny kontextu, pokud:
 			-- a) jsou ve více firmách nebo mají roli Admin,
 			-- b) mají rozpracovanou / čekající žádost či pozvánku v user_organization_access (record_type = 'D'),
-			-- c) v systému existuje jiná aktivní klientská organizace, do které mohou požádat o přístup.
+			-- c) v systému existuje jiná aktivní klientská organizace (bez login_disabled v organization_licence), do které mohou požádat o přístup.
 			IF @org_count > 1 
 				OR EXISTS (SELECT 1 FROM v_user_organization_access WHERE user_account_uuid = @user_uuid AND is_orgadmin = 1)
 				OR EXISTS (SELECT 1 FROM user_organization_access WHERE user_account_uuid = @user_uuid AND record_type = 'D' AND removed = 0)
-				OR EXISTS (SELECT 1 FROM organization WHERE original <> 0x00 AND original <> @organization AND record_type = 'A' AND removed = 0 AND inactive = 0 AND login_disabled = 0)
+				OR EXISTS (
+					SELECT 1
+					FROM organization o
+					OUTER APPLY (
+						SELECT TOP 1 ol.login_disabled
+						FROM organization_licence ol
+						WHERE ol.organization_uuid = o.original
+						  AND ol.record_type = 'A'
+						  AND ol.removed = 0
+						  AND ol.inactive = 0
+						  AND ol.licence_state = 'PROCESSED'
+						ORDER BY ol.date_modified DESC
+					) lic
+					WHERE o.original <> 0x00
+					  AND o.original <> @organization
+					  AND o.record_type = 'A'
+					  AND o.removed = 0
+					  AND o.inactive = 0
+					  AND ISNULL(lic.login_disabled, 0) = 0
+				)
 			BEGIN
 				SET @change_context_allowed = 1;
 			END
@@ -190,13 +220,13 @@ BEGIN
 		-- C. Fallback master účtu (0x00) volaný z vnitřních skriptů bez reálné identity
 		SET @organization = 0x00;
 		SET @organization_name = 'Systémová organizace';
+		SET @licence_level = 255;
 		SET @active_role = 'S';
 		SET @static_right_translate = 1;
 		SET @change_context_allowed = 1;
 	END
 
 	-- [ ARCHITEKTURA PŘEKLADŮ ]
-	-- Dynamické vyhodnocení right_translate pro domovský/výchozí jazyk uživatele
 	DECLARE @effective_translate bit = 0;
 	IF @active_role IN ('S', 'D')
 	BEGIN
@@ -214,13 +244,15 @@ BEGIN
 		@login_session_uuid, @user_uuid, @organization, @active_role, @client_ip, GETDATE(), GETDATE()
 	);
 
-	-- 6. Zápis do sdílené paměti aplikační relace
+	-- 6. Zápis do sdílené paměti aplikační relace (včetně licence_level a working_date)
 	INSERT INTO wwwsession (
 		spid, wwwsession, user_account, login_session_uuid, user_name, organization, organization_name, display_name, 
-		[language], session_log, client_ip, login_date, request_date, active_role, right_translate, change_context_allowed
+		licence_level, [language], working_date, session_log, client_ip, login_date, request_date,
+		active_role, right_translate, change_context_allowed
 	) VALUES (
 		@@SPID, @wwwsession, @user_uuid, @login_session_uuid, @user_name, @organization, @organization_name, @display_name, 
-		@user_language, 0, @client_ip, GETDATE(), GETDATE(), @active_role, @effective_translate, @change_context_allowed
+		@licence_level, @user_language, @working_date, 0, @client_ip, GETDATE(), GETDATE(),
+		@active_role, @effective_translate, @change_context_allowed
 	);
 
 	COMMIT;

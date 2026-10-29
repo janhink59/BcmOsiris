@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-27 19:40
+ * Verze: 2026-10-29 16:40
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  * Účel: Zápisová, klonovací a schvalovací (SSC) část třídy entity_manager.
@@ -12,8 +12,8 @@
  * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
  * - Využívá vlastnosti třídy `entity_manager` (`$this->storage_table`, `$this->physical_cols`,
  *   `$this->col_types`, `$this->col_nulls`, `$this->columns_meta`, `$this->class_meta`,
- *   `$this->is_initialized`) a její metody `phrase()`, `is_metadata_entity()`
- *   a `evaluate_remove_permission()`.
+ *   `$this->is_initialized`) a její metody `phrase()`, `is_metadata_entity()`,
+ *   `get_original_key_columns()` a `evaluate_remove_permission()`.
  * - Využívá třídu `rich_text` (`rich_text.php`) pro normalizaci, konverzi (Markdown ⇄ HTML)
  *   a bezpečnostní sanitizaci formátovaných sloupců (`is_html = 1`) při ukládání z POSTu.
  * - Volán z `abstract_page_master_detail::process_save()` a `page_approval::process_save()`.
@@ -24,22 +24,23 @@
  * 2. Klonování s modifikací (Override vzor)
  *    Pomocí metod `insert_from_map()` a `clone_with_map()` zakládá kompletní kopii
  *    systémového záznamu, ve které nahradí upravené hodnoty.
- * 3. Podpora tabulky `organization` (`object_owner = original`)
+ * 3. Ochrana klíčových sloupců (meta_original_keys)
+ *    U existujícího záznamu ($update_guid !== '') jsou klíčové sloupce při UPDATE
+ *    odfiltrovány, aby nikdy nemohlo dojít k nekonzistenci vůči deterministickému originálu.
+ * 4. Podpora tabulky `organization` (`object_owner = original`)
  *    U tabulky `organization` vlastní každý záznam sám sebe (`object_owner = original`)
  *    a zakládání nových záznamů přes `entity_manager` je zablokováno (řeší licence).
- * 4. Schvalovací cyklus (SSC) s `record_type = 'D'` (včetně návrhů na zrušení a obnovu `removed`)
+ * 5. Schvalovací cyklus (SSC) s `record_type = 'D'` (včetně návrhů na zrušení a obnovu `removed`)
  *    Obsahuje metody `delete_draft()`, `approve_draft()` a `reject_draft()` se
  *    striktní kontrolou vlastnictví (`object_owner`) a jazyka relace schvalovatele.
  *
  * Změny:
+ * 2026-10-29 16:40 - V save_post_data() a approve_draft() doplněna ochrana klíčových
+ *                    sloupců z get_original_key_columns() proti přepsání při UPDATE
+ *                    existujícího záznamu.
  * 2026-10-27 19:40 - V metodě extract_post_data() sjednoceno čtení cílového formátu
  *                    z pole {$colname}__target_format a přímé volání metody
  *                    rich_text::normalize_for_storage($raw_val, $fmt_hint).
- *                  - Oprava porovnání zděděné hodnoty s předkem v save_post_data()
- *                    (odzdvojení vnitřních apostrofů před porovnáním s DB hodnotou).
- * 2026-10-26 13:55 - V metodě extract_post_data() doplněno napojení na třídu rich_text
- *                    pro sloupce s příznakem is_html = 1.
- * 2026-10-24 11:30 - Doplněna kompletní podpora příznaku `removed` v konceptech ('D'/'F').
  * =============================================================================
  */
 
@@ -282,6 +283,10 @@ trait entity_manager_write {
 			unset($post_data['removed']);                                    // Vyjmeme z běžné smyčky a ošetříme cíleně níže
 		}
 
+		// OCHRANA KLÍČOVÝCH SLOUPCŮ: Pokud záznam již není 'NEW' ($orig_guid_sql !== ''),
+		// klíčové sloupce z meta_original_keys nesmí být při UPDATE nikdy přepsány.
+		$key_cols = $this->get_original_key_columns();                       // Seznam klíčových sloupců tabulky
+
 		// 3. Filtrace struktury: Rozdělení dat na 'A' (Základ), 'L' (Lokalizace) a 'D' (Koncept)
 		$a_post_data = [];                                                   // Data určená pro hlavní 'A' záznam
 		$l_post_data = [];                                                   // Data určená pro překladový 'L' záznam
@@ -290,6 +295,10 @@ trait entity_manager_write {
 		$is_native_lang = ($a_lang_raw === $sess_lang_raw);                  // Zda se edituje v mateřském jazyce
 
 		foreach ($post_data as $col => $val) {                               // Průchod odeslanými hodnotami
+			if ($orig_guid_sql !== '' AND in_array($col, $key_cols, true) AND (!empty($current_row) OR $target_status !== 'A')) { // Ochrana klíče
+				continue;                                                    // Klíčový sloupec se u existujícího záznamu nemění
+			}
+
 			$is_translated = !empty($this->columns_meta[$col]['translate']); // Zda sloupec podléhá překladu
 
 			if ($is_meta_table AND $active_role !== 'D' AND !$is_translated) { // Ochrana funkčních polí metadat
@@ -404,7 +413,9 @@ trait entity_manager_write {
 				$dr_uuid_sql = guidliteral((string)$dr_row['uuid']);         // UUID existujícího řádku konceptu
 				$set_dr = [];                                                // Pole změn pro UPDATE konceptu
 				foreach ($d_post_data as $col => $val) {                     // Průchod ukládanými sloupci konceptu
-					$set_dr[] = "[$col] = $val";                             // Nastavení hodnoty sloupce
+					if (!in_array($col, $key_cols, true)) {                  // Ochrana klíčového sloupce v existujícím konceptu
+						$set_dr[] = "[$col] = $val";                         // Nastavení hodnoty sloupce
+					}
 				}
 				$set_dr[] = "approval_status = {$safe_status}";              // Nastavení stavu ('D' nebo 'F')
 				$set_dr[] = "draft_author = {$user_acc_sql}";                // Zajištění autora konceptu
@@ -624,11 +635,11 @@ trait entity_manager_write {
 		$a_lang_raw = !empty($existing_a) ? (string)$existing_a['language'] : $draft_lang_raw; // Mateřský jazyk A záznamu
 		$is_native_lang = ($a_lang_raw === $draft_lang_raw);                 // Zda je návrh v mateřském jazyce záznamu
 
-		$skip_data_cols = [                                                  // Technické sloupce, které se nekopírují jako běžná data
+		$skip_data_cols = array_merge([                                      // Technické a klíčové sloupce, které se při UPDATE nemění
 			'uuid', 'object_owner', 'original', 'record_type', 'approval_status',
 			'draft_author', 'approval_note', 'language',
 			'date_created', 'who_created', 'date_modified', 'who_modified'
-		];                                                                   // Konec seznamu vynechaných sloupců
+		], $this->get_original_key_columns());                               // Ochrana klíčových sloupců i při schválení UPDATE
 		$ap_audit_map = ['date_created' => $author_date_sql, 'who_created' => $author_session_sql, 'date_modified' => 'GETDATE()', 'who_modified' => $approver_session_sql]; // Audit autora a schvalovatele
 
 		sqlrun("BEGIN TRAN");                                                // Zahájení transakce schválení
@@ -640,7 +651,7 @@ trait entity_manager_write {
 				$set_a = [];                                                 // Pole změn pro UPDATE A záznamu
 
 				foreach ($this->physical_cols as $col) {                     // Průchod fyzickými sloupci tabulky
-					if (in_array($col, $skip_data_cols, true)) {             // Přeskočení technických sloupců
+					if (in_array($col, $skip_data_cols, true)) {             // Přeskočení technických a klíčových sloupců
 						continue;                                            // Pokračování na další sloupec
 					}
 					if ($col === 'removed' AND !$is_native_lang) {           // V sekundárním jazyce ruší removed pouze překlad L
@@ -684,7 +695,7 @@ trait entity_manager_write {
 			$set_l = [];                                                     // Pole změn pro UPDATE L záznamu
 
 			foreach ($this->physical_cols as $col) {                         // Průchod fyzickými sloupci
-				if (in_array($col, $skip_data_cols, true)) {                 // Přeskočení technických sloupců
+				if (in_array($col, $skip_data_cols, true)) {                 // Přeskočení technických a klíčových sloupců
 					continue;                                                // Pokračování na další sloupec
 				}
 				$set_l[] = "[$col] = d.[$col]";                              // Převzetí hodnoty z návrhu d

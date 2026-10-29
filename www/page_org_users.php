@@ -1,13 +1,14 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-27 19:55
+ * Verze: 2026-10-29 16:00
  * Soubor: page_org_users.php
  * Stránka: page_org_users.php
  * Účel: Master-Detail rozhraní pro správu uživatelů aktuálního tenanta.
- *       Odděluje osobní údaje globálního účtu (user_account) od oprávnění
- *       v aktuální organizaci (user_organization_access) a podporuje
- *       obousměrné schvalování přístupu mezi organizacemi (žádosti a pozvánky).
+ *       Odděluje oprávnění, organizační zařazení a pracovní parametry uživatele
+ *       v aktuální organizaci (user_organization_access) od osobních údajů
+ *       globálního účtu (user_account) a podporuje obousměrné schvalování
+ *       přístupu mezi organizacemi (žádosti a pozvánky).
  *
  * Vazby na okolí:
  * - Dědí z abstract_page_master_detail (využívá $this->phrase(), render_audit_trail(),
@@ -18,21 +19,15 @@
  *   sqlarray_simple a sqlfirstrow) a form_org_users (zápis).
  *
  * Změny:
- * 2026-10-27 19:55 - Napojení řádků v render_master() a tlačítek "+ Nový / Pozvat uživatele"
- *                    a "Zahodit změny" na asynchronní funkci loadDetailPanel() (zamezení
- *                    nechtěného refreshe levého panelu a ztráty filtru #master-filter).
- *                  - Pole poznámky (note) napojeno na třídu rich_text (Preview + modální editor).
- * 2026-10-22 16:15 - Odstraněn duplicitní inline <script> pro #master-filter
- *                    v render_master() (filtrování řeší centrálně předek).
- * 2026-10-18 18:15 - Oprava kolize otevřeného SQLSRV statementu ($dbquery v OsirisLib.php)
- *                    při vnořeném auto-discovery zápisu frází: čtení seznamu uživatelů
- *                    převedeno na sqlarray_simple() a čtení detailu na sqlfirstrow().
- * 2026-10-18 12:55 - Kompletní oddělení sekce osobních údajů účtu (user_account)
- *                    od sekce oprávnění v organizaci (user_organization_access:
- *                    is_orgadmin, right_translate, remove_access) a globální správy.
- *                  - Podpora obousměrného schvalování přístupu (koncepty 'D'):
- *                    schválení/odmítnutí žádosti uživatele a odeslání/zrušení pozvánky
- *                    pro existujícího uživatele z jiné organizace (bez přepsání jeho dat).
+ * 2026-10-29 16:00 - Sloupce department_name, job_title, note a nové pracovní
+ *                    parametry working_date a evaluation_method přesunuty do sekce
+ *                    organizace (user_organization_access), takže je OrgAdmin může
+ *                    vyplňovat a měnit i u pozvánek.
+ *                  - Povoleno přidělování role Developer (is_developer = 1) v organizaci
+ *                    s nejvyšší licenční úrovní Developer (licence_level = 255).
+ *                  - Oprava chybějících mezer před znakem $ dle Anti-LaTeX pravidla.
+ * 2026-10-27 19:55 - Napojení řádků a tlačítek na asynchronní loadDetailPanel()
+ *                    a napojení poznámky (note) na třídu rich_text.
  * =============================================================================
  */
 
@@ -49,16 +44,18 @@ class page_org_users extends abstract_page_master_detail {
 	private string $logged_user_access = '';                                 // UUID relace přihlášeného uživatele
 	private ?string $update_guid = null;                                     // Vybraný uživatel nebo 'NEW'
 	private bool $show_removed_users = false;                                // Příznak zobrazení odebraných přístupů
-	private bool $is_sysadmin = false;                                       // Zda má uživatel roli S nebo D
+	private bool $is_sysadmin = false;                                       // Zda má uživatel globální roli S nebo D
+	private bool $can_grant_developer = false;                               // Zda smí přidělovat roli Developer (S, D nebo licence 255)
 
 	public function __construct() {
 		parent::__construct();                                               // Inicializace frází a kontroly přístupu
 
 		global $dbsession;                                                   // Globální kontext relace
 		
-		$this->page_title =$this->phrase('page_title', [], 'Správa uživatelů organizace'); // Lokalizovaný titulek stránky
+		$this->page_title = $this->phrase('page_title', [], 'Správa uživatelů organizace'); // Lokalizovaný titulek stránky
 		
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role v relaci
+		$lic_lvl = intval($dbsession['licence_level'] ?? 0);                 // Úroveň licence organizace v relaci
 		
 		// Ověření oprávnění pro přístup do modulu ('A' = Orgadmin, 'S' = Sysadmin, 'D' = Developer)
 		if ($this->access_denied OR !in_array($active_role, ['A', 'S', 'D'], true)) { // Kontrola oprávnění
@@ -68,6 +65,7 @@ class page_org_users extends abstract_page_master_detail {
 
 		// Načtení kontextu z relace (dbsession)
 		$this->is_sysadmin = in_array($active_role, ['S', 'D'], true);       // Příznak systémového správce
+		$this->can_grant_developer = ($this->is_sysadmin OR ($active_role === 'A' AND $lic_lvl === 255)); // Právo přidělit Developera
 		$this->logged_user_uuid = (string)$dbsession['user_account'];        // UUID účtu přihlášeného uživatele
 		$this->logged_user_access = (string)($dbsession['login_session_uuid'] ?? ''); // UUID přihlašovací relace
 		$this->current_org = guidliteral((string)$dbsession['organization']); // SQL literál aktivní organizace
@@ -75,7 +73,7 @@ class page_org_users extends abstract_page_master_detail {
 		// Parametry UI z requestu
 		$this->show_removed_users = (bool)sessioninput('show_removed_users', 4); // Příznak zobrazení zrušených účtů
 		$raw_guid = trim((string)getinput('update_guid', 'raw'));            // Načtení identifikátoru vybraného záznamu
-		$this->update_guid = ($raw_guid !== '') ?$raw_guid : null;          // Vybraný záznam z URL/POST
+		$this->update_guid = ($raw_guid !== '') ? $raw_guid : null;          // Vybraný záznam z URL/POST
 	}
 
 	/**
@@ -114,17 +112,19 @@ class page_org_users extends abstract_page_master_detail {
 		$email             = charliteral(trim((string)($_POST['email'] ?? '')), 200);             // Kontaktní e-mail
 		$phone             = charliteral(trim((string)($_POST['phone'] ?? '')), 50);              // Telefon
 		$mobile            = charliteral(trim((string)($_POST['mobile'] ?? '')), 50);             // Mobilní telefon
-		$department_name   = charliteral(trim((string)($_POST['department_name'] ?? '')), 150);   // Oddělení / útvar
-		$job_title         = charliteral(trim((string)($_POST['job_title'] ?? '')), 150);         // Pracovní pozice
-		$note              = charliteral($raw_note);                         // Poznámka k účtu
 
-		// Načtení oprávnění v organizaci (user_organization_access)
+		// Načtení oprávnění, organizačního zařazení a pracovních parametrů v organizaci (user_organization_access)
+		$department_name   = charliteral(trim((string)($_POST['department_name'] ?? '')), 150);   // Oddělení / útvar v organizaci
+		$job_title         = charliteral(trim((string)($_POST['job_title'] ?? '')), 150);         // Pracovní pozice v organizaci
+		$note              = charliteral($raw_note);                                              // Poznámka k uživateli v organizaci
+		$working_date      = dateliteral(trim((string)($_POST['working_date'] ?? '')));           // Osobní pracovní datum v organizaci
+		$evaluation_method = charliteral(trim((string)($_POST['evaluation_method'] ?? '')), 40);  // Osobní metoda hodnocení v organizaci
 		$is_orgadmin       = (!empty($_POST['is_orgadmin'])) ? 1 : 0;        // Příznak administrátora organizace
 		$right_translate   = (!empty($_POST['right_translate'])) ? 1 : 0;    // Příznak oprávnění k překladům
 		$remove_access     = (!empty($_POST['remove_access'])) ? 1 : 0;      // Příznak odebrání přístupu do organizace
 		$approval_note     = charliteral(trim((string)($_POST['approval_note'] ?? ''))); // Poznámka k pozvánce nebo zamítnutí
 
-		// Načtení globálních příznaků účtu (pouze pro roli S a D)
+		// Načtení globálních příznaků účtu (pro S/D, příp. is_developer pro organizaci s licencí 255)
 		$is_system_admin   = (!empty($_POST['is_system_admin'])) ? 1 : 0;    // Globální role Sysadmin
 		$is_developer      = (!empty($_POST['is_developer'])) ? 1 : 0;       // Globální role Developer
 		$allow_local_login = isset($_POST['allow_local_login']) ? ((!empty($_POST['allow_local_login'])) ? 1 : 0) : 1; // Povolení lokálního hesla
@@ -160,6 +160,8 @@ class page_org_users extends abstract_page_master_detail {
 			@department_name = {$department_name},
 			@job_title = {$job_title},
 			@note = {$note},
+			@working_date = {$working_date},
+			@evaluation_method = {$evaluation_method},
 			@is_orgadmin = {$is_orgadmin},
 			@right_translate = {$right_translate},
 			@is_system_admin = {$is_system_admin},
@@ -306,8 +308,8 @@ HTML;
 	}
 
 	/**
-	 * Vykreslení pravého panelu (Detail) s oddělením osobních dat (user_account)
-	 * a oprávnění v organizaci (user_organization_access).
+	 * Vykreslení pravého panelu (Detail) s oddělením údajů v organizaci (user_organization_access)
+	 * od osobních dat globálního účtu (user_account).
 	 */
 	protected function render_detail(): void {
 		if ($this->update_guid === null) {                                   // Pokud není vybrán žádný uživatel
@@ -329,9 +331,11 @@ HTML;
 				'email'             => '',                                   // Prázdný e-mail
 				'phone'             => '',                                   // Prázdný telefon
 				'mobile'            => '',                                   // Prázdný mobil
-				'department_name'   => '',                                   // Prázdné oddělení
-				'job_title'         => '',                                   // Prázdná pracovní pozice
-				'note'              => '',                                   // Prázdná poznámka
+				'department_name'   => '',                                   // Prázdné oddělení v organizaci
+				'job_title'         => '',                                   // Prázdná pracovní pozice v organizaci
+				'note'              => '',                                   // Prázdná poznámka v organizaci
+				'working_date'      => '',                                   // Prázdné pracovní datum
+				'evaluation_method' => '',                                   // Prázdná metoda hodnocení
 				'is_system_admin'   => 0,                                    // Výchozí bez role Sysadmin
 				'is_developer'      => 0,                                    // Výchozí bez role Developer
 				'allow_local_login' => 1,                                    // Výchozí povolené lokální přihlášení
@@ -369,6 +373,7 @@ HTML;
 		// Osobní údaje v user_account smí orgadmin měnit u zcela nového účtu nebo až po oboustranném schválení přístupu (record_type = 'A')
 		$personal_readonly = ($is_draft AND !$this->is_sysadmin);            // Uzamčení osobních dat před schválením přístupu
 		$pers_ro_attr = $personal_readonly ? 'readonly style="width: 100%; padding: 6px; box-sizing: border-box; background-color: #f4f4f4;"' : 'style="width: 100%; padding: 6px; box-sizing: border-box;"'; // Styl osobních polí
+		$org_inp_attr = 'style="width: 100%; padding: 6px; box-sizing: border-box;"'; // Styl polí v user_organization_access
 		$login_ro_attr = (!$is_new) ? 'readonly style="width: 100%; padding: 6px; box-sizing: border-box; background-color: #f4f4f4;"' : 'required style="width: 100%; padding: 6px; box-sizing: border-box;"'; // Login nelze u existujícího měnit
 
 		$safe_update_guid = htmlspecialchars($this->update_guid);            // Ošetřené UUID pro skryté pole
@@ -425,14 +430,14 @@ HTML;
 		// Informační pruhy pro režim nového uživatele nebo rozpracované žádosti / pozvánky ('D')
 		$app_note_val = htmlspecialchars((string)($datarow['approval_note'] ?? '')); // Ošetřená poznámka schvalování
 		if ($is_new) {                                                       // Nápověda při přidávání uživatele
-			$msg_new_info = htmlspecialchars($this->phrase('msg_new_or_invite_info', [], 'Pokud přidáváte uživatele, který již má účet v jiné organizaci, zadejte pouze jeho Přihlašovací jméno (login) a nastavte mu oprávnění níže – systém mu odešle pozvánku ke schválení a jeho osobní údaje nepřepíše. Pokud login dosud neexistuje, vyplňte i osobní údaje pro založení nového účtu.')); // Text nápovědy
+			$msg_new_info = htmlspecialchars($this->phrase('msg_new_or_invite_info', [], 'Pokud přidáváte uživatele, který již má účet v jiné organizaci, zadejte pouze jeho Přihlašovací jméno (login) a nastavte mu oprávnění a zařazení v organizaci níže – systém mu odešle pozvánku ke schválení a jeho osobní údaje nepřepíše. Pokud login dosud neexistuje, vyplňte i osobní údaje pro založení nového účtu.')); // Text nápovědy
 			echo "<div class=\"msg-info\" style=\"margin-bottom: 15px; font-weight: normal; font-size: 13px;\">{$msg_new_info}</div>";
 		} elseif ($is_draft) {                                               // Informační pruh pro koncept přístupu ('D')
 			if ($app_status === 'R') {                                       // Odmítnutá žádost nebo pozvánka
 				$msg_r = htmlspecialchars($this->phrase('msg_access_rejected_banner', [], 'Tento návrh přístupu byl odmítnut.')); // Hláška odmítnutí
 				echo "<div class=\"msg-err\" style=\"margin-bottom: 15px;\">{$msg_r}" . ($app_note_val !== '' ? "<div style=\"margin-top:4px; font-weight:normal;\">{$app_note_val}</div>" : "") . "</div>";
 			} elseif ($is_user_req) {                                        // Žádost podaná samotným uživatelem
-				$msg_u_req = htmlspecialchars($this->phrase('msg_user_requested_access_banner', [], 'Tento uživatel požádal o přístup do vaší organizace. Zkontrolujte jeho oprávnění níže a klikněte na „Schválit přístup“ nebo „Odmítnout žádost“. Osobní údaje účtu budou zpřístupněny k úpravám až po schválení přístupu.')); // Hláška žádosti
+				$msg_u_req = htmlspecialchars($this->phrase('msg_user_requested_access_banner', [], 'Tento uživatel požádal o přístup do vaší organizace. Zkontrolujte jeho oprávnění a zařazení níže a klikněte na „Schválit přístup“ nebo „Odmítnout žádost“. Osobní údaje účtu budou zpřístupněny k úpravám až po schválení přístupu.')); // Hláška žádosti
 				echo "<div class=\"msg-info\" style=\"margin-bottom: 15px;\">{$msg_u_req}" . ($app_note_val !== '' ? "<div style=\"margin-top:6px; font-weight:normal;\"><strong>Poznámka žadatele:</strong> {$app_note_val}</div>" : "") . "</div>";
 			} else {
 				$msg_inv = htmlspecialchars($this->phrase('msg_orgadmin_invited_banner', [], 'Tomuto existujícímu uživateli byla odeslána pozvánka do vaší organizace. Přístup i možnost úpravy osobních údajů se aktivují, jakmile uživatel pozvánku přijme ve svém okně „Změna kontextu“.')); // Hláška pozvánky
@@ -441,20 +446,40 @@ HTML;
 		}
 
 		// =====================================================================
-		// SEKCE 1: Oprávnění a přístup v této organizaci (user_organization_access)
+		// SEKCE 1: Oprávnění, zařazení a pracovní nastavení v této organizaci (user_organization_access)
 		// =====================================================================
-		$grp_perm = htmlspecialchars($this->phrase('grp_org_permissions', [], '1. Oprávnění a přístup v této organizaci (user_organization_access)')); // Nadpis sekce oprávnění
+		$grp_perm     = htmlspecialchars($this->phrase('grp_org_permissions', [], '1. Oprávnění, zařazení a nastavení v této organizaci (user_organization_access)')); // Nadpis sekce
 		$lbl_orgadmin = htmlspecialchars($this->phrase('lbl_is_orgadmin', [], 'Administrátor organizace (is_orgadmin)')); // Popisek admina
 		$tip_orgadmin = htmlspecialchars($this->phrase('tip_is_orgadmin', [], 'Umožňuje spravovat uživatele a nastavení v rámci této organizace')); // Tooltip admina
-		$lbl_trans = htmlspecialchars($this->phrase('lbl_right_translate', [], 'Právo pořizovat překlady (right_translate)')); // Popisek překladatele
-		$tip_trans = htmlspecialchars($this->phrase('tip_right_translate', [], 'Opravňuje uživatele k ukládání překladů (v garantující organizaci i globálně)')); // Tooltip překladatele
-		$lbl_rem = htmlspecialchars($this->phrase('lbl_remove_access', [], 'Odebrat přístup do této organizace')); // Popisek odebrání přístupu
+		$lbl_trans    = htmlspecialchars($this->phrase('lbl_right_translate', [], 'Právo pořizovat překlady (right_translate)')); // Popisek překladatele
+		$tip_trans    = htmlspecialchars($this->phrase('tip_right_translate', [], 'Opravňuje uživatele k ukládání překladů (v garantující organizaci i globálně)')); // Tooltip překladatele
+		$lbl_dept     = htmlspecialchars($this->phrase('lbl_department', [], 'Oddělení / Útvar v organizaci')); // Popisek oddělení
+		$lbl_job      = htmlspecialchars($this->phrase('lbl_job_title', [], 'Pracovní pozice v organizaci')); // Popisek pozice
+		$lbl_wdate    = htmlspecialchars($this->phrase('lbl_working_date', [], 'Osobní pracovní datum (prázdné = dnes)')); // Popisek pracovního data
+		$lbl_evalm    = htmlspecialchars($this->phrase('lbl_evaluation_method', [], 'Osobní metoda hodnocení (CRMM)')); // Popisek metody hodnocení
+		$lbl_note_raw = $this->phrase('lbl_user_note', [], 'Interní poznámka v organizaci'); // Surový popisek poznámky
+		$lbl_note     = htmlspecialchars($lbl_note_raw);                     // Ošetřený popisek poznámky
+		$lbl_rem      = htmlspecialchars($this->phrase('lbl_remove_access', [], 'Odebrat přístup do této organizace')); // Popisek odebrání přístupu
 		$lbl_app_note = htmlspecialchars($this->phrase('lbl_access_approval_note', [], 'Poznámka k pozvánce / důvod zamítnutí:')); // Popisek poznámky
 
 		$chk_orgadmin = (!empty($datarow['is_orgadmin'])) ? 'checked' : '';  // Zaškrtnutí is_orgadmin
-		$chk_trans = (!empty($datarow['right_translate'])) ? 'checked' : ''; // Zaškrtnutí right_translate
-		$chk_rem = (!empty($datarow['remove_access'])) ? 'checked' : '';     // Zaškrtnutí remove_access
+		$chk_trans    = (!empty($datarow['right_translate'])) ? 'checked' : ''; // Zaškrtnutí right_translate
+		$chk_rem      = (!empty($datarow['remove_access'])) ? 'checked' : ''; // Zaškrtnutí remove_access
 		$dis_me_admin = $is_me ? 'disabled' : '';                            // Vlastní admin příznak nelze odškrtnout
+
+		$v_dept       = htmlspecialchars((string)($datarow['department_name'] ?? ''));   // Hodnota department_name
+		$v_job        = htmlspecialchars((string)($datarow['job_title'] ?? ''));         // Hodnota job_title
+		$v_wdate      = htmlspecialchars(validateDate((string)($datarow['working_date'] ?? ''), false)); // Hodnota working_date
+		$v_evalm      = htmlspecialchars((string)($datarow['evaluation_method'] ?? '')); // Hodnota evaluation_method
+		$raw_note_val = (string)($datarow['note'] ?? '');                                // Surová hodnota poznámky
+		$v_note       = htmlspecialchars($raw_note_val);                                 // Ošetřená hodnota note
+
+		// Vykreslení poznámky přes rich_text (vždy editovatelná pro OrgAdmina, protože patří do user_organization_access)
+		if (class_exists('rich_text')) {                                     // Pokud je dostupná třída rich_text
+			$note_input_html = rich_text::render_editor('note', $raw_note_val, ['label' => $lbl_note_raw, 'input_rows' => 4]); // Preview s modálním editorem
+		} else {
+			$note_input_html = "<textarea name=\"note\" rows=\"3\" {$org_inp_attr}>{$v_note}</textarea>"; // Fallback textarea
+		}
 
 		echo "<h3 style=\"margin-top: 5px; color: #004488; font-size: 15px;\">{$grp_perm}</h3>";
 		echo "<table class=\"md-table\" style=\"margin-bottom: 25px;\">";
@@ -470,9 +495,15 @@ HTML;
 		echo "<input type=\"hidden\" name=\"right_translate\" value=\"0\">";
 		echo "<input type=\"checkbox\" name=\"right_translate\" value=\"1\" {$chk_trans}></td></tr>";
 
+		echo "<tr><td><strong>{$lbl_dept}:</strong></td><td><input type=\"text\" name=\"department_name\" maxlength=\"150\" value=\"{$v_dept}\" {$org_inp_attr}></td></tr>";
+		echo "<tr><td><strong>{$lbl_job}:</strong></td><td><input type=\"text\" name=\"job_title\" maxlength=\"150\" value=\"{$v_job}\" {$org_inp_attr}></td></tr>";
+		echo "<tr><td><strong>{$lbl_wdate}:</strong></td><td><input type=\"date\" name=\"working_date\" value=\"{$v_wdate}\" style=\"width: 160px; padding: 6px;\"></td></tr>";
+		echo "<tr><td><strong>{$lbl_evalm}:</strong></td><td><input type=\"text\" name=\"evaluation_method\" maxlength=\"40\" value=\"{$v_evalm}\" style=\"width: 240px; padding: 6px;\"></td></tr>";
+		echo "<tr><td><strong>{$lbl_note}:</strong></td><td>{$note_input_html}</td></tr>";
+
 		if ($is_new OR $is_draft) {                                          // Pole poznámky pro pozvánku nebo zamítnutí žádosti
 			echo "<tr><td><strong>{$lbl_app_note}</strong></td><td>";
-			echo "<input type=\"text\" name=\"approval_note\" value=\"{$app_note_val}\" style=\"width: 100%; padding: 6px; box-sizing: border-box;\"></td></tr>";
+			echo "<input type=\"text\" name=\"approval_note\" value=\"{$app_note_val}\" {$org_inp_attr}></td></tr>";
 		}
 
 		if (!$is_new AND !$is_draft) {                                       // Možnost odebrání již schváleného přístupu
@@ -488,9 +519,9 @@ HTML;
 		echo "</table>";
 
 		// =====================================================================
-		// SEKCE 2: Osobní a kontaktní údaje účtu (user_account)
+		// SEKCE 2: Osobní a kontaktní údaje osoby (user_account)
 		// =====================================================================
-		$grp_pers = htmlspecialchars($this->phrase('grp_personal_data', [], '2. Osobní a kontaktní údaje účtu (user_account)')); // Nadpis osobní sekce
+		$grp_pers  = htmlspecialchars($this->phrase('grp_personal_data', [], '2. Osobní a kontaktní údaje účtu (user_account)')); // Nadpis osobní sekce
 		$lbl_login = htmlspecialchars($this->phrase('lbl_login_name', [], 'Přihlašovací jméno (login)')); // Popisek loginu
 		$lbl_t_bef = htmlspecialchars($this->phrase('lbl_title_before', [], 'Titul před jménem')); // Popisek titulu před
 		$lbl_fname = htmlspecialchars($this->phrase('lbl_first_name', [], 'Křestní jméno')); // Popisek jména
@@ -499,10 +530,6 @@ HTML;
 		$lbl_email = htmlspecialchars($this->phrase('lbl_email', [], 'E-mail (nemusí být unikátní)')); // Popisek e-mailu
 		$lbl_phone = htmlspecialchars($this->phrase('lbl_phone', [], 'Telefon')); // Popisek telefonu
 		$lbl_mob   = htmlspecialchars($this->phrase('lbl_mobile', [], 'Mobil')); // Popisek mobilu
-		$lbl_dept  = htmlspecialchars($this->phrase('lbl_department', [], 'Oddělení / Útvar')); // Popisek oddělení
-		$lbl_job   = htmlspecialchars($this->phrase('lbl_job_title', [], 'Pracovní pozice')); // Popisek pozice
-		$lbl_note_raw = $this->phrase('lbl_user_note', [], 'Poznámka');      // Surový popisek poznámky
-		$lbl_note  = htmlspecialchars($lbl_note_raw);                        // Ošetřený popisek poznámky
 
 		$v_login = htmlspecialchars((string)($datarow['login_name'] ?? ''));        // Hodnota login_name
 		$v_tbef  = htmlspecialchars((string)($datarow['user_title_before'] ?? '')); // Hodnota user_title_before
@@ -512,23 +539,6 @@ HTML;
 		$v_email = htmlspecialchars((string)($datarow['email'] ?? ''));             // Hodnota email
 		$v_phone = htmlspecialchars((string)($datarow['phone'] ?? ''));             // Hodnota phone
 		$v_mob   = htmlspecialchars((string)($datarow['mobile'] ?? ''));            // Hodnota mobile
-		$v_dept  = htmlspecialchars((string)($datarow['department_name'] ?? ''));   // Hodnota department_name
-		$v_job   = htmlspecialchars((string)($datarow['job_title'] ?? ''));         // Hodnota job_title
-		$raw_note_val = (string)($datarow['note'] ?? '');                           // Surová hodnota poznámky
-		$v_note  = htmlspecialchars($raw_note_val);                                 // Ošetřená hodnota note
-
-		// Vykreslení poznámky přes rich_text (Preview + modální editor na popředí)
-		if (class_exists('rich_text')) {                                     // Pokud je dostupná třída rich_text
-			if ($personal_readonly) {                                        // V uzamčeném režimu před schválením přístupu
-				$ro_view = rich_text::render_formatted($raw_note_val, true); // Zformátovaný readonly náhled
-				$note_input_html = "<input type=\"hidden\" name=\"note\" value=\"{$v_note}\">"
-					. "<div style=\"padding: 8px 10px; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; min-height: 36px;\">{$ro_view}</div>"; // Readonly box
-			} else {
-				$note_input_html = rich_text::render_editor('note', $raw_note_val, ['label' => $lbl_note_raw, 'input_rows' => 4]); // Preview s modálním editorem
-			}
-		} else {
-			$note_input_html = "<textarea name=\"note\" rows=\"3\" {$pers_ro_attr}>{$v_note}</textarea>"; // Fallback textarea
-		}
 
 		echo <<<HTML
 				<h3 style="margin-top: 20px; color: #004488; font-size: 15px;">{$grp_pers}</h3>
@@ -565,26 +575,14 @@ HTML;
 						<td><strong>{$lbl_mob}:</strong></td>
 						<td><input type="text" name="mobile" maxlength="50" value="{$v_mob}" {$pers_ro_attr}></td>
 					</tr>
-					<tr>
-						<td><strong>{$lbl_dept}:</strong></td>
-						<td><input type="text" name="department_name" maxlength="150" value="{$v_dept}" {$pers_ro_attr}></td>
-					</tr>
-					<tr>
-						<td><strong>{$lbl_job}:</strong></td>
-						<td><input type="text" name="job_title" maxlength="150" value="{$v_job}" {$pers_ro_attr}></td>
-					</tr>
-					<tr>
-						<td><strong>{$lbl_note}:</strong></td>
-						<td>{$note_input_html}</td>
-					</tr>
 				</table>
 HTML;
 
 		// =====================================================================
-		// SEKCE 3: Globální správa účtu (pouze pro Sysadmin / Developer)
+		// SEKCE 3: Globální správa účtu (pro Sysadmin / Developer nebo licenci Developer = 255)
 		// =====================================================================
-		if ($this->is_sysadmin) {                                            // Zobrazení globální sekce pouze pro S a D
-			$grp_glob = htmlspecialchars($this->phrase('grp_global_account_admin', [], '3. Globální správa účtu (pouze Sysadmin / Developer)')); // Nadpis sekce
+		if ($this->is_sysadmin OR $this->can_grant_developer) {              // Zobrazení sekce globálních příznaků
+			$grp_glob = htmlspecialchars($this->phrase('grp_global_account_admin', [], '3. Globální správa účtu')); // Nadpis sekce
 			$lbl_sys  = htmlspecialchars($this->phrase('lbl_is_system_admin', [], 'Globální Sysadmin (is_system_admin)')); // Popisek Sysadmin
 			$lbl_dev  = htmlspecialchars($this->phrase('lbl_is_developer', [], 'Globální Developer (is_developer)')); // Popisek Developer
 			$lbl_loc  = htmlspecialchars($this->phrase('lbl_allow_local_login', [], 'Povolit přihlášení lokálním heslem')); // Popisek lokálního hesla
@@ -597,11 +595,17 @@ HTML;
 
 			echo "<h3 style=\"margin-top: 20px; color: #004488; font-size: 15px;\">{$grp_glob}</h3>";
 			echo "<table class=\"md-table\" style=\"margin-bottom: 25px;\">";
-			echo "<tr><td style=\"width: 35%;\"><strong>{$lbl_sys}:</strong></td><td><input type=\"hidden\" name=\"is_system_admin\" value=\"0\"><input type=\"checkbox\" name=\"is_system_admin\" value=\"1\" {$chk_sys} {$dis_me_admin}></td></tr>";
-			echo "<tr><td><strong>{$lbl_dev}:</strong></td><td><input type=\"hidden\" name=\"is_developer\" value=\"0\"><input type=\"checkbox\" name=\"is_developer\" value=\"1\" {$chk_dev} {$dis_me_admin}></td></tr>";
-			echo "<tr><td><strong>{$lbl_loc}:</strong></td><td><input type=\"hidden\" name=\"allow_local_login\" value=\"0\"><input type=\"checkbox\" name=\"allow_local_login\" value=\"1\" {$chk_loc}></td></tr>";
-			if (!$is_me AND !$is_new) {                                      // Globální deaktivace cizího účtu
-				echo "<tr style=\"background-color: #ffebee;\"><td style=\"border-left: 4px solid #b71c1c; color: #b71c1c;\"><strong>{$lbl_deac}:</strong></td><td><input type=\"hidden\" name=\"deactivate_global\" value=\"0\"><input type=\"checkbox\" name=\"deactivate_global\" value=\"1\" {$chk_deac}></td></tr>";
+			if ($this->is_sysadmin) {                                        // Sysadmin příznak mění pouze S/D
+				echo "<tr><td style=\"width: 35%;\"><strong>{$lbl_sys}:</strong></td><td><input type=\"hidden\" name=\"is_system_admin\" value=\"0\"><input type=\"checkbox\" name=\"is_system_admin\" value=\"1\" {$chk_sys} {$dis_me_admin}></td></tr>";
+			}
+			if ($this->can_grant_developer) {                                // Developer příznak smí měnit i organizace s licencí 255
+				echo "<tr><td style=\"width: 35%;\"><strong>{$lbl_dev}:</strong></td><td><input type=\"hidden\" name=\"is_developer\" value=\"0\"><input type=\"checkbox\" name=\"is_developer\" value=\"1\" {$chk_dev} {$dis_me_admin}></td></tr>";
+			}
+			if ($this->is_sysadmin) {                                        // Lokální přihlášení a globální deaktivace pouze pro S/D
+				echo "<tr><td><strong>{$lbl_loc}:</strong></td><td><input type=\"hidden\" name=\"allow_local_login\" value=\"0\"><input type=\"checkbox\" name=\"allow_local_login\" value=\"1\" {$chk_loc}></td></tr>";
+				if (!$is_me AND !$is_new) {                                  // Globální deaktivace cizího účtu
+					echo "<tr style=\"background-color: #ffebee;\"><td style=\"border-left: 4px solid #b71c1c; color: #b71c1c;\"><strong>{$lbl_deac}:</strong></td><td><input type=\"hidden\" name=\"deactivate_global\" value=\"0\"><input type=\"checkbox\" name=\"deactivate_global\" value=\"1\" {$chk_deac}></td></tr>";
+				}
 			}
 			echo "</table>";
 		}
