@@ -1,9 +1,11 @@
 ﻿/* =============================================================================
- * Verze: 2026-10-29 15:30
+ * Verze: 2026-10-29 22:00
  * Soubor: table_organization_licence.sql
  * Tabulka: organization_licence
- * Popis:   Evidence licencí organizací. Každá organizace (včetně systémové 0x00)
- *          musí mít záznam v této tabulce, kde se zakládá.
+ * Popis:   DDL definice tabulky pro evidenci licencí organizací.
+ *          Každá organizace (včetně systémové 0x00) musí mít záznam v této
+ *          tabulce, kde se zakládá. Prvotní naplnění systémové licence je
+ *          vyčleněno do samostatného skriptu fillup_organization_licence.sql.
  *          Výhradně zde jsou uloženy sloupce licence_level a login_disabled,
  *          které nesmí cílová organizace sama měnit.
  *          - licence_level = 255 (Developer) umožňuje organizaci přidávat do
@@ -13,14 +15,16 @@
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
  * Vazby:   - organization_uuid ukazuje na organization.original
  *          - licence_level ukazuje na licence_level.licence_level
- *          - Zpracováváno procedurou p_process_organization_licence a čteno
- *            při přihlášení v p_set_login a v_user_organization_access.
+ *          - Zpracováváno procedurou p_process_organization_licence, plněno
+ *            skriptem fillup_organization_licence.sql a čteno při přihlášení
+ *            v p_set_login a v_user_organization_access.
  * Změny:
+ * - 2026-10-29 22:00: Oddělení čistého DDL skriptu od datového plnění
+ *   (vložení výchozí systémové licence přesunuto do fillup_organization_licence.sql).
  * - 2026-10-29 15:30: Přesunut sloupec login_disabled z tabulky organization.
  *   Odstraněny duplicitní sloupce is_developer (nahrazeno licence_level = 255)
  *   a organization_name (používá se caption). Doplněny SSC sloupce draft_author,
- *   approval_note, import_origin, index uq_organization_licence_draft a výchozí
- *   licenční záznam pro systémovou organizaci 0x00.
+ *   approval_note, import_origin a index uq_organization_licence_draft.
  * ============================================================================= */
 
 -- Kontrola a odstranění tabulky, pokud pochází ze starého systému
@@ -122,12 +126,6 @@ BEGIN
 	EXEC('UPDATE organization_licence SET caption = organization_name WHERE caption = '''' AND organization_name <> ''''');
 	EXEC sp_drop_column 'organization_licence', 'organization_name';
 END
-GO
-
--- Doplnění chybějícího builtin_code u existujících licencí
-UPDATE organization_licence 
-SET builtin_code = SUBSTRING(caption, 1, 80) 
-WHERE builtin_code = '';
 GO
 
 -- -----------------------------------------------------------------------------

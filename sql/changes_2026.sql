@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-29 15:30
+ * Verze: 2026-10-29 22:00
  * Soubor: changes_2026.sql
  * Účel:   Jednorázové změny struktury a dat databáze v kalendářním roce 2026.
  *         Spouští se samostatně PŘED hlavním slepeným skriptem BcmOsirisDb.sql.
@@ -13,10 +13,18 @@
  * - Při testování nového bloku nanečisto zakomentuj poslední COMMIT – pojistka
  *   IF @@TRANCOUNT > 0 ROLLBACK na konci souboru změny vrátí a závěrečná
  *   kontrola ohlásí červenou chybu (severity 16), že verze nebyla povýšena.
+ * - V blocích, které přidávají sloupce do již existujících tabulek přes
+ *   p_create_missing_column, nikdy nepoužívej statické DML dotazy (INSERT/UPDATE)
+ *   odkazující na nové sloupce (SQL Server by je nezkopiloval); pro případný
+ *   přenos dat vždy použij dynamické EXEC('...'). Prvotní plnění výchozích
+ *   záznamů patří výhradně do skriptů fillup_*.sql v BcmOsirisDb.sql.
  * - Opakované spuštění skriptu nebo spuštění staršího skriptu nad novější
  *   databází neprovede žádné změny a nezpůsobí žádnou škodu.
  *
  * Změny:
+ * - 2026-10-29 22:00 (26.10.29.0): Odstraněn statický INSERT do organization_licence
+ *   způsobující chybu kompilace nad starší verzí tabulky bez sloupce login_disabled
+ *   (vložení systémové licence přesunuto do fillup_organization_licence.sql).
  * - 2026-10-29 15:30 (26.10.29.0): Narovnání sloupců mezi organization_licence
  *   a organization (přesun licence_level a login_disabled do licence, doplnění
  *   nastavení organizace a CRMM limitů do organization, zrušení tabulky
@@ -94,6 +102,7 @@ BEGIN
 	PRINT '29.10.2026 (26.10.29.0): Narovnání sloupců v organization_licence, organization, user_account a user_organization_access';
 
 	-- 1. Doplnění nových sloupců do organization_licence a migrace z organization
+	EXEC p_create_missing_column 'organization_licence', 'builtin_code', 'varchar(80) NOT NULL DEFAULT ''''';
 	EXEC p_create_missing_column 'organization_licence', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
 	EXEC p_create_missing_column 'organization_licence', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 	EXEC p_create_missing_column 'organization_licence', 'import_origin', 'varchar(255) NULL';
@@ -112,7 +121,7 @@ BEGIN
 		EXEC sp_drop_column 'organization_licence', 'organization_name';
 	END
 
-	-- Přenos login_disabled a chybějících licencí z tabulky organization do organization_licence
+	-- Přenos login_disabled z tabulky organization do organization_licence
 	IF EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'organization' AND colname = 'login_disabled')
 	BEGIN
 		EXEC('
@@ -122,21 +131,6 @@ BEGIN
 			JOIN organization o ON o.original = ol.organization_uuid AND o.record_type = ''A''
 			WHERE ol.record_type = ''A''
 		');
-	END
-
-	-- Zajištění licenčního záznamu pro systémovou organizaci (0x00) s úrovní Developer (255)
-	DECLARE @sys_lic_orig uuid = dbo.f_generate_original('organization_licence', CAST(0x00 AS uniqueidentifier), 'SYS', NULL);
-	IF NOT EXISTS (SELECT 1 FROM organization_licence WHERE organization_uuid = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		INSERT INTO organization_licence (
-			uuid, object_owner, original, record_type, approval_status, [language],
-			builtin_code, caption, shortname, licence_state, licence_level,
-			organization_uuid, login_disabled, activation_date
-		) VALUES (
-			@sys_lic_orig, 0x00, @sys_lic_orig, 'A', 'A', 'cs',
-			'SYS', 'System', 'SYS', 'PROCESSED', 255,
-			0x00, 0, CAST(GETDATE() AS date)
-		);
 	END
 
 	-- Odstranění licence_level a login_disabled z tabulky organization

@@ -1,6 +1,12 @@
+#
+# Tento soubor obsahuje vstupní data, zpracovávaná programem BuildDb.php
+#
+
+
 F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
 
 system_constant.sql
+changes_*.sql
 table_user_session.sql
 table_*.sql
 f_*.sql
@@ -15,7 +21,12 @@ form_*.sql
 drop_abandoned_objects.sql
 final_scripts.sql
 
-#Slepenec pro spusteni
+# Doplnek kontextu pro AI
+output=BcmOsirisConcat.txt
+BuildList.txt
+BuildDb.php
+
+# Slepenec pro spusteni vcelku
 output=BcmOsirisDb.sql
 BcmOsirisDb1.txt
 BcmOsirisDb2.txt

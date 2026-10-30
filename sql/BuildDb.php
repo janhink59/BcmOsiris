@@ -21,6 +21,7 @@ if (!file_exists($manifestFile)) {
 
 function open_output(){
 	global $outputFile, $outHandle;
+	sleep(1); // Zajistí, že časový údaj dalšího souboru bude vyšší
 	if (file_exists($outputFile)) {
 		unlink($outputFile);                                        // Smazání předchozího buildu
 	}
@@ -145,7 +146,8 @@ foreach ($manifestLines as $line) {
 			
 			// Přečtení obsahu s odříznutím BOM a validací/konverzí kódování
 			$wasConverted = false;
-			$cleanContent = "-- Následující kód je zkopírován ze souboru $file:\nGO\n". $processContent($file, $wasConverted);
+			$sep=(substr($file,-3)==".sql")?"\nGO\n\n":"\n";
+			$cleanContent = "-- Následující kód je zkopírován ze souboru $file:$sep". $processContent($file, $wasConverted);
 			
 			// Výpis informace o zpracování
 			// $conversionInfo = $wasConverted ? " [konvertovano z Windows-1250]" : "";
@@ -158,7 +160,7 @@ foreach ($manifestLines as $line) {
 			fwrite($outHandle, $cleanContent);
 			
 			// Vložení separátoru dávky pro MSSQL
-			if(substr($cleanContent,-1)!="\n") fwrite($outHandle, "\nGO\n\n");
+			if(substr($cleanContent,-1)!="\n") fwrite($outHandle, $sep);
 			
 			$processedFiles[$realPath] = true;                  // Registrace souboru do paměti jako "zpracováno"
 			$fileCount++;
