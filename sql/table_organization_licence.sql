@@ -1,11 +1,9 @@
 ﻿/* =============================================================================
- * Verze: 2026-10-29 22:00
+ * Verze: 2026-10-30 23:35
  * Soubor: table_organization_licence.sql
  * Tabulka: organization_licence
- * Popis:   DDL definice tabulky pro evidenci licencí organizací.
- *          Každá organizace (včetně systémové 0x00) musí mít záznam v této
- *          tabulce, kde se zakládá. Prvotní naplnění systémové licence je
- *          vyčleněno do samostatného skriptu fillup_organization_licence.sql.
+ * Popis:   Evidence licencí organizací. Každá organizace (včetně systémové 0x00)
+ *          musí mít záznam v této tabulce, kde se zakládá.
  *          Výhradně zde jsou uloženy sloupce licence_level a login_disabled,
  *          které nesmí cílová organizace sama měnit.
  *          - licence_level = 255 (Developer) umožňuje organizaci přidávat do
@@ -15,16 +13,18 @@
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
  * Vazby:   - organization_uuid ukazuje na organization.original
  *          - licence_level ukazuje na licence_level.licence_level
- *          - Zpracováváno procedurou p_process_organization_licence, plněno
- *            skriptem fillup_organization_licence.sql a čteno při přihlášení
- *            v p_set_login a v_user_organization_access.
+ *          - Výchozí záznam pro systémovou organizaci 0x00 čte sysadmin_email
+ *            z tabulky system_constant.
+ *          - Zpracováváno procedurou p_process_organization_licence a čteno
+ *            při přihlášení v p_set_login a v_user_organization_access.
  * Změny:
- * - 2026-10-29 22:00: Oddělení čistého DDL skriptu od datového plnění
- *   (vložení výchozí systémové licence přesunuto do fillup_organization_licence.sql).
+ * - 2026-10-30 23:35: Při vkládání výchozího záznamu systémové organizace (0x00)
+ *   se admin_email načítá ze system_constant.sysadmin_email.
  * - 2026-10-29 15:30: Přesunut sloupec login_disabled z tabulky organization.
  *   Odstraněny duplicitní sloupce is_developer (nahrazeno licence_level = 255)
  *   a organization_name (používá se caption). Doplněny SSC sloupce draft_author,
- *   approval_note, import_origin a index uq_organization_licence_draft.
+ *   approval_note, import_origin, index uq_organization_licence_draft a výchozí
+ *   licenční záznam pro systémovou organizaci 0x00.
  * ============================================================================= */
 
 -- Kontrola a odstranění tabulky, pokud pochází ze starého systému
@@ -128,6 +128,12 @@ BEGIN
 END
 GO
 
+-- Doplnění chybějícího builtin_code u existujících licencí
+UPDATE organization_licence 
+SET builtin_code = SUBSTRING(caption, 1, 80) 
+WHERE builtin_code = '' AND caption <> '';
+GO
+
 -- -----------------------------------------------------------------------------
 -- Indexy pro zajištění RAC a SSC architektury
 -- -----------------------------------------------------------------------------
@@ -165,10 +171,22 @@ GO
 
 -- -----------------------------------------------------------------------------
 -- Inicializační licenční záznam pro systémovou master organizaci (0x00)
+-- Využívá sysadmin_email z tabulky system_constant.
 -- -----------------------------------------------------------------------------
+DECLARE @sysadmin_email varchar(200) = '';
+IF OBJECT_ID('system_constant') IS NOT NULL
+BEGIN
+	SELECT TOP 1 @sysadmin_email = ISNULL(LTRIM(RTRIM(sysadmin_email)), '')
+	FROM system_constant;
+END
+
 IF NOT EXISTS (SELECT 1 FROM organization_licence WHERE organization_uuid = 0x00 AND record_type = 'A' AND removed = 0)
 BEGIN
-	DECLARE @sys_lic uuid = ISNULL(dbo.f_generate_original('organization_licence', CAST(0x00 AS uniqueidentifier), 'SYS', NULL), NEWID());
+	DECLARE @sys_lic uuid = CONVERT(
+		uniqueidentifier,
+		HASHBYTES('MD5', 'organization_licence|' + LOWER(CONVERT(varchar(36), CAST(0x00 AS uniqueidentifier))) + '|sys|')
+	);
+
 	INSERT INTO organization_licence (
 		uuid, object_owner, original, record_type, approval_status, [language],
 		builtin_code, caption, shortname, description_text,
@@ -178,7 +196,17 @@ BEGIN
 		@sys_lic, 0x00, @sys_lic, 'A', 'A', 'cs',
 		'SYS', 'System', 'SYS', 'Licence systémové master organizace.',
 		'PROCESSED', 255, 0x00, 0,
-		'sysadmin', 'System', 'Administrator', 'hink@rac.cz', CAST(GETDATE() AS date)
+		'sysadmin', 'System', 'Administrator', @sysadmin_email, CAST(GETDATE() AS date)
 	);
+END
+ELSE IF @sysadmin_email <> ''
+BEGIN
+	UPDATE organization_licence
+	SET admin_email = @sysadmin_email
+	WHERE organization_uuid = 0x00
+	  AND record_type = 'A'
+	  AND removed = 0
+	  AND who_modified = 0x00
+	  AND admin_email = '';
 END
 GO

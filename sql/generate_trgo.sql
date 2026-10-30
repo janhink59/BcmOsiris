@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-29 15:30
+ * Verze: 2026-10-30 23:35
  * Soubor: generate_trgo.sql
  * DÁVKA: Generátor deterministických triggerů (trgo_%)
  * Účel: Hromadné odstranění a znovuvytvoření triggerů pro vazební a katalogové tabulky.
@@ -11,9 +11,11 @@
  *   (plněné skriptem fillup_meta_original_keys.sql).
  * - Využívá deterministickou hashovací funkci dbo.f_generate_original.
  * - Pro tabulku [link] zakládá dedikovaný trigger trgo_link využívající
- *   funkci dbo.f_link_original se 3 klíčovými složkami.
+ *   funkci dbo.f_link_original se 4 klíčovými složkami (link_def, from_object,
+ *   to_object, ancestor_link).
  *
  * Změny:
+ * - 2026-10-30 23:35: Trigger trgo_link rozšířen o 4. klíčovou složku ancestor_link.
  * - 2026-10-29 15:30: Triggery trgo_% a trgo_link změněny z AFTER INSERT, UPDATE
  *   výhradně na AFTER INSERT (změna klíčových sloupců u existujících záznamů je
  *   zakázána). Doplněna ochrana, aby u vkládaných záznamů typu 'D', 'L' a 'H',
@@ -103,7 +105,7 @@ GO
 /* =============================================================================
  * TRIGGER: trgo_link
  * Účel: Nastavení deterministického identifikátoru vazby při vložení (AFTER INSERT)
- *       s využitím f_link_original.
+ *       s využitím f_link_original (včetně 4. klíčové složky ancestor_link).
  * ============================================================================= */
 CREATE TRIGGER trgo_link
 ON [link]
@@ -117,20 +119,22 @@ BEGIN
 		original = CASE
 			WHEN i.record_type = 'A' OR i.original = 0x00 THEN
 				dbo.f_link_original(
-					ISNULL(parent.object_owner, i.object_owner),
+					CAST(ISNULL(parent.object_owner, i.object_owner) AS varchar(36)),
 					CAST(i.[link_def] AS varchar(36)),
 					CAST(i.[from_object] AS varchar(36)),
-					CAST(i.[to_object] AS varchar(36))
+					CAST(i.[to_object] AS varchar(36)),
+					CAST(i.[ancestor_link] AS varchar(36))
 				)
 			ELSE i.original
 		END,
 		uuid = CASE 
 			WHEN i.record_type = 'A' AND parent.uuid IS NULL THEN 
 				dbo.f_link_original(
-					i.object_owner,
+					CAST(i.object_owner AS varchar(36)),
 					CAST(i.[link_def] AS varchar(36)),
 					CAST(i.[from_object] AS varchar(36)),
-					CAST(i.[to_object] AS varchar(36))
+					CAST(i.[to_object] AS varchar(36)),
+					CAST(i.[ancestor_link] AS varchar(36))
 				)
 			ELSE i.uuid 
 		END
@@ -140,6 +144,7 @@ BEGIN
 		ON parent.[link_def] = i.[link_def]
 		AND parent.[from_object] = i.[from_object]
 		AND parent.[to_object] = i.[to_object]
+		AND parent.[ancestor_link] = i.[ancestor_link]
 		AND (parent.object_owner = 0x00 OR parent.object_owner = i.template)
 		AND parent.record_type = 'A'
 		AND parent.removed = 0

@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-29 16:40
+ * Verze: 2026-10-31 00:40
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  * Účel: Zápisová, klonovací a schvalovací (SSC) část třídy entity_manager.
@@ -10,10 +10,10 @@
  *
  * VAZBY NA OKOLÍ:
  * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
- * - Využívá vlastnosti třídy `entity_manager` (`$this->storage_table`, `$this->physical_cols`,
- *   `$this->col_types`, `$this->col_nulls`, `$this->columns_meta`, `$this->class_meta`,
- *   `$this->is_initialized`) a její metody `phrase()`, `is_metadata_entity()`,
- *   `get_original_key_columns()` a `evaluate_remove_permission()`.
+ * - Využívá vlastnosti třídy `entity_manager` (`storage_table`, `physical_cols`,
+ *   `col_types`, `col_nulls`, `columns_meta`, `class_meta`, `is_initialized`)
+ *   a její metody `phrase()`, `is_metadata_entity()`, `get_original_key_columns()`,
+ *   `is_hierarchy_node_locked()` a `evaluate_remove_permission()`.
  * - Využívá třídu `rich_text` (`rich_text.php`) pro normalizaci, konverzi (Markdown ⇄ HTML)
  *   a bezpečnostní sanitizaci formátovaných sloupců (`is_html = 1`) při ukládání z POSTu.
  * - Volán z `abstract_page_master_detail::process_save()` a `page_approval::process_save()`.
@@ -24,23 +24,23 @@
  * 2. Klonování s modifikací (Override vzor)
  *    Pomocí metod `insert_from_map()` a `clone_with_map()` zakládá kompletní kopii
  *    systémového záznamu, ve které nahradí upravené hodnoty.
- * 3. Ochrana klíčových sloupců (meta_original_keys)
- *    U existujícího záznamu ($update_guid !== '') jsou klíčové sloupce při UPDATE
+ * 3. Ochrana klíčových sloupců (meta_original_keys) a uzamčených větví hierarchií
+ *    U existujícího záznamu (update_guid !== '') jsou klíčové sloupce při UPDATE
  *    odfiltrovány, aby nikdy nemohlo dojít k nekonzistenci vůči deterministickému originálu.
- * 4. Podpora tabulky `organization` (`object_owner = original`)
- *    U tabulky `organization` vlastní každý záznam sám sebe (`object_owner = original`)
- *    a zakládání nových záznamů přes `entity_manager` je zablokováno (řeší licence).
- * 5. Schvalovací cyklus (SSC) s `record_type = 'D'` (včetně návrhů na zrušení a obnovu `removed`)
- *    Obsahuje metody `delete_draft()`, `approve_draft()` a `reject_draft()` se
- *    striktní kontrolou vlastnictví (`object_owner`) a jazyka relace schvalovatele.
+ *    U uzamčených větví hierarchie (`is_hierarchy_node_locked`) je blokována změna
+ *    `parent_uuid` a zrušení `is_leaf = 1`.
+ * 4. Automatická synchronizace odvozených vazeb v `link`
+ *    Po uložení/schválení vazby v `link` spouští `p_sync_derived_links @root_link_original`
+ *    (promítnutí `hierarchy` do `meta_class` řeší databázový trigger `trg_hierarchy_sync_meta_class`).
  *
  * Změny:
+ * 2026-10-31 00:40 - Sjednocení názvu parametru `@root_link_original` při volání
+ *                    procedury `dbo.p_sync_derived_links` v `run_post_save_hooks()`.
+ * 2026-10-30 23:55 - Rozšíření volání `dbo.f_link_original` na 4 klíčové složky
+ *                    (`link_def`, `from_object`, `to_object`, `ancestor_link`).
+ *                  - Backendová ochrana uzamčených uzlů hierarchie v `save_post_data()`.
  * 2026-10-29 16:40 - V save_post_data() a approve_draft() doplněna ochrana klíčových
- *                    sloupců z get_original_key_columns() proti přepsání při UPDATE
- *                    existujícího záznamu.
- * 2026-10-27 19:40 - V metodě extract_post_data() sjednoceno čtení cílového formátu
- *                    z pole {$colname}__target_format a přímé volání metody
- *                    rich_text::normalize_for_storage($raw_val, $fmt_hint).
+ *                    sloupců z get_original_key_columns() proti přepsání při UPDATE.
  * =============================================================================
  */
 
@@ -54,9 +54,7 @@ trait entity_manager_write {
 
 	/**
 	 * Sestaví a spustí příkaz INSERT INTO ... VALUES (...) vyfiltrováním předané mapy
-	 * sloupců a SQL výrazů proti skutečným fyzickým sloupcům tabulky ($this->physical_cols).
-	 *
-	 * @param array<string, string|int> $row_map Asociativní pole [sloupec => SQL výraz]
+	 * sloupců a SQL výrazů proti skutečným fyzickým sloupcům tabulky (physical_cols).
 	 */
 	private function insert_from_map(array $row_map): void {                 // Vložení nového záznamu podle mapy sloupců
 		$ins_cols = [];                                                      // Seznam vkládaných fyzických sloupců
@@ -73,13 +71,8 @@ trait entity_manager_write {
 
 	/**
 	 * Sestaví a spustí klonovací příkaz INSERT INTO ... SELECT ... FROM ...
-	 * Sloupce uvedené v $override_map nahradí zadaným SQL výrazem, ostatní fyzické
+	 * Sloupce uvedené v override_map nahradí zadaným SQL výrazem, ostatní fyzické
 	 * sloupce převezme beze změny ze zdrojového řádku.
-	 *
-	 * @param array<string, string|int> $override_map Mapa přepisovaných sloupců [sloupec => SQL výraz]
-	 * @param string                    $where_sql    Podmínka WHERE pro výběr zdrojového záznamu
-	 * @param string                    $top_sql      Volitelná klauzule TOP (např. 'TOP 1')
-	 * @param string                    $order_sql    Volitelná klauzule ORDER BY
 	 */
 	private function clone_with_map(array $override_map, string $where_sql, string $top_sql = '', string $order_sql = ''): void { // Klonování záznamu s modifikací
 		$ins_cols = [];                                                      // Cílové sloupce klonovaného záznamu
@@ -148,7 +141,8 @@ trait entity_manager_write {
 
 			// Typově přesné parsování podle fyzického schématu databáze a metadat
 			if (in_array($phys_type, ['uuid', 'uniqueidentifier'], true)) {  // Pokud jde o UUID sloupec
-				$data[$colname] = guidliteral($raw_val);                     // Převod na bezpečný UUID literál
+				$guid_lit = guidliteral($raw_val);                           // Převod na bezpečný UUID literál
+				$data[$colname] = ($guid_lit === 'NULL' AND $is_not_null) ? '0x00' : $guid_lit; // Ošetření NOT NULL UUID (např. ancestor_link)
 			} elseif ($meta['input_type'] === 'checkbox' OR $phys_type === 'bit') { // Pokud jde o bitový checkbox
 				$data[$colname] = ($raw_val === '1' OR strtolower($raw_val) === 'true') ? 1 : 0; // Bitová hodnota 1 nebo 0
 			} elseif (in_array($phys_type, ['int', 'smallint', 'tinyint', 'bigint'], true)) { // Celočíselné sloupce
@@ -164,7 +158,7 @@ trait entity_manager_write {
 			}
 		}
 
-		// Pojistka: Pokud by sloupec removed chyběl v $this->columns_meta, ale fyzicky v tabulce existuje a přišel v POSTu
+		// Pojistka: Pokud by sloupec removed chyběl v columns_meta, ale fyzicky v tabulce existuje a přišel v POSTu
 		if (!isset($data['removed']) AND isset($_POST['removed']) AND in_array('removed', $this->physical_cols, true)) { // Kontrola removed v POSTu
 			$raw_rem = (string)$_POST['removed'];                            // Surová hodnota removed z formuláře
 			$data['removed'] = ($raw_rem === '1' OR strtolower($raw_rem) === 'true') ? 1 : 0; // Převod na bit 1/0
@@ -174,12 +168,25 @@ trait entity_manager_write {
 	}
 
 	/**
+	 * Spustí post-processing proceduru po zápisu schváleného záznamu ('A')
+	 * do tabulky `link` (materializace odvozených vazeb přes `ancestor_link`).
+	 */
+	private function run_post_save_hooks(string $orig_guid_sql): void {      // Spuštění návazných SQL procedur
+		if ($orig_guid_sql === '' OR $orig_guid_sql === 'NULL') {            // Kontrola platného SQL literálu originálu
+			return;                                                          // Ukončení bez volání procedur
+		}
+
+		if ($this->storage_table === 'link') {                               // Materializace zděděných vazeb v tabulce link
+			$p_row = sqlfirstrow("SELECT OBJECT_ID('p_sync_derived_links', 'P') AS pid"); // Ověření existence procedury
+			if (!empty($p_row['pid'])) {                                     // Pokud procedura v DB existuje
+				sqlrun("EXEC dbo.p_sync_derived_links @root_link_original = {$orig_guid_sql}"); // Přepočet odvozených vazeb
+			}
+		}
+	}
+
+	/**
 	 * JÁDRO BACKENDU: Provede autonomní zápis dat s podporou schvalovacího cyklu (SSC)
 	 * a architektury "Klonování s modifikací".
-	 * 
-	 * @param string $update_guid   Originální UUID záznamu (Prázdné pro INSERT)
-	 * @param string $target_status Cílový stav zápisu: 'A' = schválený, 'D' = koncept, 'F' = ke schválení
-	 * @return string Uložené nebo nově vypočtené `original` UUID záznamu
 	 */
 	public function save_post_data(string $update_guid = '', string $target_status = 'A'): string { // Autonomní uložení dat
 		if (!$this->is_initialized) {                                        // Kontrola inicializace metadat
@@ -222,14 +229,12 @@ trait entity_manager_write {
 		$orig_guid_raw = $update_guid;                                       // Surové UUID upravovaného záznamu
 		$orig_guid_sql = ($update_guid === '') ? '' : guidliteral($update_guid); // SQL literál originálu
 
-		// BACKENDOVÁ POJISTKA: Zakládání zcela nových záznamů v tabulce organization přes entity_manager
-		// je zakázáno (organizace vznikají výhradně aktivací licence v p_process_organization_licence).
+		// BACKENDOVÁ POJISTKA: Zakládání zcela nových záznamů v tabulce organization přes entity_manager je zakázáno.
 		if ($is_self_owned AND $orig_guid_sql === '') {                      // Zákaz přímého INSERTu do organization
 			return '';                                                       // Ukončení bez založení organizace
 		}
 
-		// BACKENDOVÁ POJISTKA METADAT: Zakládání zcela nových záznamů v metadatových tabulkách
-		// je povoleno výhradně pro roli Developer ('D').
+		// BACKENDOVÁ POJISTKA METADAT: Zakládání zcela nových záznamů v metadatových tabulkách smí jen Developer ('D').
 		if ($is_meta_table AND $orig_guid_sql === '' AND $active_role !== 'D') { // Kontrola práv pro nový záznam metadat
 			return '';                                                       // Zákaz INSERTu do metadat mimo roli D
 		}
@@ -276,6 +281,23 @@ trait entity_manager_write {
 			}
 		}
 
+		// BACKENDOVÁ OCHRANA UZAMČENÉ HIERARCHIE (proti přepodřízení parent_uuid a změně is_leaf):
+		if ($orig_guid_sql !== '' AND !empty($current_row) AND $this->has_physical_column('parent_uuid')) { // Existující uzel stromu
+			$node_locked = $this->is_hierarchy_node_locked($orig_guid_raw);  // Zjištění uzamčení větve vazbami
+			if ($node_locked) {                                              // Pokud je větev uzamčena platnými vazbami
+				unset($post_data['parent_uuid']);                            // Zákaz změny nadřízeného uzlu (přepodřízení)
+				if (!empty($current_row['is_leaf'])) {                       // Pokud byl uzel koncovým listem
+					$post_data['is_leaf'] = 1;                               // Zákaz přepnutí obsazeného koncového uzlu na složku
+				}
+			}
+			if (isset($post_data['is_leaf']) AND (int)$post_data['is_leaf'] === 1) { // Pokus o nastavení is_leaf = 1
+				$has_ch = sqlfirstrow("SELECT TOP 1 1 AS ex FROM [{$table}] WHERE parent_uuid = {$orig_guid_sql} AND record_type = 'A' AND removed = 0"); // Kontrola potomků
+				if (!empty($has_ch)) {                                       // Uzel má aktivní podřízené položky
+					$post_data['is_leaf'] = 0;                               // Složka s potomky musí mít is_leaf = 0
+				}
+			}
+		}
+
 		// Vyhodnocení oprávnění pro změnu příznaku removed
 		$requested_removed = null;                                           // Požadovaná hodnota removed z formuláře
 		if (array_key_exists('removed', $post_data)) {                       // Pokud formulář odeslal sloupec removed
@@ -283,8 +305,7 @@ trait entity_manager_write {
 			unset($post_data['removed']);                                    // Vyjmeme z běžné smyčky a ošetříme cíleně níže
 		}
 
-		// OCHRANA KLÍČOVÝCH SLOUPCŮ: Pokud záznam již není 'NEW' ($orig_guid_sql !== ''),
-		// klíčové sloupce z meta_original_keys nesmí být při UPDATE nikdy přepsány.
+		// OCHRANA KLÍČOVÝCH SLOUPCŮ: U existujícího záznamu nesmí být klíčové sloupce přepsány.
 		$key_cols = $this->get_original_key_columns();                       // Seznam klíčových sloupců tabulky
 
 		// 3. Filtrace struktury: Rozdělení dat na 'A' (Základ), 'L' (Lokalizace) a 'D' (Koncept)
@@ -338,7 +359,7 @@ trait entity_manager_write {
 			$d_post_data = $l_post_data;                                     // V konceptu tenanta ponecháme jen překládaná pole
 		}
 
-		// Cílené zařazení sloupce removed podle vyhodnoceného oprávnění a jazyka (včetně uložení do konceptu 'D')
+		// Cílené zařazení sloupce removed podle vyhodnoceného oprávnění a jazyka
 		if ($requested_removed !== null AND !empty($current_row)) {          // Pokud uživatel mění existující záznam
 			$perm = $this->evaluate_remove_permission($current_row, $a_exists); // Kontrola oprávnění ke zrušení/obnovení
 			if ($perm['allowed']) {                                          // Pokud má uživatel oprávnění měnit removed
@@ -371,12 +392,13 @@ trait entity_manager_write {
 					$orig_guid_raw = (string)$orig_row['orig_guid'];         // Surové UUID originálu
 					$orig_guid_sql = guidliteral($orig_guid_raw);            // Deterministické UUID originálu
 				}
-			} elseif ($table === 'link') {                                   // Speciální výpočet pro tabulku link
+			} elseif ($table === 'link') {                                   // Speciální 4složkový výpočet pro tabulku link
 				$link_def = array_key_exists('link_def', $src_key_data) ? $src_key_data['link_def'] : "''"; // Definice vazby
 				$from_obj = array_key_exists('from_object', $src_key_data) ? $src_key_data['from_object'] : "''"; // Zdroj vazby
 				$to_obj = array_key_exists('to_object', $src_key_data) ? $src_key_data['to_object'] : "''"; // Cíl vazby
+				$anc_link = (array_key_exists('ancestor_link', $src_key_data) AND $src_key_data['ancestor_link'] !== 'NULL') ? $src_key_data['ancestor_link'] : '0x00'; // Zdroj dědění vazby
 
-				$orig_row = sqlfirstrow("SELECT dbo.f_link_original(CAST({$rec_owner_sql} AS varchar(36)), CAST({$link_def} AS varchar(36)), CAST({$from_obj} AS varchar(36)), CAST({$to_obj} AS varchar(36))) AS orig_guid"); // Výpočet originálu vazby
+				$orig_row = sqlfirstrow("SELECT dbo.f_link_original(CAST({$rec_owner_sql} AS varchar(36)), CAST({$link_def} AS varchar(36)), CAST({$from_obj} AS varchar(36)), CAST({$to_obj} AS varchar(36)), CAST({$anc_link} AS varchar(36))) AS orig_guid"); // Výpočet originálu vazby
 				if (!empty($orig_row)) {                                     // Načtení originálu vazby
 					$orig_guid_raw = (string)$orig_row['orig_guid'];         // Surové UUID vazby
 					$orig_guid_sql = guidliteral($orig_guid_raw);            // Deterministické UUID vazby
@@ -425,7 +447,7 @@ trait entity_manager_write {
 
 				sqlrun("UPDATE {$table} SET " . implode(', ', $set_dr) . " WHERE uuid = {$dr_uuid_sql}"); // Provedení UPDATE konceptu
 			} else {
-				$src_a_row = sqlfirstrow("SELECT TOP 1 uuid FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND object_owner IN ({$rec_owner_sql}, 0x00) ORDER BY object_owner DESC, removed ASC, date_modified DESC"); // Kontrola předlohy A (i zrušené při obnově)
+				$src_a_row = sqlfirstrow("SELECT TOP 1 uuid FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND object_owner IN ({$rec_owner_sql}, 0x00) ORDER BY object_owner DESC, removed ASC, date_modified DESC"); // Kontrola předlohy A
 				$d_ssc_map = ['record_type' => "'D'", 'approval_status' => $safe_status, 'draft_author' => $user_acc_sql, 'approval_note' => "''", 'language' => $lang_literal_sql]; // SSC sloupce konceptu
 
 				if (!empty($src_a_row)) {                                    // Klonování existujícího 'A' záznamu do 'D'
@@ -473,8 +495,8 @@ trait entity_manager_write {
 			}
 		}
 
-		// 5. Zápis 'L' záznamu
-		if ($has_translated_cols AND $orig_guid_sql !== '') {                // Pokud formulář obsahuje překládané sloupce
+		// 5. Zápis 'L' záznamu (tabulka link nepoužívá jazykové záznamy 'L')
+		if ($has_translated_cols AND $orig_guid_sql !== '' AND $table !== 'link') { // Pokud formulář obsahuje překládané sloupce
 			$l_owner_sql = $rec_owner_sql;                                   // Výchozím vlastníkem překladu je vlastník záznamu
 			if ($orig_owner_raw === '0x00' OR $orig_owner_raw === '00000000-0000-0000-0000-000000000000') { // Pokud je originál systémový
 				if ($right_translate) {                                      // Pokud má uživatel právo globálního překladu
@@ -543,6 +565,9 @@ trait entity_manager_write {
 			");                                                              // Odmítnutí souběžných konceptů jiných uživatelů
 		}
 
+		// 7. Spuštění návazné synchronizace pro tabulku link
+		$this->run_post_save_hooks($orig_guid_sql);                          // Přepočet odvozených vazeb (ancestor_link)
+
 		sqlrun("COMMIT");                                                    // Potvrzení transakce zápisu
 		return $orig_guid_raw;                                               // Vrácení originálu uloženého záznamu
 	}
@@ -550,8 +575,6 @@ trait entity_manager_write {
 	/**
 	 * Odstraní rozpracovaný nebo vrácený koncept ('D') přihlášeného uživatele
 	 * bez náhrady a bez zápisu do historie ('H').
-	 *
-	 * @param string $original_guid UUID originálu záznamu
 	 */
 	public function delete_draft(string $original_guid): void {              // Smazání konceptu uživatele podle original
 		if (!$this->is_initialized OR trim($original_guid) === '') {         // Kontrola platného vstupu
@@ -579,8 +602,6 @@ trait entity_manager_write {
 	/**
 	 * Schválí vybraný návrh (`record_type = 'D'`, včetně návrhů na zrušení či obnovu `removed`)
 	 * identifikovaný svým primárním klíčem `uuid`.
-	 *
-	 * @param string $draft_uuid Primární klíč (`uuid`) schvalovaného řádku s `record_type = 'D'`
 	 */
 	public function approve_draft(string $draft_uuid): void {                // Schválení vybraného návrhu
 		if (!$this->is_initialized OR trim($draft_uuid) === '') {            // Kontrola inicializace a platného UUID
@@ -640,6 +661,14 @@ trait entity_manager_write {
 			'draft_author', 'approval_note', 'language',
 			'date_created', 'who_created', 'date_modified', 'who_modified'
 		], $this->get_original_key_columns());                               // Ochrana klíčových sloupců i při schválení UPDATE
+
+		if (!empty($existing_a) AND $this->is_hierarchy_node_locked($orig_raw)) { // Ochrana uzamčené větve při schválení návrhu
+			$skip_data_cols[] = 'parent_uuid';                               // Zákaz přepodřízení uzamčené větve
+			if (!empty($existing_a['is_leaf'])) {                            // Pokud byl uzel koncovým listem
+				$skip_data_cols[] = 'is_leaf';                               // Zákaz zrušení koncového uzlu
+			}
+		}
+
 		$ap_audit_map = ['date_created' => $author_date_sql, 'who_created' => $author_session_sql, 'date_modified' => 'GETDATE()', 'who_modified' => $approver_session_sql]; // Audit autora a schvalovatele
 
 		sqlrun("BEGIN TRAN");                                                // Zahájení transakce schválení
@@ -680,45 +709,47 @@ trait entity_manager_write {
 			}
 		}
 
-		// 4. Zápis do symetrického 'L' záznamu pro jazyk návrhu (včetně případné obnovy zrušeného L záznamu)
-		$l_owner_sql = $owner_sql;                                           // Vlastník jazykové mutace
-		if (!empty($existing_a) AND ((string)$existing_a['object_owner'] === '0x00' OR (string)$existing_a['object_owner'] === '00000000-0000-0000-0000-000000000000')) { // Pokud je A záznam systémový
-			if ($right_translate) {                                          // Pokud má schvalovatel právo globálního překladu
-				$l_owner_sql = '0x00';                                       // Globální systémový překlad
-			}
-		}
-
-		$existing_l = sqlfirstrow("SELECT TOP 1 uuid FROM {$table} WHERE original = {$orig_sql} AND object_owner = {$l_owner_sql} AND record_type = 'L' AND [language] = {$draft_lang_sql} ORDER BY removed ASC, date_modified DESC"); // Kontrola existence L
-
-		if (!empty($existing_l)) {                                           // UPDATE existujícího 'L' záznamu
-			$l_uuid_sql = guidliteral((string)$existing_l['uuid']);          // Primární klíč L záznamu
-			$set_l = [];                                                     // Pole změn pro UPDATE L záznamu
-
-			foreach ($this->physical_cols as $col) {                         // Průchod fyzickými sloupci
-				if (in_array($col, $skip_data_cols, true)) {                 // Přeskočení technických a klíčových sloupců
-					continue;                                                // Pokračování na další sloupec
+		// 4. Zápis do symetrického 'L' záznamu pro jazyk návrhu (mimo tabulku link)
+		if ($table !== 'link') {                                             // Tabulka link nepoužívá jazykové mutace 'L'
+			$l_owner_sql = $owner_sql;                                       // Vlastník jazykové mutace
+			if (!empty($existing_a) AND ((string)$existing_a['object_owner'] === '0x00' OR (string)$existing_a['object_owner'] === '00000000-0000-0000-0000-000000000000')) { // Pokud je A záznam systémový
+				if ($right_translate) {                                      // Pokud má schvalovatel právo globálního překladu
+					$l_owner_sql = '0x00';                                   // Globální systémový překlad
 				}
-				$set_l[] = "[$col] = d.[$col]";                              // Převzetí hodnoty z návrhu d
 			}
 
-			$set_l[] = "approval_status = 'A'";                              // Schválený stav L záznamu
-			$set_l[] = "draft_author = 0x00";                                // Vynulování autora konceptu
-			$set_l[] = "approval_note = ''";                                 // Vyčištění poznámky
-			$set_l[] = "date_modified = GETDATE()";                          // Datum schválení překladu
-			$set_l[] = "who_modified = {$approver_session_sql}";             // Relace schvalovatele
+			$existing_l = sqlfirstrow("SELECT TOP 1 uuid FROM {$table} WHERE original = {$orig_sql} AND object_owner = {$l_owner_sql} AND record_type = 'L' AND [language] = {$draft_lang_sql} ORDER BY removed ASC, date_modified DESC"); // Kontrola existence L
 
-			$sql_upd_l = "UPDATE l SET " . implode(', ', $set_l) . " FROM {$table} l JOIN {$table} d ON d.uuid = {$draft_uuid_sql} WHERE l.uuid = {$l_uuid_sql}"; // SQL UPDATE L
-			sqlrun($sql_upd_l);                                              // Provedení UPDATE L záznamu
-		} else {
-			// INSERT nového 'L' záznamu (who_created = autor návrhu, who_modified = schvalovatel)
-			$ap_l_hdr = ['uuid' => 'NEWID()', 'object_owner' => $l_owner_sql, 'original' => 'original', 'record_type' => "'L'", 'approval_status' => "'A'", 'draft_author' => '0x00', 'approval_note' => "''", 'language' => $draft_lang_sql]; // Hlavička L záznamu
-			$this->clone_with_map($ap_l_hdr + $ap_audit_map, "uuid = {$draft_uuid_sql}"); // Založení schváleného L záznamu
-		}
+			if (!empty($existing_l)) {                                       // UPDATE existujícího 'L' záznamu
+				$l_uuid_sql = guidliteral((string)$existing_l['uuid']);      // Primární klíč L záznamu
+				$set_l = [];                                                 // Pole změn pro UPDATE L záznamu
 
-		// Jednotná auditní stopa na 'A' záznamu, pokud se měnila pouze jazyková vrstva 'L'
-		if (($is_final_class OR !$is_native_lang) AND !empty($existing_a)) { // Kontrola potřeby aktualizace auditu na A
-			$a_uuid_sql = guidliteral((string)$existing_a['uuid']);          // UUID hlavního A záznamu
-			sqlrun("UPDATE {$table} SET date_modified = GETDATE(), who_modified = {$approver_session_sql} WHERE uuid = {$a_uuid_sql}"); // Aktualizace auditu na A
+				foreach ($this->physical_cols as $col) {                     // Průchod fyzickými sloupci
+					if (in_array($col, $skip_data_cols, true)) {             // Přeskočení technických a klíčových sloupců
+						continue;                                            // Pokračování na další sloupec
+					}
+					$set_l[] = "[$col] = d.[$col]";                          // Převzetí hodnoty z návrhu d
+				}
+
+				$set_l[] = "approval_status = 'A'";                              // Schválený stav L záznamu
+				$set_l[] = "draft_author = 0x00";                                // Vynulování autora konceptu
+				$set_l[] = "approval_note = ''";                                 // Vyčištění poznámky
+				$set_l[] = "date_modified = GETDATE()";                          // Datum schválení překladu
+				$set_l[] = "who_modified = {$approver_session_sql}";             // Relace schvalovatele
+
+				$sql_upd_l = "UPDATE l SET " . implode(', ', $set_l) . " FROM {$table} l JOIN {$table} d ON d.uuid = {$draft_uuid_sql} WHERE l.uuid = {$l_uuid_sql}"; // SQL UPDATE L
+				sqlrun($sql_upd_l);                                          // Provedení UPDATE L záznamu
+			} else {
+				// INSERT nového 'L' záznamu (who_created = autor návrhu, who_modified = schvalovatel)
+				$ap_l_hdr = ['uuid' => 'NEWID()', 'object_owner' => $l_owner_sql, 'original' => 'original', 'record_type' => "'L'", 'approval_status' => "'A'", 'draft_author' => '0x00', 'approval_note' => "''", 'language' => $draft_lang_sql]; // Hlavička L záznamu
+				$this->clone_with_map($ap_l_hdr + $ap_audit_map, "uuid = {$draft_uuid_sql}"); // Založení schváleného L záznamu
+			}
+
+			// Jednotná auditní stopa na 'A' záznamu, pokud se měnila pouze jazyková vrstva 'L'
+			if (($is_final_class OR !$is_native_lang) AND !empty($existing_a)) { // Kontrola potřeby aktualizace auditu na A
+				$a_uuid_sql = guidliteral((string)$existing_a['uuid']);      // UUID hlavního A záznamu
+				sqlrun("UPDATE {$table} SET date_modified = GETDATE(), who_modified = {$approver_session_sql} WHERE uuid = {$a_uuid_sql}"); // Aktualizace auditu na A
+			}
 		}
 
 		// 5. Fyzické odstranění právě schváleného návrhu ('D')
@@ -740,15 +771,15 @@ trait entity_manager_write {
 			  AND [language] = {$draft_lang_sql}
 		");                                                                  // Automatické odmítnutí ostatních návrhů
 
+		// 7. Spuštění návazné synchronizace pro tabulku link
+		$this->run_post_save_hooks($orig_sql);                               // Přepočet odvozených vazeb (ancestor_link)
+
 		sqlrun("COMMIT");                                                    // Potvrzení transakce schválení
 	}
 
 	/**
 	 * Odmítne / vrátí k přepracování vybraný návrh (`record_type = 'D'`, včetně návrhů na zrušení)
 	 * a uloží k němu poznámku schvalovatele (`approval_note`).
-	 *
-	 * @param string $draft_uuid    Primární klíč (`uuid`) odmítaného návrhu
-	 * @param string $approval_note Důvod vrácení / odmítnutí zadaný schvalovatelem
 	 */
 	public function reject_draft(string $draft_uuid, string $approval_note = ''): void { // Odmítnutí návrhu schvalovatelem
 		if (!$this->is_initialized OR trim($draft_uuid) === '') {            // Kontrola platného vstupu

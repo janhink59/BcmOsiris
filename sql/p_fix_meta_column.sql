@@ -3,12 +3,11 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-29 16:00
+ * Verze: 2026-10-30 23:35
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
- *       Nyní plně respektuje STI architekturu – sloupce se vážou výhradně
- *       na logické třídy (meta_class). Obsahuje i integrovanou logiku
- *       z původní procedury p_generate_primitive_classes.
+ *       Plně respektuje STI architekturu – sloupce se vážou výhradně
+ *       na logické třídy (meta_class), včetně odvozených tříd z tabulky hierarchy.
  *
  * Vazby na okolí:
  * - Volána na konci sestavovací dávky databáze (final_scripts.sql).
@@ -20,17 +19,14 @@ GO
  *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
  *
  * Změny:
+ * - 2026-10-30 23:35: Doplněna synchronizace registrovaných hierarchií (tabulka
+ *   hierarchy) do meta_class, podpora sloupců pro odvozené STI třídy v sekcích
+ *   4a/4b/4c, skrytí technických sloupců ancestor_link a is_derived v globálním
+ *   slovníku a napojení sloupce hierarchy_item.hierarchy na třídu hierarchy.
  * - 2026-10-29 16:00: V sekci 5b doplněno napojení sloupce preferred_language
- *   na třídu language, aby entity_manager v nastavení organizace generoval
- *   roletku podporovaných jazyků.
+ *   na třídu language.
  * - 2026-10-26 13:55: V sekci 5 doplněno výchozí nastavení příznaku is_html = 1
- *   v globálním slovníku (sys_global_columns) pro dlouhé popisné sloupce
- *   (description, description_text, helptext, help_text, note), pokud záznam
- *   nebyl ručně upraven uživatelem (who_modified = 0x00).
- * - 2026-10-24 23:45: Osiřelé systémové objekty v meta_object (T, V, F), meta_class
- *   a meta_column se označují příznakem removed = 1 s časem běhu dávky (@batch_time).
- *   Pokud se dříve zrušený objekt v databázi znovu objeví, automaticky se obnoví
- *   z koše (removed = 0).
+ *   v globálním slovníku (sys_global_columns) pro dlouhé popisné sloupce.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -185,7 +181,7 @@ BEGIN
 		  AND s.meta_obj_type = mo.object_type COLLATE DATABASE_DEFAULT
 	  );
 
-	-- 1b. Označení osiřelých fyzických objektů (removed: 0 -> 1), které již v DB neexistují (např. zrušené organization_settings)
+	-- 1b. Označení osiřelých fyzických objektů (removed: 0 -> 1), které již v DB neexistují
 	UPDATE mo
 	SET mo.removed = 1,
 		mo.date_modified = @batch_time
@@ -266,6 +262,39 @@ BEGIN
 				AND mc.object_owner = 0x00 
 				AND mc.record_type = 'A'
 		);
+
+	-- 2d. Promítnutí registrovaných hierarchií z tabulky hierarchy do meta_class (STI nad hierarchy_item)
+	IF OBJECT_ID('hierarchy') IS NOT NULL
+	BEGIN
+		DECLARE @stg_hier_item uuid = dbo.f_generate_original('meta_object', @sys_owner, 'T', 'hierarchy_item');
+		DECLARE @cls_hier_item uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy_item', '');
+
+		INSERT INTO meta_class (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			inactive, removed, class_name, storage_object, ancestor_class, sort_code,
+			caption, caption_plural, description, helptext,
+			is_final, is_protected,
+			date_created, who_created, date_modified, who_modified
+		)
+		SELECT
+			x.cls_orig, h.object_owner, x.cls_orig, 'A', 'A', h.[language],
+			h.inactive, h.removed, h.builtin_code, @stg_hier_item, @cls_hier_item, LEFT(h.sort_code, 20),
+			NULLIF(h.caption, ''), NULLIF(h.caption, ''), NULLIF(h.description_text, ''), NULLIF(h.help_text, ''),
+			h.is_final, h.is_protected,
+			h.date_created, h.who_created, h.date_modified, h.who_modified
+		FROM hierarchy h
+		CROSS APPLY (
+			SELECT dbo.f_generate_original('meta_class', CAST(h.object_owner AS varchar(36)), h.builtin_code, '') AS cls_orig
+		) x
+		WHERE h.record_type = 'A'
+		  AND h.builtin_code <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM meta_class mc
+			WHERE mc.class_name = h.builtin_code
+			  AND mc.object_owner IN (0x00, h.object_owner)
+			  AND mc.record_type = 'A'
+		  );
+	END
 
 	-- -------------------------------------------------------------------------
 	-- 3. PŘÍPRAVA GLOBÁLNÍHO SLOVNÍKU (Objekt typu C a globální třída)
@@ -383,7 +412,7 @@ BEGIN
 	);
 
 	-- -------------------------------------------------------------------------
-	-- 4. SYNCHRONIZACE LOKÁLNÍCH SLOUPCŮ (Vazba na logickou třídu)
+	-- 4. SYNCHRONIZACE LOKÁLNÍCH SLOUPCŮ (Vazba na logickou třídu vč. STI potomků)
 	-- -------------------------------------------------------------------------
 	-- 4a. Obnova dříve zrušených lokálních sloupců (removed: 1 -> 0), pokud jsou třída i fyzický sloupec opět platné
 	UPDATE mc
@@ -406,8 +435,7 @@ BEGIN
 		AND la.colname = mc.column_name COLLATE DATABASE_DEFAULT
 	WHERE mc.object_owner = 0x00
 	  AND mc.parent_class <> @c_class
-	  AND mc.removed = 1
-	  AND mcl.class_name = mo.builtin_code;
+	  AND mc.removed = 1;
 
 	-- 4b. Označení osiřelých lokálních sloupců (removed: 0 -> 1), pokud je neplatná jejich třída nebo fyzický sloupec zmizel
 	UPDATE mc
@@ -440,7 +468,7 @@ BEGIN
 		)
 	  );
 
-	-- 4c. Vložení nových lokálních sloupců pro platné primitivní logické třídy
+	-- 4c. Vložení nových lokálních sloupců pro všechny platné logické třídy (primitivní i STI)
 	INSERT INTO meta_column (
 		uuid, object_owner, original, record_type, approval_status,
 		parent_class, parent_order, column_name, 
@@ -474,7 +502,6 @@ BEGIN
 		AND mo.removed = 0
 	JOIN meta_class mcl 
 		ON mcl.storage_object = mo.original
-		AND mcl.class_name = mo.builtin_code COLLATE DATABASE_DEFAULT
 		AND mcl.record_type = 'A'
 		AND mcl.object_owner = 0x00
 		AND mcl.removed = 0
@@ -577,7 +604,7 @@ BEGIN
 	  AND column_name = 'days_in_trash'
 	  AND (who_modified = 0x00 OR caption = 'days_in_trash');
 
-	-- Skrytí čistě technických RAC/SSC a binárních sloupců z automaticky generovaných formulářů
+	-- Skrytí čistě technických RAC/SSC, odvozených a binárních sloupců z automaticky generovaných formulářů
 	UPDATE meta_column
 	SET hidden = 1
 	WHERE parent_class = @c_class
@@ -587,7 +614,8 @@ BEGIN
 		'uuid', 'object_owner', 'original', 'record_type', 'approval_status',
 		'draft_author', 'approval_note', 'import_origin', 'removed',
 		'date_created', 'who_created', 'date_modified', 'who_modified',
-		'logo_data', 'logo_filename', 'logo_mime_type'
+		'logo_data', 'logo_filename', 'logo_mime_type',
+		'ancestor_link', 'is_derived'
 	  );
 
 	-- Sloupec vektorových ikon (svg_icon) necháme ve formuláři viditelný (hidden = 0) a chráněný (is_protected = 1)
@@ -605,6 +633,7 @@ BEGIN
 	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
 	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');
 	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
+	DECLARE @cls_hierarchy uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy', '');
 
 	UPDATE meta_column
 	SET referenced_class = @cls_meta_class
@@ -630,7 +659,18 @@ BEGIN
 	  AND column_name = 'ancestor'
 	  AND referenced_class IS NULL;
 
-	-- Rekurzivní stromová vazba parent_uuid vždy odkazuje na vlastní logickou třídu (např. meta_menu, asset_class)
+	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_hierarchy AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
+	BEGIN
+		UPDATE meta_column
+		SET referenced_class = @cls_hierarchy
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'hierarchy'
+		  AND referenced_class IS NULL;
+	END
+
+	-- Rekurzivní stromová vazba parent_uuid vždy odkazuje na vlastní logickou třídu (např. meta_menu, asset_class, hierarchy)
 	UPDATE meta_column
 	SET referenced_class = parent_class
 	WHERE parent_class <> @c_class

@@ -81,15 +81,11 @@
 
 7. To do
 * Hotovo:
-  - Dokončen překlad sloupců `*_l` (v `meta_object_cs_en.xlsx` / CSV) do angličtiny a naimportován do databáze.
-  - Zavedení systému upgradů databáze (`changes_2026.sql`, povýšeno na `'26.10.29.0'`) a provozního deníku `service_logbook` (`page_service_logbook.php`).
-  - Vytvoření a rozšíření stránky pro zobrazení aktivity uživatelů `page_audit_login_session.php`.
-  - Implementace a odladění podpory Markdownu a HTML ve sloupcích s `is_html = 1` (`rich_text.php`).
-  - Asynchronní načítání detailního panelu (`loadDetailPanel()`) a optimalizace SQL dotazů v `entity_manager.php` a `phrase_manager.php` přes indexované `@table` proměnné.
-  - Kompletně dokončena Etapa 1 (reorganizace `organization_licence` / `organization` a `user_account` / `user_organization_access`, oprava idempotence `changes_2026.sql`, uzamčení klíčových sloupců po vytvoření záznamu, `p_empty_trash.sql`, zobecnění ochrany proti zacyklení stromů `@descendants` v `entity_manager.php`).
-* V dalším kroku (Etapa 2 až 5 – CRMM):
-  1. Krok A: Upravit `table_organization_licence.sql` (čtení `sysadmin_email`), rozšířit `table_link.sql` + `f_link_original.sql` + `generate_trgo.sql` o `ancestor_link`, vytvořit `table_hierarchy.sql`, `table_hierarchy_item.sql` a proceduru pro materializaci zděděných vazeb v `link`.
-  2. Krok B: Vytvořit znovupoužitelnou šablonu `abstract_page_tree.php` (se stromovým Master panelem, Collapse/Expand, Drag & Dropem a kontrolou uzamčení větve) a stránky pro správu `hierarchy` a `hierarchy_item`.
-  3. Krok C: Doplnit katalogové tabulky CRMM (`asset_class`, `threat`, `impact`, `scenario`, `countermeasure_state`, `countermeasure`) a uživatelské číselníky / hodnotící škály CRMM (`crmm_codetable`, `crmm_codetable_item` s `score_value`, `threshold_value`, `priority`, `svg_icon`, `color_code`).
-  4. Krok D: Evidence aktiv (`asset` se sloupcem `primary_asset_class` a vedlejšími třídami v `link`), hodnocení scénářů (`scenario_assessment`), implementace opatření (`countermeasure_implementation`), výpočetní procedury rizik a CSV balíček `csv_package_crmm`.
-  5. Zatím odložit: Rekonciliace změn systémových metadat (`0x00`) do overridů tenantů; flexibilní business-role na úrovni organizace; vyčištění mrtvého kódu (`p_create_standard_views.sql`, `HinkMSSQLLibrary.sql`, `html_classes.php`, `autoload.php`).
+  - Překlad sloupců `*_l` do angličtiny, systém upgradů (`changes_2026.sql`, verze `'26.10.29.0'`), `page_service_logbook.php`, `page_audit_login_session.php`, `rich_text.php`, asynchronní `loadDetailPanel()`, optimalizace dotazů přes `@table` proměnné a kompletní Etapa 1.
+  - Krok A Etapy 2/3: Vygenerováno 9 SQL souborů pro hierarchie a `ancestor_link` v `link` + aktualizován `entity_manager.php` a `entity_manager_write.php` (probíhá kontrola a nasazení).
+* V dalším kroku (Krok B až D – CRMM):
+  1. Ověřit seznam a nasazení 9 SQL souborů z Kroku A (zejména přegenerování indexu `uq_link_active_definition` se sloupcem `ancestor_link`).
+  2. Krok B: Vytvořit znovupoužitelnou šablonu `abstract_page_tree.php`, upravit `page_meta_menu.php` jako jejího potomka a vytvořit stránky `page_hierarchy.php` a `page_hierarchy_item.php`.
+  3. Krok C: Doplnit katalogové tabulky CRMM (`asset_class`, `threat`, `impact`, `scenario`, `countermeasure_state`, `countermeasure`) a uživatelské číselníky / hodnotící škály CRMM (`crmm_codetable`, `crmm_codetable_item`).
+  4. Krok D: Evidence aktiv (`asset`), hodnocení scénářů (`scenario_assessment`), implementace opatření (`countermeasure_implementation`), výpočetní procedury rizik a CSV balíček `csv_package_crmm`.
+  5. Zatím odložit: Rekonciliace změn systémových metadat (`0x00`) do overridů tenantů; flexibilní business-role na úrovni organizace; vyčištění mrtvého kódu.

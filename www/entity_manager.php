@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-29 16:40
+ * Verze: 2026-10-31 00:40
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – čtecí, metadatová a UI vrstva (STI Architektura).
  *       Zápisové a schvalovací metody jsou vyčleněny do traitu entity_manager_write
@@ -13,10 +13,10 @@
  * - Vkládá trait `entity_manager_write` (`entity_manager_write.php`).
  * - Využívá třídu `rich_text` (`rich_text.php`) pro vykreslování náhledu (Preview)
  *   a modálního editoru na popředí u sloupců s příznakem `is_html = 1` (Markdown / HTML).
- * - Využívá globální pole `$dbsession` (inicializované v `OsirisLib.php` přes `initsession()`).
+ * - Využívá globální pole `dbsession` (inicializované v `OsirisLib.php` přes `initsession()`).
  * - Využívá třídu `language_manager` (`language_manager.php`) a databázovou funkci
  *   `dbo.f_language_list()` s podmínkou `fallback_order < 1000`.
- * - Využívá globální `$phrase_manager` (`phrase_manager.php`) pro lokalizaci hlášek.
+ * - Využívá globální `phrase_manager` (`phrase_manager.php`) pro lokalizaci hlášek.
  * - Využívá databázové funkce z `OsirisLib.php` (`sqlrun`, `sqlfirstrow`, `sqlarray_simple`,
  *   `charliteral`, `guidliteral`, `intliteral`, `fatal_error`, `getinput`).
  * 
@@ -29,19 +29,25 @@
  *    `load_metadata()`, `fetch_rows()` i `render_dynamic_input()` materializované
  *    tabulkové proměnné (`DECLARE @t TABLE`) s primárními klíči, které umožňují
  *    provádět přímé Index Seek operace nad fyzickými tabulkami.
- * 3. Uzamčení klíčových sloupců z meta_original_keys
- *    Klíčové sloupce určující deterministický hash `original` lze zadat výhradně při
- *    zakládání nového záznamu (`update_guid === 'NEW'`); u existujících záznamů jsou uzamčeny.
+ * 3. Uzamčení klíčových sloupců z meta_original_keys a uzamčení hierarchií
+ *    Klíčové sloupce určující deterministický hash `original` (včetně 4složkového klíče
+ *    v tabulce `link`) lze zadat výhradně při zakládání nového záznamu (`update_guid === 'NEW'`).
+ *    U hierarchických tabulek se sloupcem `parent_uuid` metoda `is_hierarchy_node_locked()`
+ *    uzamyká přepodřizování (`parent_uuid`), rušení koncového příznaku (`is_leaf`) a mazání
+ *    uzlů, na nichž nebo na jejichž podřízených uzlech již existují platné vazby v `link`.
  * 
  * Změny:
- * 2026-10-29 16:40 - Načítání klíčových sloupců z meta_original_keys ($this->original_key_cols)
- *                    a jejich automatické uzamčení (readonly) v render_dynamic_input()
- *                    pro všechny již existující záznamy (mimo update_guid === 'NEW').
- *                  - Doplněna roletka <select> pro sloupec preferred_language z číselníku
- *                    podporovaných jazyků a zobecněna ochrana proti zacyklení (@descendants)
- *                    pro všechny stromové tabulky se sloupcem parent_uuid.
- * 2026-10-27 16:10 - Kompletní náhrada neefektivních CTE (;WITH) za indexované tabulkové
- *                    proměnné (DECLARE @t TABLE s PRIMARY KEY).
+ * 2026-10-31 00:40 - Sjednocení názvu vazebního sloupce `hierarchy` v tabulce
+ *                    `hierarchy_item` (místo `hierarchy_uuid`) v metodách
+ *                    `is_hierarchy_node_locked()`, `fetch_rows()` a `render_dynamic_input()`.
+ * 2026-10-30 23:55 - Rozšíření klíčových sloupců tabulky `link` na 4 složky
+ *                    (`link_def`, `from_object`, `to_object`, `ancestor_link`).
+ *                  - Doplněna metoda `is_hierarchy_node_locked()` a ochrana uzamčených
+ *                    uzlů hierarchie v `evaluate_remove_permission()` a `render_dynamic_input()`.
+ * 2026-10-29 16:40 - Načítání klíčových sloupců z meta_original_keys (original_key_cols)
+ *                    a jejich automatické uzamčení (readonly) v render_dynamic_input().
+ *                  - Doplněna roletka <select> pro sloupec preferred_language a ochrana
+ *                    proti zacyklení stromů (@descendants) pro sloupce parent_uuid.
  * =============================================================================
  */
 
@@ -66,6 +72,7 @@ class entity_manager {
 	private array $col_types = [];                                           // Datové typy fyzických sloupců
 	private array $col_nulls = [];                                           // Příznaky nullability fyzických sloupců
 	private array $original_key_cols = [];                                   // Klíčové sloupce z meta_original_keys (uzamčené mimo NEW)
+	private array $hierarchy_lock_cache = [];                                // Keš vyhodnocení uzamčení uzlů hierarchie v requestu
 
 	/**
 	 * Konstruktor třídy.
@@ -80,11 +87,6 @@ class entity_manager {
 
 	/**
 	 * Pomocná metoda pro překlad interních textů třídy entity_manager.
-	 *
-	 * @param string               $builtin_code    Kód fráze
-	 * @param string               $default_caption Výchozí český text
-	 * @param array<string, mixed> $vars            Proměnné pro interpolaci
-	 * @return string Přeložený text
 	 */
 	private function phrase(string $builtin_code, string $default_caption, array $vars = []): string { // Překlad interní fráze
 		global $phrase_manager;                                              // Globální instance správce frází
@@ -119,26 +121,117 @@ class entity_manager {
 	/**
 	 * Vrátí pole klíčových sloupců (z meta_original_keys nebo link), které definují
 	 * deterministický klíč original a nesmí se u existujících záznamů měnit.
-	 *
-	 * @return array<int, string>
 	 */
 	public function get_original_key_columns(): array {
 		return $this->original_key_cols;                                     // Vrácení seznamu klíčových sloupců
 	}
 
 	/**
+	 * Ověří, zda je daný uzel hierarchie uzamčen proti přepodřízení (změně parent_uuid),
+	 * zrušení příznaku koncového uzlu (is_leaf: 1 -> 0) nebo smazání (removed = 1),
+	 * protože na něm nebo na některém jeho podřízeném uzlu již existují platné vazby
+	 * v tabulce link (případně navázaná aktiva v tabulce asset).
+	 */
+	public function is_hierarchy_node_locked(string $node_original): bool {  // Kontrola uzamčení větve hierarchie
+		$clean_orig = strtolower(trim($node_original));                      // Normalizace UUID uzlu
+		if ($clean_orig === '' OR $clean_orig === 'new' OR $clean_orig === '0x00' OR $clean_orig === '00000000-0000-0000-0000-000000000000') { // Kořen nebo nový záznam
+			return false;                                                    // Nový nebo kořenový uzel není uzamčen vazbou
+		}
+		if (!$this->has_physical_column('parent_uuid') OR $this->storage_table === 'meta_menu') { // Mimo věcné hierarchie CRMM
+			return false;                                                    // Navigace menu se neuzamyká tabulkou link
+		}
+		if (isset($this->hierarchy_lock_cache[$clean_orig])) {               // Kontrola v lokální keši requestu
+			return $this->hierarchy_lock_cache[$clean_orig];                 // Vrácení kešovaného výsledku
+		}
+
+		$orig_sql = guidliteral($clean_orig);                                // Bezpečný SQL literál kontrolovaného uzlu
+		if ($orig_sql === 'NULL') {                                          // Neplatný formát UUID
+			return false;                                                    // Ukončení kontroly
+		}
+
+		$table = $this->storage_table;                                       // Fyzická tabulka hierarchie
+		$hierarchy_extra_sql = '';                                           // Doplňková kontrola pro hlavičku v tabulce hierarchy
+		if ($table === 'hierarchy') {                                        // Pokud kontrolujeme záznam v tabulce hierarchy
+			$hierarchy_extra_sql = "
+			IF @locked = 0 AND OBJECT_ID('hierarchy_item', 'U') IS NOT NULL
+			BEGIN
+				IF EXISTS (
+					SELECT 1
+					FROM hierarchy_item hi
+					JOIN @subtree s ON s.original = hi.hierarchy
+					JOIN [link] l ON (l.from_object = hi.original OR l.to_object = hi.original)
+					WHERE hi.record_type = 'A' AND hi.removed = 0
+					  AND l.record_type = 'A' AND l.removed = 0
+				)
+				SET @locked = 1;
+			END";                                                            // Kontrola vazeb na položkách dané hierarchie
+		}
+
+		$asset_extra_sql = '';                                               // Doplňková kontrola pro třídy aktiv v tabulce asset
+		if ($table === 'asset_class') {                                      // Pokud kontrolujeme uzel v tabulce asset_class
+			$asset_extra_sql = "
+			IF @locked = 0 AND OBJECT_ID('asset', 'U') IS NOT NULL AND COL_LENGTH('asset', 'primary_asset_class') IS NOT NULL
+			BEGIN
+				EXEC sp_executesql
+					N'IF EXISTS (SELECT 1 FROM asset a WHERE a.primary_asset_class = @p_orig AND a.record_type = ''A'' AND a.removed = 0) SET @p_lock = 1;',
+					N'@p_orig uniqueidentifier, @p_lock bit OUTPUT',
+					@p_orig = {$orig_sql},
+					@p_lock = @locked OUTPUT;
+			END";                                                            // Kontrola přímého odkazu z tabulky asset
+		}
+
+		$sql = "
+		SET NOCOUNT ON;
+		DECLARE @locked bit = 0;
+		DECLARE @subtree TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
+
+		INSERT INTO @subtree (original) VALUES ({$orig_sql});                -- Vložení výchozího uzlu do podstromu
+
+		WHILE @@ROWCOUNT > 0
+		BEGIN
+			INSERT INTO @subtree (original)
+			SELECT DISTINCT t.original
+			FROM [{$table}] t
+			JOIN @subtree s ON t.parent_uuid = s.original
+			WHERE t.record_type = 'A'
+			  AND t.removed = 0
+			  AND t.original IS NOT NULL
+			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = t.original);
+		END
+
+		IF OBJECT_ID('link', 'U') IS NOT NULL
+		BEGIN
+			IF EXISTS (
+				SELECT 1
+				FROM [link] l
+				JOIN @subtree s ON l.from_object = s.original
+				WHERE l.record_type = 'A' AND l.removed = 0
+			)
+			OR EXISTS (
+				SELECT 1
+				FROM [link] l
+				JOIN @subtree s ON l.to_object = s.original
+				WHERE l.record_type = 'A' AND l.removed = 0
+			)
+			BEGIN
+				SET @locked = 1;
+			END
+		END
+		{$hierarchy_extra_sql}
+		{$asset_extra_sql}
+
+		SELECT @locked AS is_locked;
+		";                                                                   // Dotaz na uzamčení větve přes @subtree a Index Seek v link
+
+		$row = sqlfirstrow($sql);                                            // Spuštění kontroly uzamčení
+		$is_locked = !empty($row['is_locked']);                              // Výsledek kontroly uzamčení
+		$this->hierarchy_lock_cache[$clean_orig] = $is_locked;               // Uložení do keše pro aktuální request
+		return $is_locked;                                                   // Vrácení stavu uzamčení větve
+	}
+
+	/**
 	 * Pomocná metoda: Vyhodnotí přeloženou textovou hodnotu sloupce pro daný 'original'
-	 * z hlavního pole 'A' ($a_rows) a podřízeného 2D pole 'L' ($l_rows) seřazeného dle fallback_order.
-	 *
-	 * @param string $orig        UUID originálu záznamu
-	 * @param string $col         Název překládaného sloupce
-	 * @param array  $a_rows      Hlavní pole záznamů 'A'/'D' indexované podle original
-	 * @param array  $anc_a_rows  Pole 'A' záznamů předků indexované podle original
-	 * @param array  $l_rows      Podřízené 2D pole 'L' záznamů: [original][language => row]
-	 * @param string $curr_lang   Aktuální jazyk relace (fallback_order = 1)
-	 * @param array  $lang_chain  Seznam jazyků s fallback_order < 1000 seřazený vzestupně
-	 * @param string $anc_key     Název sloupce odkazujícího na předka (např. 'ancestor' nebo 'ancestor_class')
-	 * @return string Výsledná přeložená hodnota
+	 * z hlavního pole 'A' (a_rows) a podřízeného 2D pole 'L' (l_rows) seřazeného dle fallback_order.
 	 */
 	private function resolve_field_from_arrays(
 		string $orig,                                                        // UUID záznamu
@@ -220,7 +313,7 @@ class entity_manager {
 		);
 		INSERT INTO @fl ([language], fallback_order)
 		SELECT [language], fallback_order
-		FROM dbo.f_language_list({$safe_lang})
+		FROM dbo.f_language_list({$safe_lang})                               -- Načtení fallback řetězce pro aktivní jazyk
 		WHERE fallback_order < 1000;
 
 		DECLARE @cls_orig uniqueidentifier = NULL;
@@ -233,10 +326,11 @@ class entity_manager {
 			@stg_orig = mo.original
 		FROM meta_class mc
 		JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
-		WHERE mc.class_name = {$safe_class}
+		WHERE mc.class_name = {$safe_class}                                  -- Vyhledání požadované logické třídy
 		  AND mc.record_type = 'A'
-		  AND mc.object_owner = 0x00
-		  AND mc.removed = 0;
+		  AND mc.object_owner IN (0x00, {$org_uuid})                         -- Podpora systémových i klientských tříd hierarchií
+		  AND mc.removed = 0
+		ORDER BY CASE WHEN mc.object_owner = {$org_uuid} THEN 0 ELSE 1 END;  -- Přednost má případná třída tenanta
 
 		IF @cls_orig IS NOT NULL
 		BEGIN
@@ -252,12 +346,12 @@ class entity_manager {
 			LEFT JOIN meta_class c_my
 				ON c_my.original = c.original
 				AND c_my.record_type = 'A'
-				AND c_my.object_owner = {$org_uuid}
+				AND c_my.object_owner = {$org_uuid}                          -- Případný override třídy u tenanta
 				AND c_my.object_owner <> 0x00
 				AND c_my.removed = 0
 			WHERE c.original = @cls_orig
 			  AND c.record_type = 'A'
-			  AND c.object_owner = 0x00
+			  AND c.object_owner IN (0x00, {$org_uuid})                      -- Systémový nebo tenantův hlavní záznam třídy
 			  AND c.removed = 0
 
 			UNION ALL
@@ -275,7 +369,7 @@ class entity_manager {
 			WHERE l.original = @cls_orig
 			  AND l.record_type = 'L'
 			  AND l.removed = 0
-			  AND l.object_owner IN (0x00, {$org_uuid})
+			  AND l.object_owner IN (0x00, {$org_uuid})                      -- Jazykové mutace systému a tenanta
 			ORDER BY row_kind ASC, fallback_order ASC, is_tenant_l DESC;
 		END
 		";                                                                   // Dotaz na metadata třídy přes Index Seek na @cls_orig
@@ -310,6 +404,15 @@ class entity_manager {
 		$this->storage_table = (string)$row['storage_table_name'];           // Název fyzické tabulky
 		$class_uuid = guidliteral($main_cls_orig);                           // SQL literál UUID třídy
 
+		// Pokud dynamická třída hierarchie (z tabulky hierarchy) nemá vlastní sloupce v meta_column, zdědíme sloupce její předkové třídy (hierarchy_item)
+		$col_parent_cls_uuid = $class_uuid;                                  // Výchozí třída pro načtení sloupců z meta_column
+		if (!empty($row['ancestor_class'])) {                                // Pokud má třída nastaveného předka ancestor_class
+			$has_own_cols = sqlfirstrow("SELECT TOP 1 1 AS ex FROM meta_column WHERE parent_class = {$class_uuid} AND record_type = 'A' AND removed = 0"); // Kontrola vlastních sloupců
+			if (empty($has_own_cols)) {                                      // Pokud nemá vlastní záznamy v meta_column
+				$col_parent_cls_uuid = guidliteral((string)$row['ancestor_class']); // Použijeme sloupce nadřazené třídy (např. hierarchy_item)
+			}
+		}
+
 		// 2. Načtení fyzického databázového schématu z v_syscolumns a klíčových sloupců z meta_original_keys
 		$safe_tab = charliteral($this->storage_table);                       // SQL literál fyzické tabulky
 		$syscols = sqlarray_simple("SELECT colname, typename, nulls FROM v_syscolumns WHERE tabname = {$safe_tab} AND iscomputed = 0 AND is_identity = 0"); // Fyzické sloupce
@@ -322,8 +425,8 @@ class entity_manager {
 			}
 		}
 
-		if ($this->storage_table === 'link') {                               // Speciální 3složkový klíč tabulky link
-			$this->original_key_cols = ['link_def', 'from_object', 'to_object']; // Klíčové sloupce vazby
+		if ($this->storage_table === 'link') {                               // Speciální 4složkový klíč tabulky link
+			$this->original_key_cols = ['link_def', 'from_object', 'to_object', 'ancestor_link']; // Klíčové sloupce vazby
 		} else {
 			$mok_row = sqlfirstrow("SELECT key1_column, key2_column FROM meta_original_keys WHERE table_name = {$safe_tab}"); // Dotaz na klíčové sloupce
 			if (!empty($mok_row)) {                                          // Pokud je tabulka v meta_original_keys
@@ -346,7 +449,7 @@ class entity_manager {
 		);
 		INSERT INTO @fl ([language], fallback_order)
 		SELECT [language], fallback_order
-		FROM dbo.f_language_list({$safe_lang})
+		FROM dbo.f_language_list({$safe_lang})                               -- Načtení fallback řetězce pro aktivní jazyk
 		WHERE fallback_order < 1000;
 
 		DECLARE @col_origs TABLE (
@@ -357,7 +460,7 @@ class entity_manager {
 		INSERT INTO @col_origs (original, row_kind)
 		SELECT c.original, 'A'
 		FROM meta_column c
-		WHERE c.parent_class = {$class_uuid}
+		WHERE c.parent_class = {$col_parent_cls_uuid}                        -- Sloupce cílové třídy nebo jejího předka
 		  AND c.record_type = 'A'
 		  AND c.object_owner = 0x00
 		  AND c.removed = 0;
@@ -390,7 +493,7 @@ class entity_manager {
 			ON l.original = co.original
 			AND l.record_type = 'L'
 			AND l.removed = 0
-			AND l.object_owner IN (0x00, {$org_uuid})
+			AND l.object_owner IN (0x00, {$org_uuid})                        -- Jazykové mutace systému a tenanta
 		JOIN @fl fl ON fl.[language] = l.[language]
 		ORDER BY row_kind ASC, parent_order ASC, sort_code ASC, fallback_order ASC, is_tenant_l DESC;
 		";                                                                   // Dotaz na sloupce, předky a překlady přes @col_origs
@@ -524,12 +627,6 @@ class entity_manager {
 	/**
 	 * Načte záznamy entity pomocí indexovaných tabulkových proměnných (@fl, @sy, @my, @dr, @mix, @target_origs)
 	 * a dvoupolového vyhodnocení překladů v PHP (zcela bez vícenásobně vyhodnocovaných ;WITH CTE).
-	 *
-	 * @param string $where          Volitelná WHERE podmínka (např. "m.original = ...")
-	 * @param string $order_by       Volitelné řazení
-	 * @param bool   $ignore_drafts  Pokud true, načte čistě schválená data ('A'/'L') bez konceptů ('D')
-	 * @param bool   $show_removed   Pokud true, zahrne i záznamy s removed = 1
-	 * @return array<int, array<string, mixed>> Pole výsledných řádků
 	 */
 	public function fetch_rows(string $where = '', string $order_by = '', bool $ignore_drafts = false, bool $show_removed = false): array { // Načtení záznamů přes @table
 		if (!$this->is_initialized) {                                        // Kontrola inicializace správce
@@ -612,11 +709,11 @@ class entity_manager {
 			? "(rc.object_owner = @org_uuid OR (@org_uuid = 0x00 AND rc.object_owner = rc.original))"
 			: "rc.object_owner = @org_uuid";                                 // Podmínka vlastníka pro koncepty @dr
 
-		// Protlačení filtrů na klíčové NOT NULL sloupce (original, parent_class, source_code) přímo do @sy, @my, @dr pro okamžitý Index Seek
+		// Protlačení filtrů na klíčové NOT NULL sloupce (original, parent_class, source_code, hierarchy) přímo do @sy, @my, @dr pro okamžitý Index Seek
 		$pushdown_rc_filter = '';                                            // Výchozí prázdný pushdown filtr
 		$trimmed_where = trim($where);                                       // Oříznutá vstupní podmínka WHERE
 		$m_push = [];                                                        // Pole zachycených skupin regulárního výrazu
-		if ($trimmed_where !== '' AND preg_match('/^m\.(original|parent_class|source_code)\s*=\s*(\'[0-9a-zA-Z_\-]+\'|0x00)$/i', $trimmed_where, $m_push)) { // Detekce klíčového filtru
+		if ($trimmed_where !== '' AND preg_match('/^m\.(original|parent_class|source_code|hierarchy)\s*=\s*(\'[0-9a-zA-Z_\-]+\'|0x00)$/i', $trimmed_where, $m_push)) { // Detekce klíčového filtru
 			$push_col = $m_push[1];                                          // Filtrovaný klíčový sloupec
 			$push_val = $m_push[2];                                          // Hodnota filtru
 			$pushdown_rc_filter = "AND rc.[{$push_col}] = {$push_val}";      // Přímé omezení pro Index Seek v primární tabulce
@@ -879,7 +976,7 @@ class entity_manager {
 			return [];                                                       // Vrácení prázdného pole
 		}
 
-		// 1. Rozdělení načtených dat na dvě pole: $a_rows (podle original) a $l_rows ([original][language])
+		// 1. Rozdělení načtených dat na dvě pole: a_rows (podle original) a l_rows ([original][language])
 		$a_rows = [];                                                        // První pole s indexem 'original' (záznamy 'A'/'D')
 		$anc_a_rows = [];                                                    // Pomocné pole předků 'A'
 		$l_rows = [];                                                        // Druhé 2D pole podřízené originálu s indexem jazyka
@@ -950,7 +1047,7 @@ class entity_manager {
 
 		$result = array_values($a_rows);                                     // Převod asociativního pole na indexované pole
 
-		// 3. Seřazení výsledného pole podle $order_by nebo podle sloupců Master panelu ($this->list_columns)
+		// 3. Seřazení výsledného pole podle order_by nebo podle sloupců Master panelu (list_columns)
 		$sort_cols = [];                                                     // Pole sloupců pro řazení: [sloupec => 'ASC'|'DESC']
 		if ($order_by !== '') {                                              // Pokud bylo zadáno explicitní řazení
 			foreach (explode(',', $order_by) as $ob_part) {                  // Rozpad klauzule ORDER BY
@@ -996,11 +1093,6 @@ class entity_manager {
 
 	/**
 	 * Načte jeden konkrétní záznam pomocí dvoupolového vyhodnocení v PHP.
-	 *
-	 * @param string $where         Podmínka WHERE (např. "m.original = ...")
-	 * @param bool   $ignore_drafts Pokud true, ignoruje koncepty ('D')
-	 * @param bool   $show_removed  Pokud true, zahrne i záznamy s removed = 1
-	 * @return array<string, mixed> Asociativní pole záznamu nebo prázdné pole []
 	 */
 	public function fetch_row(string $where = '', bool $ignore_drafts = false, bool $show_removed = false): array { // Načtení jednoho záznamu
 		$rows = $this->fetch_rows($where, '', $ignore_drafts, $show_removed); // Načtení záznamů přes fetch_rows
@@ -1010,10 +1102,6 @@ class entity_manager {
 	/**
 	 * Vyhodnotí, zda má přihlášený uživatel právo označit daný záznam (nebo jeho jazykovou mutaci)
 	 * jako zrušený (`removed = 1`) či jej obnovit (`removed = 0`), a vrátí případný důvod uzamčení.
-	 *
-	 * @param array $datarow Načtený datový řádek detailu
-	 * @param bool  $is_mine Zda záznam vlastní aktuální tenant
-	 * @return array{allowed: bool, is_lang_only: bool, reason: string}
 	 */
 	public function evaluate_remove_permission(array $datarow, bool $is_mine): array { // Vyhodnocení oprávnění pro removed
 		global $dbsession;                                                   // Globální kontext relace
@@ -1036,16 +1124,29 @@ class entity_manager {
 			return ['allowed' => false, 'is_lang_only' => true, 'reason' => $deny_l]; // Zákaz rušení cizího překladu
 		}
 
+		// 1b. Kontrola pro všechny hierarchické tabulky (zákaz zrušení uzlu 0x00, uzlu s aktivními potomky nebo uzamčené větve)
+		$orig_val_raw = (string)($datarow['original'] ?? '');                // Surové UUID originálu záznamu
+		$orig_sql = guidliteral($orig_val_raw);                              // SQL literál originálu záznamu
+		if ($orig_val_raw === '0x00' OR $orig_val_raw === '00000000-0000-0000-0000-000000000000') { // Kořenový záznam 0x00
+			$deny_root = $this->phrase('msg_remove_root_0x00_denied', 'Systémový kořenový záznam (0x00) nelze zrušit'); // Důvod zákazu
+			return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_root]; // Uzamčeno
+		}
+
+		if ($this->has_physical_column('parent_uuid') AND empty($datarow['removed']) AND $orig_sql !== 'NULL') { // Platný uzel hierarchie
+			$tab = $this->storage_table;                                     // Fyzická tabulka hierarchie
+			$ch_row = sqlfirstrow("SELECT TOP 1 1 AS has_ch FROM [{$tab}] WHERE parent_uuid = {$orig_sql} AND record_type = 'A' AND removed = 0"); // Kontrola aktivních potomků
+			if (!empty($ch_row)) {                                           // Uzel má aktivní podřízené položky
+				$deny_ch = $this->phrase('msg_remove_node_has_children', 'Uzel hierarchie nelze zrušit, dokud obsahuje aktivní podřízené položky'); // Důvod
+				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_ch]; // Uzamčeno
+			}
+			if ($this->is_hierarchy_node_locked($orig_val_raw)) {            // Kontrola aktivních vazeb na uzlu nebo podstromu
+				$deny_lk = $this->phrase('msg_remove_node_locked_by_links', 'Uzel hierarchie nelze zrušit, protože jsou na něj navázány platné záznamy'); // Důvod
+				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_lk]; // Uzamčeno
+			}
+		}
+
 		// 2. Práce v primárním jazyce u systémové organizace (0x00)
 		if ($is_sysadmin_org) {                                              // Systémová organizace 0x00
-			if ($this->storage_table === 'organization') {                   // Speciální ochrana pro tabulku organization
-				$orig_val = (string)($datarow['original'] ?? '');            // UUID originálu organizace
-				if ($orig_val === '0x00' OR $orig_val === '00000000-0000-0000-0000-000000000000') { // Systémová organizace 0x00
-					$deny_sys_org = $this->phrase('msg_remove_sys_org_denied', 'Systémovou master organizaci (0x00) nelze zrušit'); // Důvod
-					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_sys_org]; // Uzamčeno
-				}
-			}
-
 			if ($this->is_metadata_entity() AND $active_role !== 'D') {      // Metadata smí rušit jen Developer ('D')
 				$deny_d = $this->phrase('msg_remove_meta_only_dev', 'Systémová metadata smí rušit pouze vývojář (Developer)'); // Důvod pro roli
 				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_d]; // Uzamčeno mimo roli D
@@ -1097,17 +1198,9 @@ class entity_manager {
 				}
 			} elseif ($this->storage_table === 'meta_menu') {                // Kontrola tabulky meta_menu
 				$b_code = (string)($datarow['builtin_code'] ?? '');          // Kód položky menu
-				$orig_sql = guidliteral((string)($datarow['original'] ?? '')); // SQL literál originálu položky
 				if ($b_code === 'home') {                                    // Kořenovou položku Domů nelze zrušit
 					$deny_hm = $this->phrase('msg_remove_menu_home_denied', 'Kořenovou položku menu (home) nelze zrušit'); // Důvod
 					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_hm]; // Uzamčeno
-				}
-				if ($orig_sql !== 'NULL') {                                  // Kontrola, zda pod položkou nejsou aktivní podřízené položky
-					$ch_row = sqlfirstrow("SELECT TOP 1 builtin_code FROM meta_menu WHERE parent_uuid = {$orig_sql} AND record_type = 'A' AND removed = 0"); // Dotaz na potomky
-					if (!empty($ch_row)) {                                   // Položka má aktivní potomky
-						$deny_ch = $this->phrase('msg_remove_menu_has_children', 'Položku menu nelze zrušit, dokud obsahuje aktivní podřízené položky'); // Důvod
-						return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_ch]; // Uzamčeno
-					}
 				}
 			}
 
@@ -1126,11 +1219,6 @@ class entity_manager {
 	/**
 	 * Vykreslí samostatnou tabulku s checkboxem `removed` na konci detailního formuláře
 	 * včetně JS potvrzení `confirm(...)` při zaškrtnutí a informace o oprávnění.
-	 *
-	 * @param array $datarow        Načtený datový řádek detailu
-	 * @param bool  $is_mine        Příznak vlastnictví záznamu
-	 * @param bool  $force_readonly Příznak readonly režimu panelu
-	 * @return string HTML kód sekce pro zrušení / obnovení záznamu
 	 */
 	public function render_removed_section(array $datarow, bool $is_mine, bool $force_readonly = false): string { // Vykreslení sekce removed
 		$perm = $this->evaluate_remove_permission($datarow, $is_mine);       // Vyhodnocení oprávnění ke zrušení záznamu
@@ -1189,14 +1277,9 @@ HTML;
 	/**
 	 * Dynamický HTML generátor formulářových prvků na základě metadat v DB.
 	 * Zajišťuje vizuální vykreslení datových typů, maximálních délek, zamykání polí
-	 * (včetně uzamčení klíčových sloupců z meta_original_keys mimo update_guid === 'NEW')
-	 * i Preview náhledu s modálním Markdown / HTML editorem na popředí pro sloupce s is_html = 1.
-	 * 
-	 * @param string $column_name    Název sloupce (klíč v databázi, např. 'caption')
-	 * @param string $value          Aktuální hodnota k zobrazení
-	 * @param bool   $is_mine        Příznak, zda tenant vytvořil pro tento záznam svůj vlastní 'A' override
-	 * @param bool   $force_readonly Vynucení režimu pouze pro čtení z nadřazeného panelu
-	 * @return string Vygenerovaný HTML string (např. tag <input>, <select> nebo Preview box s modálem)
+	 * (včetně uzamčení klíčových sloupců z meta_original_keys mimo update_guid === 'NEW'
+	 * a uzamčení hierarchie při navázaných záznamech) i Preview náhledu s modálním
+	 * Markdown / HTML editorem na popředí pro sloupce s is_html = 1.
 	 */
 	public function render_dynamic_input(string $column_name, string $value, bool $is_mine = true, bool $force_readonly = false): string { // Vykreslení formulářového prvku
 		$meta = $this->get_column_meta($column_name);                        // Načtení metadat sloupce
@@ -1246,7 +1329,6 @@ HTML;
 		$is_readonly = $force_readonly;                                      // Výchozí stav uzamčení dle panelu
 		
 		// ZÁKAZ ZMĚNY KLÍČOVÝCH SLOUPCŮ PO VYTVOŘENÍ ZÁZNAMU:
-		// Klíčové sloupce z meta_original_keys (a link) lze zadat výhradně při zakládání nového záznamu (update_guid === 'NEW').
 		if ($curr_guid !== '' AND $curr_guid !== 'NEW' AND in_array($column_name, $this->original_key_cols, true)) { // Existující záznam
 			$is_readonly = true;                                             // Uzamčení klíčového sloupce u existujícího záznamu
 		} elseif (!empty($meta['is_computed'])) {                            // Kontrola vypočítávaného sloupce
@@ -1255,7 +1337,25 @@ HTML;
 			$is_readonly = true;                                             // Uzamčení funkčního atributu metadat
 		} elseif (!$is_mine AND !empty($meta['is_protected']) AND empty($meta['translate'])) { // Ochrana chráněných sloupců
 			$is_readonly = true;                                             // Chráněný systémový sloupec
-		} 
+		}
+
+		// UZAMČENÍ HIERARCHIE PROTI PŘEPODŘIZOVÁNÍ A ZMĚNĚ KONCOVÉHO UZLU:
+		if (!$is_readonly AND $curr_guid !== '' AND $curr_guid !== 'NEW') {  // Kontrola uzamčení u existujícího uzlu
+			if ($column_name === 'parent_uuid' AND $this->is_hierarchy_node_locked($curr_guid)) { // Přepodřizování uzamčené větve
+				$is_readonly = true;                                         // Uzamčení parent_uuid kvůli existujícím vazbám
+			} elseif ($column_name === 'is_leaf') {                          // Kontrola příznaku koncového uzlu
+				$curr_sql = guidliteral($curr_guid);                         // SQL literál aktuálního uzlu
+				if ($value === '1' AND $this->is_hierarchy_node_locked($curr_guid)) { // Koncový uzel s navázanými záznamy
+					$is_readonly = true;                                     // Nelze odškrtnout is_leaf u obsazeného listu
+				} elseif ($this->has_physical_column('parent_uuid') AND $curr_sql !== 'NULL') { // Kontrola, zda nemá podřízené uzly
+					$tab = $this->storage_table;                             // Fyzická tabulka hierarchie
+					$has_ch = sqlfirstrow("SELECT TOP 1 1 AS ex FROM [{$tab}] WHERE parent_uuid = {$curr_sql} AND record_type = 'A' AND removed = 0"); // Dotaz na potomky
+					if (!empty($has_ch)) {                                   // Uzel již obsahuje podřízené položky
+						$is_readonly = true;                                 // Složku s potomky nelze označit jako list (is_leaf = 1)
+					}
+				}
+			}
+		}
 		
 		$input_width = $meta['input_width'] ?: '100%';                       // Šířka vstupního pole
 		
@@ -1414,7 +1514,7 @@ HTML;
 				SELECT mc.class_name, mo.builtin_code AS ref_table
 				FROM meta_class mc
 				JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
-				WHERE mc.original = {$ref_class_uuid} AND mc.object_owner = 0x00 AND mc.record_type = 'A' AND mc.removed = 0
+				WHERE mc.original = {$ref_class_uuid} AND mc.object_owner IN (0x00, {$org_sql}) AND mc.record_type = 'A' AND mc.removed = 0
 			");                                                              // Dotaz na cílovou tabulku relace přes sqlfirstrow
 			if (!empty($rc_row)) {                                           // Pokud byla cílová třída nalezena
 				$ref_table = (string)$rc_row['ref_table'];                   // Fyzická tabulka cílové třídy
@@ -1443,7 +1543,7 @@ HTML;
 							  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
 							ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
 						) tr
-						WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0 {$exclude_self}
+						WHERE a.object_owner IN (0x00, {$org_sql}) AND a.record_type = 'A' AND a.removed = 0 {$exclude_self}
 						ORDER BY a.class_name;
 					");                                                      // Dotaz na třídy s překladem
 				} elseif ($ref_table === 'meta_object') {                    // Načtení lokalizovaných položek z meta_object
@@ -1497,6 +1597,17 @@ HTML;
 						? 'a.builtin_code'
 						: ($this->has_physical_column('shortname') ? 'a.shortname' : "''"); // Výraz pro technický kód uzlu
 					$sort_expr = $this->has_physical_column('sort_code') ? 'a.sort_code' : "''"; // Výraz pro řadicí kód uzlu
+					$leaf_filter = ($this->has_physical_column('is_leaf') AND $ref_table !== 'meta_menu')
+						? "AND (a.is_leaf = 0 OR a.original = " . guidliteral($value) . ")"
+						: "";                                                // Nadřízeným uzlem smí být pouze složka (is_leaf = 0)
+					$hier_scope_cond = '';                                   // Omezení na aktuální hierarchii pro hierarchy_item
+					if ($ref_table === 'hierarchy_item') {                   // V tabulce hierarchy_item filtrujeme rodiče ze stejné hierarchie
+						global $datarow;                                     // Načtený řádek detailu
+						$h_uuid = trim((string)($datarow['hierarchy'] ?? getinput('hierarchy'))); // UUID nadřazené hierarchie
+						if ($h_uuid !== '') {                                // Pokud je hierarchie známa
+							$hier_scope_cond = "AND a.hierarchy = " . guidliteral($h_uuid); // Omezení na stejnou hierarchii
+						}
+					}
 
 					$items = sqlarray_simple("
 						SET NOCOUNT ON;
@@ -1520,6 +1631,8 @@ HTML;
 							WHERE a.object_owner IN ({$org_sql}, 0x00)
 							  AND a.record_type = 'A'
 							  AND a.removed = 0
+							  {$leaf_filter}
+							  {$hier_scope_cond}
 						) x
 						WHERE x.rn = 1;
 
@@ -1603,7 +1716,6 @@ HTML;
 		}
 
 		// 5. Podpora formátovaného textu (Markdown / HTML) pro sloupce s příznakem is_html = 1:
-		//    V detailu zobrazuje kompaktní Preview náhled a na kliknutí na "Upravit" otevře modální editor na popředí.
 		if (!empty($meta['is_html'])) {                                      // Sloupec podporuje formátovaný text (Markdown / HTML)
 			if ($is_readonly) {                                              // V uzamčeném režimu vykreslíme bezpečný náhled bez tlačítka Upravit
 				$rendered_view = rich_text::render_formatted($value, true);  // Zformátovaný náhled se štítkem formátu
