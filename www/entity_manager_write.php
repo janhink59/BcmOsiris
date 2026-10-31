@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-31 00:40
+ * Verze: 2026-10-31 11:00
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  * Účel: Zápisová, klonovací a schvalovací (SSC) část třídy entity_manager.
@@ -34,13 +34,16 @@
  *    (promítnutí `hierarchy` do `meta_class` řeší databázový trigger `trg_hierarchy_sync_meta_class`).
  *
  * Změny:
+ * 2026-10-31 11:00 - Oprava Delta porovnání s $baseline_row v save_post_data():
+ *                    ukládání NULL při shodě s předlohou se uplatňuje výhradně
+ *                    u metadatových tabulek (meta_*) nebo při explicitním předkovi
+ *                    ancestor, aby u věcných tabulek nedocházelo ke kolizi s NULL
+ *                    hodnotami (např. přesun uzlu do kořene parent_uuid = NULL).
  * 2026-10-31 00:40 - Sjednocení názvu parametru `@root_link_original` při volání
  *                    procedury `dbo.p_sync_derived_links` v `run_post_save_hooks()`.
  * 2026-10-30 23:55 - Rozšíření volání `dbo.f_link_original` na 4 klíčové složky
  *                    (`link_def`, `from_object`, `to_object`, `ancestor_link`).
  *                  - Backendová ochrana uzamčených uzlů hierarchie v `save_post_data()`.
- * 2026-10-29 16:40 - V save_post_data() a approve_draft() doplněna ochrana klíčových
- *                    sloupců z get_original_key_columns() proti přepsání při UPDATE.
  * =============================================================================
  */
 
@@ -250,7 +253,7 @@ trait entity_manager_write {
 		$a_uuid_sql = '';                                                    // SQL literál primárního klíče 'A' záznamu
 		$a_lang_raw = $sess_lang_raw;                                        // Výchozí pro zcela nový záznam
 		$orig_owner_raw = $rec_owner_raw;                                    // Vlastník nalezeného záznamu
-		$baseline_row = [];                                                  // Předloha pro porovnání změn
+		$baseline_row = [];                                                  // Předloha pro porovnání změn (pouze pro metadata / ancestor)
 		$current_row = [];                                                   // Aktuální řádek v DB
 
 		if ($orig_guid_sql !== '') {                                         // Pokud upravujeme existující záznam
@@ -262,20 +265,22 @@ trait entity_manager_write {
 				$a_lang_raw = (string)$current_row['language'];              // Mateřský jazyk 'A' záznamu
 			}
 			
-			// Příprava dat pro Delta zápis (Override)
-			if (!$is_sysadmin_org AND !$is_self_owned) {                     // Běžný klientský tenant
-				$base = sqlfirstrow("SELECT TOP 1 * FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00"); // Dotaz na systémovou předlohu
-				if (!empty($base)) {                                         // Načtení systémové předlohy
-					$baseline_row = $base;                                   // Systémová předloha pro tenanta
-				}
-			} else {
-				$anc_val = $post_data['ancestor'] ?? ($current_row['ancestor'] ?? null); // Zjištění vazby na předka
-				if (!empty($anc_val) AND $anc_val !== "''" AND $anc_val !== 'NULL') { // Pokud má záznam předka
-					$anc_raw = trim((string)$anc_val, "'");                  // Očištění UUID předka
-					$anc_guid = guidliteral($anc_raw);                       // SQL literál UUID předka
-					$anc_row = sqlfirstrow("SELECT TOP 1 * FROM {$table} WHERE original = {$anc_guid} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00"); // Dotaz na předka
-					if (!empty($anc_row)) {                                  // Načtení dat předka
-						$baseline_row = $anc_row;                            // Předloha z globálního předka
+			// Příprava dat pro Delta zápis (NULL dědičnost se uplatňuje výhradně u metadat nebo při vazbě ancestor)
+			if ($is_meta_table) {                                            // Pouze pro metadatové tabulky (meta_column, meta_class)
+				if (!$is_sysadmin_org) {                                     // Klientský tenant upravující metadata
+					$base = sqlfirstrow("SELECT TOP 1 * FROM {$table} WHERE original = {$orig_guid_sql} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00"); // Dotaz na systémovou předlohu
+					if (!empty($base)) {                                     // Načtení systémové předlohy
+						$baseline_row = $base;                               // Systémová předloha pro tenanta
+					}
+				} else {
+					$anc_val = $post_data['ancestor'] ?? ($current_row['ancestor'] ?? null); // Zjištění vazby na předka v sys_global_columns
+					if (!empty($anc_val) AND $anc_val !== "''" AND $anc_val !== 'NULL') { // Pokud má záznam předka
+						$anc_raw = trim((string)$anc_val, "'");              // Očištění UUID předka
+						$anc_guid = guidliteral($anc_raw);                   // SQL literál UUID předka
+						$anc_row = sqlfirstrow("SELECT TOP 1 * FROM {$table} WHERE original = {$anc_guid} AND record_type = 'A' AND removed = 0 AND object_owner = 0x00"); // Dotaz na předka
+						if (!empty($anc_row)) {                              // Načtení dat předka
+							$baseline_row = $anc_row;                        // Předloha z globálního předka
+						}
 					}
 				}
 			}
@@ -330,13 +335,13 @@ trait entity_manager_write {
 				continue;                                                    // Odfiltrování chráněného sloupce
 			}
 
-			if (!empty($baseline_row) AND isset($baseline_row[$col])) {      // Porovnání s výchozí předlohou
+			if (!empty($baseline_row) AND isset($baseline_row[$col])) {      // Porovnání s výchozí předlohou u metadat
 				$baseline_val = $baseline_row[$col];                         // Hodnota v předloze
 				$compare_val = str_replace("''", "'", trim((string)$val, "'")); // Hodnota k porovnání bez vnějších apostrofů
 				
 				if (isset($this->col_nulls[$col]) AND $this->col_nulls[$col] !== 'not null') { // Pokud sloupec povoluje NULL
 					if ((string)$compare_val === (string)$baseline_val) {    // Shoda s hodnotou předlohy
-						$val = 'NULL';                                       // Shodná hodnota se uloží jako NULL pro dědění
+						$val = 'NULL';                                       // Shodná hodnota v metadatech se uloží jako NULL pro dědění
 					}
 				}
 			}
@@ -731,11 +736,11 @@ trait entity_manager_write {
 					$set_l[] = "[$col] = d.[$col]";                          // Převzetí hodnoty z návrhu d
 				}
 
-				$set_l[] = "approval_status = 'A'";                              // Schválený stav L záznamu
-				$set_l[] = "draft_author = 0x00";                                // Vynulování autora konceptu
-				$set_l[] = "approval_note = ''";                                 // Vyčištění poznámky
-				$set_l[] = "date_modified = GETDATE()";                          // Datum schválení překladu
-				$set_l[] = "who_modified = {$approver_session_sql}";             // Relace schvalovatele
+				$set_l[] = "approval_status = 'A'";                          // Schválený stav L záznamu
+				$set_l[] = "draft_author = 0x00";                            // Vynulování autora konceptu
+				$set_l[] = "approval_note = ''";                             // Vyčištění poznámky
+				$set_l[] = "date_modified = GETDATE()";                      // Datum schválení překladu
+				$set_l[] = "who_modified = {$approver_session_sql}";         // Relace schvalovatele
 
 				$sql_upd_l = "UPDATE l SET " . implode(', ', $set_l) . " FROM {$table} l JOIN {$table} d ON d.uuid = {$draft_uuid_sql} WHERE l.uuid = {$l_uuid_sql}"; // SQL UPDATE L
 				sqlrun($sql_upd_l);                                          // Provedení UPDATE L záznamu

@@ -3,11 +3,12 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-30 23:35
+ * Verze: 2026-10-31 11:00
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Plně respektuje STI architekturu – sloupce se vážou výhradně
- *       na logické třídy (meta_class), včetně odvozených tříd z tabulky hierarchy.
+ *       na logické třídy (meta_class), přičemž odvozené třídy z tabulky
+ *       hierarchy dědí definici sloupců ze svého předka (hierarchy_item).
  *
  * Vazby na okolí:
  * - Volána na konci sestavovací dávky databáze (final_scripts.sql).
@@ -19,14 +20,14 @@ GO
  *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
  *
  * Změny:
- * - 2026-10-30 23:35: Doplněna synchronizace registrovaných hierarchií (tabulka
- *   hierarchy) do meta_class, podpora sloupců pro odvozené STI třídy v sekcích
- *   4a/4b/4c, skrytí technických sloupců ancestor_link a is_derived v globálním
- *   slovníku a napojení sloupce hierarchy_item.hierarchy na třídu hierarchy.
- * - 2026-10-29 16:00: V sekci 5b doplněno napojení sloupce preferred_language
- *   na třídu language.
- * - 2026-10-26 13:55: V sekci 5 doplněno výchozí nastavení příznaku is_html = 1
- *   v globálním slovníku (sys_global_columns) pro dlouhé popisné sloupce.
+ * - 2026-10-31 11:00: V sekci 2d omezeno promítání hierarchií do meta_class
+ *   pouze na koncové hierarchie (is_leaf = 1) včetně symetrických 'L' záznamů.
+ *   V sekci 4 omezeno automatické generování sloupců v meta_column na bázové
+ *   třídy (ancestor_class IS NULL), aby odvozené STI hierarchie čistě dědily
+ *   sloupce z třídy hierarchy_item bez duplicit. Doplněny výchozí české popisky
+ *   pro sloupce is_leaf, multiple, leaf_only a hierarchy v sys_global_columns.
+ * - 2026-10-30 23:35: Skrytí technických sloupců ancestor_link a is_derived
+ *   v globálním slovníku a napojení sloupce hierarchy_item.hierarchy na hierarchy.
  * ============================================================================= */
 CREATE PROCEDURE p_fix_meta_column
 AS
@@ -263,23 +264,38 @@ BEGIN
 				AND mc.record_type = 'A'
 		);
 
-	-- 2d. Promítnutí registrovaných hierarchií z tabulky hierarchy do meta_class (STI nad hierarchy_item)
+	-- 2d. Promítnutí registrovaných koncových hierarchií (is_leaf = 1) z tabulky hierarchy do meta_class (STI nad hierarchy_item)
 	IF OBJECT_ID('hierarchy') IS NOT NULL
 	BEGIN
 		DECLARE @stg_hier_item uuid = dbo.f_generate_original('meta_object', @sys_owner, 'T', 'hierarchy_item');
 		DECLARE @cls_hier_item uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy_item', '');
 
+		-- Označení tříd v meta_class jako removed = 1, pokud byla odpovídající hierarchie změněna na složku (is_leaf = 0) nebo smazána
+		UPDATE mc
+		SET mc.removed = 1,
+			mc.date_modified = @batch_time
+		FROM meta_class mc
+		LEFT JOIN hierarchy h
+			ON h.builtin_code = mc.class_name
+			AND h.object_owner = mc.object_owner
+			AND h.record_type = 'A'
+		WHERE mc.storage_object = @stg_hier_item
+		  AND mc.class_name <> 'hierarchy_item'
+		  AND mc.removed = 0
+		  AND (h.uuid IS NULL OR h.removed = 1 OR h.is_leaf = 0);
+
+		-- Vložení chybějících 'A' záznamů do meta_class pouze pro koncové hierarchie (is_leaf = 1)
 		INSERT INTO meta_class (
 			uuid, object_owner, original, record_type, approval_status, [language],
 			inactive, removed, class_name, storage_object, ancestor_class, sort_code,
-			caption, caption_plural, description, helptext,
+			caption, caption_plural, description, helptext, svg_icon,
 			is_final, is_protected,
 			date_created, who_created, date_modified, who_modified
 		)
 		SELECT
 			x.cls_orig, h.object_owner, x.cls_orig, 'A', 'A', h.[language],
 			h.inactive, h.removed, h.builtin_code, @stg_hier_item, @cls_hier_item, LEFT(h.sort_code, 20),
-			NULLIF(h.caption, ''), NULLIF(h.caption, ''), NULLIF(h.description_text, ''), NULLIF(h.help_text, ''),
+			NULLIF(h.caption, ''), NULLIF(h.caption, ''), NULLIF(h.description_text, ''), NULLIF(h.help_text, ''), NULLIF(h.svg_icon, ''),
 			h.is_final, h.is_protected,
 			h.date_created, h.who_created, h.date_modified, h.who_modified
 		FROM hierarchy h
@@ -287,12 +303,51 @@ BEGIN
 			SELECT dbo.f_generate_original('meta_class', CAST(h.object_owner AS varchar(36)), h.builtin_code, '') AS cls_orig
 		) x
 		WHERE h.record_type = 'A'
+		  AND h.is_leaf = 1
+		  AND h.removed = 0
 		  AND h.builtin_code <> ''
 		  AND NOT EXISTS (
 			SELECT 1 FROM meta_class mc
 			WHERE mc.class_name = h.builtin_code
 			  AND mc.object_owner IN (0x00, h.object_owner)
 			  AND mc.record_type = 'A'
+		  );
+
+		-- Vložení chybějících symetrických 'L' záznamů do meta_class pro koncové hierarchie
+		INSERT INTO meta_class (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			inactive, removed, class_name, storage_object, ancestor_class, sort_code,
+			caption, caption_plural, description, helptext, svg_icon,
+			is_final, is_protected,
+			date_created, who_created, date_modified, who_modified
+		)
+		SELECT
+			NEWID(), hl.object_owner, mca.original, 'L', 'A', hl.[language],
+			mca.inactive, hl.removed, mca.class_name, @stg_hier_item, @cls_hier_item, mca.sort_code,
+			NULLIF(hl.caption, ''), NULLIF(hl.caption, ''), NULLIF(hl.description_text, ''), NULLIF(hl.help_text, ''), mca.svg_icon,
+			mca.is_final, mca.is_protected,
+			hl.date_created, hl.who_created, hl.date_modified, hl.who_modified
+		FROM hierarchy hl
+		JOIN hierarchy ha
+			ON ha.original = hl.original
+			AND ha.object_owner = hl.object_owner
+			AND ha.record_type = 'A'
+			AND ha.is_leaf = 1
+			AND ha.removed = 0
+		JOIN meta_class mca
+			ON mca.class_name = ha.builtin_code
+			AND mca.object_owner = ha.object_owner
+			AND mca.record_type = 'A'
+			AND mca.storage_object = @stg_hier_item
+			AND mca.removed = 0
+		WHERE hl.record_type = 'L'
+		  AND hl.removed = 0
+		  AND NOT EXISTS (
+			SELECT 1 FROM meta_class ex
+			WHERE ex.original = mca.original
+			  AND ex.object_owner = hl.object_owner
+			  AND ex.record_type = 'L'
+			  AND ex.[language] = hl.[language]
 		  );
 	END
 
@@ -412,8 +467,21 @@ BEGIN
 	);
 
 	-- -------------------------------------------------------------------------
-	-- 4. SYNCHRONIZACE LOKÁLNÍCH SLOUPCŮ (Vazba na logickou třídu vč. STI potomků)
+	-- 4. SYNCHRONIZACE LOKÁLNÍCH SLOUPCŮ (Pro bázové logické třídy ancestor_class IS NULL)
+	--    Odvozené STI třídy (např. jednotlivé hierarchie nad hierarchy_item) dědí
+	--    sloupce v entity_manager.php přímo ze své nadřazené třídy ancestor_class.
 	-- -------------------------------------------------------------------------
+	-- 4.0 Vyčištění případných duplicitních sloupců u odvozených STI tříd s ancestor_class IS NOT NULL
+	DELETE mc
+	FROM meta_column mc
+	JOIN meta_class mcl
+		ON mcl.original = mc.parent_class
+		AND mcl.object_owner = 0x00
+	WHERE mc.object_owner = 0x00
+	  AND mc.who_modified = 0x00
+	  AND mcl.ancestor_class IS NOT NULL
+	  AND mcl.class_name <> 'hierarchy_item';
+
 	-- 4a. Obnova dříve zrušených lokálních sloupců (removed: 1 -> 0), pokud jsou třída i fyzický sloupec opět platné
 	UPDATE mc
 	SET mc.removed = 0,
@@ -424,6 +492,7 @@ BEGIN
 		AND mcl.object_owner = 0x00
 		AND mcl.record_type = 'A'
 		AND mcl.removed = 0
+		AND mcl.ancestor_class IS NULL
 	JOIN meta_object mo
 		ON mo.original = mcl.storage_object
 		AND mo.object_owner = 0x00
@@ -468,7 +537,7 @@ BEGIN
 		)
 	  );
 
-	-- 4c. Vložení nových lokálních sloupců pro všechny platné logické třídy (primitivní i STI)
+	-- 4c. Vložení nových lokálních sloupců pro všechny platné bázové logické třídy (ancestor_class IS NULL)
 	INSERT INTO meta_column (
 		uuid, object_owner, original, record_type, approval_status,
 		parent_class, parent_order, column_name, 
@@ -505,6 +574,7 @@ BEGIN
 		AND mcl.record_type = 'A'
 		AND mcl.object_owner = 0x00
 		AND mcl.removed = 0
+		AND mcl.ancestor_class IS NULL
 	JOIN meta_column gc
 		ON gc.parent_class = @c_class
 		AND gc.column_name = la.colname
@@ -593,7 +663,7 @@ BEGIN
 	  AND who_modified = 0x00
 	  AND column_name IN ('description', 'description_text', 'helptext', 'help_text', 'note');
 
-	-- Výchozí česká lokalizace pro sloupec days_in_trash v globálním slovníku
+	-- Výchozí česká lokalizace pro vybrané systémové a hierarchické sloupce v globálním slovníku
 	UPDATE meta_column
 	SET caption = 'Dny v koši (days_in_trash)',
 		label = 'Dny v koši',
@@ -603,6 +673,46 @@ BEGIN
 	  AND object_owner = 0x00
 	  AND column_name = 'days_in_trash'
 	  AND (who_modified = 0x00 OR caption = 'days_in_trash');
+
+	UPDATE meta_column
+	SET caption = 'Koncový uzel (is_leaf)',
+		label = 'Koncový uzel (list)',
+		header = 'List',
+		helptext = 'Zaškrtněte u koncové položky (listu). Odškrtněte u vnitřního uzlu (složky), pod který se budou vkládat podřízené položky.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'is_leaf'
+	  AND (who_modified = 0x00 OR caption = 'is_leaf');
+
+	UPDATE meta_column
+	SET caption = 'Vícenásobné přiřazení (multiple)',
+		label = 'Povolit více položek (multiple)',
+		header = 'Více položek',
+		helptext = 'Určuje, zda cílový záznam může mít navázáno více položek z této hierarchie současně.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'multiple'
+	  AND (who_modified = 0x00 OR caption = 'multiple');
+
+	UPDATE meta_column
+	SET caption = 'Pouze koncové uzly (leaf_only)',
+		label = 'Vazby jen na koncové uzly (leaf_only)',
+		header = 'Jen listy',
+		helptext = 'Určuje, zda lze cílové záznamy navazovat výhradně na koncové uzly (is_leaf = 1) této hierarchie.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'leaf_only'
+	  AND (who_modified = 0x00 OR caption = 'leaf_only');
+
+	UPDATE meta_column
+	SET caption = 'Hierarchie (hierarchy)',
+		label = 'Nadřazená hierarchie',
+		header = 'Hierarchie',
+		helptext = 'Odkaz na definici sekundární hierarchie nebo stromu štítků (tagů) v tabulce hierarchy.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'hierarchy'
+	  AND (who_modified = 0x00 OR caption = 'hierarchy');
 
 	-- Skrytí čistě technických RAC/SSC, odvozených a binárních sloupců z automaticky generovaných formulářů
 	UPDATE meta_column
@@ -670,7 +780,7 @@ BEGIN
 		  AND referenced_class IS NULL;
 	END
 
-	-- Rekurzivní stromová vazba parent_uuid vždy odkazuje na vlastní logickou třídu (např. meta_menu, asset_class, hierarchy)
+	-- Rekurzivní stromová vazba parent_uuid vždy odkazuje na vlastní logickou třídu (např. meta_menu, asset_class, hierarchy, hierarchy_item)
 	UPDATE meta_column
 	SET referenced_class = parent_class
 	WHERE parent_class <> @c_class

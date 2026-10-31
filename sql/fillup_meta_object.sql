@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-29 16:00
+ * Verze: 2026-10-31 11:00
  * Soubor: fillup_meta_object.sql
  * Účel:   Idempotentní prvotní naplnění a registrace systémových PHP stránek
  *         a UI tříd (object_type = 'P', object_owner = 0x00) do tabulky meta_object
@@ -9,12 +9,10 @@
  *           a funkce dbo.f_generate_original (f_generate_original.sql).
  *         - Slouží jako podklad pro navigační vazby target_object v fillup_meta_menu.sql
  *           a pro kontrolu oprávnění v abstract_page::check_system_role_access().
- * Změny:  - 2026-10-29 16:00: Stránkám page_organization a page_organization_licence
- *           změněna system_role z 'S' na 'A' (OrgAdmin v page_organization spravuje
- *           nastavení své organizace; v page_organization_licence mohou organizace
- *           s úrovní Enterprise = 40 a Developer = 255 vystavovat licence).
- *         - 2026-10-26 10:45: Doplněna registrace stránky page_audit_login_session
- *           (system_role = 'A').
+ * Změny:  - 2026-10-31 11:00: Doplněna registrace šablony abstract_page_tree
+ *           a stránek page_hierarchy a page_hierarchy_item (system_role = 'U').
+ *         - 2026-10-29 16:00: Stránkám page_organization a page_organization_licence
+ *           změněna system_role z 'S' na 'A'.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -49,6 +47,7 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('global_phrase', 'Globální fráze systému', 'Třída a kontejner pro celosystémové textové fráze a sdílené popisky', 'U'),
 ('abstract_page', 'Základní šablona stránky', 'Abstraktní předek všech stránek zajišťující hlavičku, kontext a ochranu formulářů', 'U'),
 ('abstract_page_master_detail', 'Šablona Master-Detail', 'Abstraktní dvoupanelová šablona pro správu entit', 'U'),
+('abstract_page_tree', 'Stromová šablona Master-Detail', 'Abstraktní dvoupanelová šablona pro správu hierarchických stromových struktur s podporou Drag & Drop', 'U'),
 ('abstract_button', 'Komponenta tlačítka', 'Základní třída pro vykreslování tlačítek s ikonou a tooltipem', 'U'),
 ('abstract_csv_package', 'Abstraktní CSV/TSV balíček', 'Základní třída pro export a dvoufázový import víceblokových CSV/TSV balíčků', 'U'),
 ('csv_package_metadata', 'CSV/TSV balíček systémových metadat', 'Definice a filtry pro přenos systémových metadat mezi instancemi', 'U'),
@@ -56,6 +55,8 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('menu_manager', 'Správce navigace', 'Třída pro sestavení a vykreslení drobečkové navigace a menu', 'U'),
 ('entity_manager', 'Správce logických entit', 'Dynamický generátor SQL dotazů, seznamů a formulářů podle metadat', 'U'),
 ('page_main', 'Hlavní panel', 'Úvodní rozcestník aplikace po přihlášení', 'U'),
+('page_hierarchy', 'Sekundární hierarchie a štítky (Tagy)', 'Správa registru sekundárních hierarchií a stromů štítků (tagů)', 'U'),
+('page_hierarchy_item', 'Položky sekundárních hierarchií', 'Správa uzlů a položek jednotlivých sekundárních hierarchií a štítků', 'U'),
 ('page_meta_class', 'Logické třídy (Objekty)', 'Správa logických entit, jejich vlastností a překladů', 'U'),
 ('page_meta_column', 'Sloupce metadat', 'Správa definic sloupců, formulářových prvků a překladů', 'U'),
 ('page_meta_phrase', 'Textové fráze a překlady', 'Správa textových frází, tlačítek a jazykových mutací', 'U'),

@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-29 16:00
+ * Verze: 2026-10-31 11:00
  * Soubor: fillup_meta_menu.sql
  * Účel:   Prvotní idempotentní naplnění systémové navigace (object_owner = 0x00)
  *         v tabulce meta_menu s rozestupy sort_code po desítkách ('010', '020'...).
@@ -13,17 +13,19 @@
  *           ze starých 2znakových kódů (LEN(sort_code) = 2) na 3znakové desítky.
  *         - Technické sloupce v jazykových 'L' záznamech synchronizuje podle 'A'
  *           vždy bez ohledu na l.who_modified.
- * Změny:  - 2026-10-29 16:00: Položkám menu organization a organization_licence
- *           změněna system_role z 'S' na 'A', aby OrgAdmin měl přístup k nastavení
- *           své organizace a u licencí Enterprise/Developer i ke správě licencí.
- *         - 2026-10-26 10:45: Do složky Systémová administrace (admin_folder)
- *           přidána položka audit_login_session (sort_code = '070', system_role = 'A').
+ * Změny:  - 2026-10-31 11:00: Pod kořenem home založena nová hlavní složka
+ *           crmm_folder ('Analýza a řízení rizik (CRMM)', sort_code = '010')
+ *           a v ní položky hierarchy ('010') a hierarchy_item ('020').
+ *         - 2026-10-29 16:00: Položkám menu organization a organization_licence
+ *           změněna system_role z 'S' na 'A'.
  * ============================================================================= */
 
 DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 
 -- 1. Zjištění ID cílových stránek (meta_object.original) se sjednoceným prefixem page_
 DECLARE @tgt_main uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_main');
+DECLARE @tgt_hierarchy uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_hierarchy');
+DECLARE @tgt_hierarchy_item uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_hierarchy_item');
 DECLARE @tgt_meta_class uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_class');
 DECLARE @tgt_meta_column uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_column');
 DECLARE @tgt_meta_phrase uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_phrase');
@@ -40,6 +42,9 @@ DECLARE @tgt_audit_login uuid = dbo.f_generate_original('meta_object', @sys_owne
 
 -- 2. Příprava originálů menu uzlů pro vzájemné provázání (parent_uuid)
 DECLARE @mnu_home uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'home', '');
+DECLARE @mnu_crmm_folder uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'crmm_folder', '');
+DECLARE @mnu_hierarchy uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'hierarchy', '');
+DECLARE @mnu_hierarchy_item uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'hierarchy_item', '');
 DECLARE @mnu_meta_folder uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'metadata_folder', '');
 DECLARE @mnu_admin uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'admin_folder', '');
 DECLARE @mnu_meta_class uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_class', '');
@@ -65,6 +70,11 @@ DECLARE @init_menu TABLE (
 INSERT INTO @init_menu VALUES
 -- Kořenová položka (úroveň 0)
 (@mnu_home, NULL, '000', 'home', 'Domů', 'Úvodní rozcestník aplikace', @tgt_main, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>'),
+
+-- 1. úroveň: Složka "Analýza a řízení rizik (CRMM)" (sort_code = '010') a její podřízené položky po desítkách
+(@mnu_crmm_folder, @mnu_home, '010', 'crmm_folder', 'Analýza a řízení rizik (CRMM)', 'Katalogy tříd aktiv, hrozeb, dopadů, scénářů, sekundárních hierarchií, štítků a hodnocení rizik', NULL, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>'),
+(@mnu_hierarchy, @mnu_crmm_folder, '010', 'hierarchy', 'Sekundární hierarchie a štítky', 'Správa registru sekundárních hierarchií, klasifikačních stromů a štítků (tagů)', @tgt_hierarchy, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 11V3h-7v3H9V3H2v8h7V8h2v10h4v3h7v-8h-7v3h-2V8h2v3z"/></svg>'),
+(@mnu_hierarchy_item, @mnu_crmm_folder, '020', 'hierarchy_item', 'Položky sekundárních hierarchií', 'Správa uzlů a koncových položek jednotlivých sekundárních hierarchií a štítků', @tgt_hierarchy_item, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>'),
 
 -- 1. úroveň: Složka "Práce s metadaty" (sort_code = '080') a její podřízené položky po desítkách
 (@mnu_meta_folder, @mnu_home, '080', 'metadata_folder', 'Práce s metadaty', 'Správa logických tříd, sloupců, textových frází, navigace a vývojářských balíčků metadat', NULL, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3C7.58 3 4 4.79 4 7s3.58 4 8 4 8-1.79 8-4-3.58-4-8-4zM4 9v3c0 2.21 3.58 4 8 4s8-1.79 8-4V9c0 2.21-3.58 4-8 4s-8-1.79-8-4zm0 5v3c0 2.21 3.58 4 8 4s8-1.79 8-4v-3c0 2.21-3.58 4-8 4s-8-1.79-8-4z"/></svg>'),

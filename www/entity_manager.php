@@ -1,15 +1,16 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-31 00:40
+ * Verze: 2026-10-31 11:00
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – čtecí, metadatová a UI vrstva (STI Architektura).
  *       Zápisové a schvalovací metody jsou vyčleněny do traitu entity_manager_write
  *       v souboru entity_manager_write.php.
  * 
  * VAZBY NA OKOLÍ:
- * - Instancován z potomků `abstract_page_master_detail` (v metodě `render()`),
- *   `page_meta_column.php` a z univerzální schvalovací stránky `page_approval.php`.
+ * - Instancován z potomků `abstract_page_master_detail` / `abstract_page_tree`
+ *   (v metodě `render()`), `page_meta_column.php`, `page_hierarchy_item.php`
+ *   a z univerzální schvalovací stránky `page_approval.php`.
  * - Vkládá trait `entity_manager_write` (`entity_manager_write.php`).
  * - Využívá třídu `rich_text` (`rich_text.php`) pro vykreslování náhledu (Preview)
  *   a modálního editoru na popředí u sloupců s příznakem `is_html = 1` (Markdown / HTML).
@@ -28,7 +29,7 @@
  *    Místo nabalování vícenásobně odkazovaných CTE (;WITH) využívají metody
  *    `load_metadata()`, `fetch_rows()` i `render_dynamic_input()` materializované
  *    tabulkové proměnné (`DECLARE @t TABLE`) s primárními klíči, které umožňují
- *    provádět přímé Index Seek operace nad fyzickými tabulkami.
+ *    provádět přímý Index Seek operace nad fyzickými tabulkami.
  * 3. Uzamčení klíčových sloupců z meta_original_keys a uzamčení hierarchií
  *    Klíčové sloupce určující deterministický hash `original` (včetně 4složkového klíče
  *    v tabulce `link`) lze zadat výhradně při zakládání nového záznamu (`update_guid === 'NEW'`).
@@ -37,17 +38,15 @@
  *    uzlů, na nichž nebo na jejichž podřízených uzlech již existují platné vazby v `link`.
  * 
  * Změny:
- * 2026-10-31 00:40 - Sjednocení názvu vazebního sloupce `hierarchy` v tabulce
- *                    `hierarchy_item` (místo `hierarchy_uuid`) v metodách
- *                    `is_hierarchy_node_locked()`, `fetch_rows()` a `render_dynamic_input()`.
- * 2026-10-30 23:55 - Rozšíření klíčových sloupců tabulky `link` na 4 složky
- *                    (`link_def`, `from_object`, `to_object`, `ancestor_link`).
- *                  - Doplněna metoda `is_hierarchy_node_locked()` a ochrana uzamčených
- *                    uzlů hierarchie v `evaluate_remove_permission()` a `render_dynamic_input()`.
- * 2026-10-29 16:40 - Načítání klíčových sloupců z meta_original_keys (original_key_cols)
- *                    a jejich automatické uzamčení (readonly) v render_dynamic_input().
- *                  - Doplněna roletka <select> pro sloupec preferred_language a ochrana
- *                    proti zacyklení stromů (@descendants) pro sloupce parent_uuid.
+ * 2026-10-31 11:00 - V `fetch_rows()` omezen výraz `COALESCE(m.[col], o.[col])` u nechráněných
+ *                    sloupců pouze na metadatové tabulky (`meta_*`), aby u věcných tabulek
+ *                    mohl tenant v overridu nastavit `parent_uuid = NULL` (přesun do kořene)
+ *                    nebo `valid_to = NULL` bez nechtěného návratu systémové hodnoty `o`.
+ *                  - V `render_dynamic_input()` doplněn filtr `a.is_leaf = 1` pro výběr
+ *                    nadřízené hierarchie (`column_name === 'hierarchy'`) v `hierarchy_item`.
+ * 2026-10-31 00:40 - Sjednocení názvu vazebního sloupce `hierarchy` v tabulce `hierarchy_item`.
+ * 2026-10-30 23:55 - Rozšíření klíčových sloupců tabulky `link` na 4 složky a doplnění
+ *                    metody `is_hierarchy_node_locked()`.
  * =============================================================================
  */
 
@@ -404,7 +403,7 @@ class entity_manager {
 		$this->storage_table = (string)$row['storage_table_name'];           // Název fyzické tabulky
 		$class_uuid = guidliteral($main_cls_orig);                           // SQL literál UUID třídy
 
-		// Pokud dynamická třída hierarchie (z tabulky hierarchy) nemá vlastní sloupce v meta_column, zdědíme sloupce její předkové třídy (hierarchy_item)
+		// Pokud odvozená STI třída (např. hierarchie z tabulky hierarchy) nemá vlastní sloupce v meta_column, zdědíme sloupce její předkové třídy (hierarchy_item)
 		$col_parent_cls_uuid = $class_uuid;                                  // Výchozí třída pro načtení sloupců z meta_column
 		if (!empty($row['ancestor_class'])) {                                // Pokud má třída nastaveného předka ancestor_class
 			$has_own_cols = sqlfirstrow("SELECT TOP 1 1 AS ex FROM meta_column WHERE parent_class = {$class_uuid} AND record_type = 'A' AND removed = 0"); // Kontrola vlastních sloupců
@@ -636,6 +635,7 @@ class entity_manager {
 		}
 
 		$table = $this->storage_table;                                       // Fyzická tabulka entity
+		$is_meta_tab = $this->is_metadata_entity();                          // Zda jde o metadatovou tabulku (meta_*)
 		$is_self_owned = ($table === 'organization');                        // V tabulce organization vlastní záznamy samy sebe
 		$curr_lang = $this->lang_manager->get_current_language();            // Aktuální jazyk relace
 		$safe_lang = charliteral($curr_lang, 2);                             // SQL literál aktuálního jazyka
@@ -678,8 +678,10 @@ class entity_manager {
 
 			if ($is_prot) {                                                  // Chráněný sloupec (vynucení systémového originálu o)
 				$expr_a = "CASE WHEN m.record_type = 'D' THEN COALESCE(m.[{$colname}], o.[{$colname}]) ELSE COALESCE(o.[{$colname}], m.[{$colname}]) END AS [{$colname}]"; // Výraz
+			} elseif ($is_meta_tab) {                                        // U metadat znamená NULL v overridu dědění ze systémového záznamu o
+				$expr_a = "COALESCE(m.[{$colname}], o.[{$colname}]) AS [{$colname}]"; // Fallback na systémový originál při NULL v meta_*
 			} else {
-				$expr_a = "COALESCE(m.[{$colname}], o.[{$colname}]) AS [{$colname}]"; // Fallback na systémový originál při NULL
+				$expr_a = "m.[{$colname}] AS [{$colname}]";                  // U věcných tabulek má m.[col] (vč. NULL u parent_uuid) přímou platnost
 			}
 			$select_a_cols[] = $expr_a;                                      // Přidání do SELECTu 'A'
 		}
@@ -1023,13 +1025,13 @@ class entity_manager {
 				}
 			}
 
-			// B) Dědění netextových NULL vlastností od předka (pokud má záznam předka)
-			if ($anc_col_name !== '') {                                      // Pokud tabulka podporuje předka
+			// B) Dědění netextových NULL vlastností od předka (pouze u metadatových tabulek s předkem)
+			if ($is_meta_tab AND $anc_col_name !== '') {                     // Pouze pokud jde o tabulku metadat s předkem
 				$anc_id = (string)($a_row[$anc_col_name] ?? '');             // UUID předka
 				$anc_rec = ($anc_id !== '') ? ($anc_a_rows[$anc_id] ?? $a_rows[$anc_id] ?? null) : null; // Záznam předka
 				if ($anc_rec !== null) {                                     // Pokud byl předek nalezen
 					foreach ($this->columns_meta as $cn => $cm) {            // Průchod sloupci
-						if (empty($cm['translate']) AND !in_array($cn, $meta_columns_list, true)) { // Nepřekládané byznys sloupce
+						if (empty($cm['translate']) AND !in_array($cn, $meta_columns_list, true)) { // Nepřekládané sloupce
 							if ($a_row[$cn] === null AND isset($anc_rec[$cn])) { // Dědění při NULL
 								$a_row[$cn] = $anc_rec[$cn];                 // Převzetí hodnoty od předka
 							}
@@ -1331,6 +1333,8 @@ HTML;
 		// ZÁKAZ ZMĚNY KLÍČOVÝCH SLOUPCŮ PO VYTVOŘENÍ ZÁZNAMU:
 		if ($curr_guid !== '' AND $curr_guid !== 'NEW' AND in_array($column_name, $this->original_key_cols, true)) { // Existující záznam
 			$is_readonly = true;                                             // Uzamčení klíčového sloupce u existujícího záznamu
+		} elseif ($this->storage_table === 'hierarchy_item' AND $column_name === 'hierarchy' AND $value !== '') { // Předvyplněná hierarchie v hierarchy_item
+			$is_readonly = true;                                             // Uzamčení nadřízené hierarchie proti nechtěnému přepnutí
 		} elseif (!empty($meta['is_computed'])) {                            // Kontrola vypočítávaného sloupce
 			$is_readonly = true;                                             // Vypočítávaný sloupec nelze měnit
 		} elseif ($this->is_metadata_entity() AND $active_role !== 'D' AND empty($meta['translate'])) { // Ochrana metadat mimo roli D
@@ -1638,7 +1642,7 @@ HTML;
 
 						DECLARE @descendants TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
 						INSERT INTO @descendants (original)
-						SELECT original FROM @valid_nodes WHERE original = {$curr_sql};
+						SELECT original FROM @valid_nodes WHERE original = {$curr_sql} AND {$curr_sql} <> 0x00;
 
 						WHILE @@ROWCOUNT > 0
 						BEGIN
@@ -1666,6 +1670,10 @@ HTML;
 						ORDER BY CASE WHEN r.parent_uuid IS NULL THEN 0 ELSE 1 END, r.sort_code, r.code_col, caption;
 					");                                                      // Dotaz na nadřízené uzly stromu bez vlastního podstromu
 				} else {
+					$extra_ref_cond = '';                                    // Doplňková podmínka pro specifické relace
+					if ($ref_table === 'hierarchy' AND $column_name === 'hierarchy') { // Výběr nadřízené hierarchie pro hierarchy_item
+						$extra_ref_cond = "AND (a.is_leaf = 1 OR a.original = " . guidliteral($value) . ")"; // Položky patří jen do koncové hierarchie
+					}
 					$items = sqlarray_simple("
 						SET NOCOUNT ON;
 						DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
@@ -1680,6 +1688,7 @@ HTML;
 							  AND a.record_type = 'A'
 							  AND a.removed = 0
 							  {$exclude_self}
+							  {$extra_ref_cond}
 						) r
 						OUTER APPLY (
 							SELECT TOP 1 l.caption

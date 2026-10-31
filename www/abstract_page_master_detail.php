@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-27 16:10
+ * Verze: 2026-10-31 11:30
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -31,6 +31,9 @@
  *      HTML pravého panelu `.md-detail`, vykoná případné vnořené `<script>` tagy
  *      a upraví URL přes `history.pushState()`. Levý panel se vůbec nepřekresluje
  *      a jeho scroll ani filtr se nepohnou.
+ *    - Pokud byl v levém stromu proveden neuložený přesun Drag & Drop (`window.isTreeDomDirty`),
+ *      při zahození změn se automaticky zavolá `refreshMasterPanel()`, který vrátí strom
+ *      do uloženého databázového stavu.
  *    - Text filtru `#master-filter` se automaticky ukládá do `sessionStorage`
  *      a obnovuje i po plném uložení formuláře (POST -> PRG redirect).
  *
@@ -55,6 +58,12 @@
  *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
  *
  * Změny:
+ * 2026-10-31 11:30 - Obnoven kompletní architektonický komentář v záhlaví souboru.
+ *                  - Do kontextových parametrů (`get_context_url_suffix()`,
+ *                    `get_context_hidden_inputs()`, `getMasterFilterStorageKey()`)
+ *                    doplněn parametr `hierarchy` pro držení kontextu v `page_hierarchy_item`.
+ *                  - Doplněna obnova levého panelu (`refreshMasterPanel()`) při zahození
+ *                    neuloženého Drag & Drop přesunu (`window.isTreeDomDirty`).
  * 2026-10-27 16:10 - Doplněno asynchronní načítání pravého detailu (ajax_panel=detail,
  *                    loadDetailPanel) s podporou update_guid i draft_uuid, automatické
  *                    vykonání inline <script> tagů v detailu, delegované AJAX zachycení
@@ -107,14 +116,14 @@ abstract class abstract_page_master_detail extends abstract_page {
 	}
 
 	/**
-	 * Centralizované získání URL parametrů pro udržení kontextu (např. vazba na předka).
+	 * Centralizované získání URL parametrů pro udržení kontextu (např. vazba na předka nebo hierarchii).
 	 * Zabraňuje duplicitě kódu při generování odkazů a přesměrování.
 	 * 
 	 * @return string Řetězec parametrů pro URL (např. '&parent_class=123')
 	 */
 	protected function get_context_url_suffix(): string {
 		$url_suffix = '';                                                    // Výchozí prázdný přívažek URL
-		foreach (['parent_object', 'parent_class', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
+		foreach (['parent_object', 'parent_class', 'hierarchy', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
 			$val = (string)getinput($ctx_param);                             // Hodnota kontextového parametru
 			if ($val !== '') {                                               // Připojení neprázdného parametru
 				$url_suffix .= "&{$ctx_param}=" . urlencode($val);           // Připojení kódovaného parametru
@@ -128,7 +137,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 */
 	protected function get_context_hidden_inputs(): string {
 		$hidden_inputs = '';                                                 // Výchozí prázdný řetězec inputů
-		foreach (['parent_object', 'parent_class', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
+		foreach (['parent_object', 'parent_class', 'hierarchy', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
 			$val = (string)getinput($ctx_param);                             // Hodnota kontextového parametru
 			if ($val !== '') {                                               // Vytvoření skrytého pole pro parametr
 				$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">"; // Skryté pole
@@ -276,14 +285,17 @@ HTML;
 		</div>
 		
 		<script>
+			window.isTreeDomDirty = false;
+
 			// Sestavení unikátního klíče v sessionStorage pro uchování filtru levého panelu
 			function getMasterFilterStorageKey() {
 				const u = new URL(window.location.href);
 				const page = u.searchParams.get('page') || 'default';
 				const pCls = u.searchParams.get('parent_class') || '';
 				const pObj = u.searchParams.get('parent_object') || '';
+				const hier = u.searchParams.get('hierarchy') || '';
 				const fCls = u.searchParams.get('filter_class') || '';
-				return 'bcm_mf_' + page + '_' + pCls + '_' + pObj + '_' + fCls;
+				return 'bcm_mf_' + page + '_' + pCls + '_' + pObj + '_' + hier + '_' + fCls;
 			}
 
 			// Aplikuje text filtru #master-filter na řádky v #master-list
@@ -401,11 +413,19 @@ HTML;
 				if (typeof pushHistory === 'undefined') {
 					pushHistory = true;
 				}
+				const cleanUrlObj = new URL(targetUrl, window.location.href);
+				const hasDndParams = cleanUrlObj.searchParams.has('dnd_sort');
+
 				if (typeof isFormDirty !== 'undefined' && isFormDirty) {
 					if (!confirm('{$unsaved_confirm}')) {
 						return false;
 					}
 					isFormDirty = false;
+				}
+
+				if (window.isTreeDomDirty && !hasDndParams) {
+					window.isTreeDomDirty = false;
+					refreshMasterPanel();
 				}
 
 				const detailContainer = document.getElementById('md-detail-container');
@@ -414,7 +434,6 @@ HTML;
 					return false;
 				}
 
-				const cleanUrlObj = new URL(targetUrl, window.location.href);
 				cleanUrlObj.searchParams.delete('ajax_panel');
 
 				const fetchUrlObj = new URL(cleanUrlObj.toString());
@@ -436,11 +455,14 @@ HTML;
 					detailContainer.innerHTML = html;
 					detailContainer.classList.remove('md-loading');
 					executeDetailScripts(detailContainer);
-					if (typeof isFormDirty !== 'undefined') {
+					if (typeof isFormDirty !== 'undefined' && !hasDndParams) {
 						isFormDirty = false;
 					}
 					if (pushHistory) {
-						window.history.pushState({ mdUrl: cleanUrlObj.toString() }, '', cleanUrlObj.toString());
+						const histUrlObj = new URL(cleanUrlObj.toString());
+						histUrlObj.searchParams.delete('dnd_parent');
+						histUrlObj.searchParams.delete('dnd_sort');
+						window.history.pushState({ mdUrl: histUrlObj.toString() }, '', histUrlObj.toString());
 					}
 				})
 				.catch(function(error) {
@@ -472,13 +494,17 @@ HTML;
 						const inDetailDiscard = link.closest('#md-detail-container') && link.classList.contains('btn-danger');
 						if (inMaster || inDetailDiscard) {
 							e.preventDefault();
+							if (inDetailDiscard && window.isTreeDomDirty) {
+								window.isTreeDomDirty = false;
+								refreshMasterPanel();
+							}
 							window.loadDetailPanel(targetUrl.toString(), null, true);
 						}
 					}
 				} catch (err) {}
 			});
 
-			// Asynchronní překreslení (refresh) levého panelu se zachováním filtru
+			// Asynchronní překreslení (refresh) levého panelu se zachováním filtru a skriptů
 			function refreshMasterPanel() {
 				const url = new URL(window.location.href);
 				url.searchParams.set('ajax_panel', 'master');
@@ -496,6 +522,7 @@ HTML;
 					const masterPanel = document.getElementById("md-master-container");
 					if (masterPanel) {
 						masterPanel.innerHTML = html;
+						executeDetailScripts(masterPanel);
 						restoreMasterFilterFromStorage();
 						scrollToActiveRow();
 					}
