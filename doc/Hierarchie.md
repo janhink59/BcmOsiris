@@ -9,13 +9,12 @@ Každá entita (třída), která podporuje hierarchii, by měla splňovat tyto p
 - kromě toho mohou být vytvořeny další hierarchické struktury, poskytující jiné pohledy na tato data
   - musí být zavedena samostatná entita pro registraci dalších hierarchických struktur, navrhovaný fyzický název tabulky je "hierarchy"
   - každý řádek této entity popisuje jednu hierarchii
-  - hierarchie může mít vazbu na jednu třídu, která sama hierarchická být nemusí, ale v pilotní verzi bude
-    - tato vazba musí být promítnuta do tabulky "meta_link_def"
+  - hierarchie může mít vazbu na jednu nebo více tříd, tato vazba musí být promítnuta do tabulky "meta_link_def"
   - samotná tato tabulka je rovněž hierarchického typu, takže bude muset být v počátečním nastavení zavedena do systému s vazbou sama na sebe (na třídu "hierarchy")
-  - pokud tato struktura nemá vazbu na třídu, pak se jedná o štítek (tag), kterým může být označen libovolný objekt v databázi, avšak i 
   - kromě názvu bude každá hierarchie obsahovat příznak, jestli jsou povoleny vazby i z vnitřních uzlů (not leaf)
   - další položky jsou k diskusi
-- všechny uzly hierarchie budou v jedné tabulce, navrhovaný název "hierarchy_item" 
+- všechny uzly hierarchie budou v jedné tabulce, navrhovaný název "hierarchy_item"
+- tabulka "hierarchy_item" nemusí nutně obsahovat hierarchii, může obsahovat plochý číselník na jedné úrovni, kde parent všech řádků je null 
 - hierarchie, která slouží k dědění vlastností nadřízených na  podřízené, by měla být uzamčena
   - uzamčení znamená, že je omezeno přepodřizování existujících řádků
   - omezení se týká uzlů, na nichž nebo na jejich podřízených už jsou platné vazby na jiné entity
@@ -31,6 +30,7 @@ Entity (třídy), které podporují hierarchii, musí kromě standardních sloup
 |sort_code|varchar(200)|Hierarchický kód, který slouží pro třídění a zároveň je v něm vyjádřena podřízenost položek. Podřízené položky mají kód delší.
 |caption|varchar(200)|Název pro zobrazení v seznamu, který podléhá lokalizaci
 |is_leaf|bit|Příznak, že položka nemá podřízené, že neexistuje delší kód. Tato položka by mohla být typu computed, ale musí být zadána explicitně, neboť chrání hierarchii proti nechtěným změnám.
+|description|varchar(max)|Popis.
 
 Třída "hierarchy" obsahuje navíc položky:
 |Název|Typ|Popis
@@ -38,8 +38,6 @@ Třída "hierarchy" obsahuje navíc položky:
 |builtin_code|varchar(80)|Unikátní kód třídy|
 |multiple|bit|Příznak, že cílový záznam může mít vazbu na víc položek hierarchie|
 |leaf_only|bit|Příznak, že cílový záznam může mít vazbu jen na koncový uzel hierarchie|
-
-Je otázkou, jestli hierarchie nemá být přímo promítnuta do tabulky meta_class a její builtin_code===class_name. Sloupce "multiple" a "leaf_only" pak účinkují v tabulce meta_link_def.
 
 Třída "hierarchy_item" obsahuje navíc položku "hierarchy" odkazující na hierarchy.original
 
