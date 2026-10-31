@@ -1,0 +1,532 @@
+/* =============================================================================
+ * Verze: 2026-11-01 11:45
+ * Soubor: p_em_metadata.sql
+ * Procedury: dbo.p_em_get_class_meta, dbo.p_em_get_columns_meta,
+ *            dbo.p_em_get_select_options
+ * Účel:   1. dbo.p_em_get_class_meta načte definici logické třídy ('A' a 'L'
+ *            záznamy ve fallback řetězci < 1000), úložnou fyzickou tabulku
+ *            a efektivní nadřazenou třídu pro načtení sloupců (s podporou STI
+ *            dědění u odvozených hierarchií).
+ *         2. dbo.p_em_get_columns_meta načte definici sloupců ('A'), jejich
+ *            předků v sys_global_columns ('ANC_A') a překladů ('L').
+ *         3. dbo.p_em_get_select_options načte lokalizované položky pro <select>
+ *            roletky v UI (source_code, meta_codetable, referenced_class a
+ *            rekurzivní stromové vazby parent_uuid s vyloučením vlastního podstromu).
+ * Vazby:  - Voláno z PHP třídy entity_manager (entity_manager.php, entity_manager_ui.php),
+ *           page_hierarchy_item.php a page_approval.php.
+ *         - Využívá dbsession, dbo.f_language_list, meta_object, meta_class,
+ *           meta_column a meta_codetable.
+ * ============================================================================= */
+
+EXECUTE dropni 'p_em_get_class_meta', 'P';
+EXECUTE dropni 'p_em_get_columns_meta', 'P';
+EXECUTE dropni 'p_em_get_select_options', 'P';
+GO
+
+/* =============================================================================
+ * Procedura: dbo.p_em_get_class_meta
+ * ============================================================================= */
+CREATE PROCEDURE dbo.p_em_get_class_meta
+	@class_name varchar(80),
+	@org_uuid uniqueidentifier = NULL,
+	@requested_lang varchar(2) = NULL
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+	IF @org_uuid IS NULL OR @requested_lang IS NULL
+	BEGIN
+		SELECT TOP 1
+			@org_uuid = COALESCE(@org_uuid, organization, 0x00),
+			@requested_lang = COALESCE(NULLIF(LTRIM(RTRIM(@requested_lang)), ''), [language], 'cs')
+		FROM dbsession
+		WHERE spid = @@SPID;
+	END
+
+	SET @org_uuid = ISNULL(@org_uuid, 0x00);
+
+	DECLARE @fl TABLE (
+		[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+		fallback_order int NOT NULL
+	);
+	INSERT INTO @fl ([language], fallback_order)
+	SELECT [language], fallback_order
+	FROM dbo.f_language_list(@requested_lang)
+	WHERE fallback_order < 1000;
+
+	DECLARE @cls_orig uniqueidentifier = NULL;
+	DECLARE @anc_cls uniqueidentifier = NULL;
+	DECLARE @col_parent_cls uniqueidentifier = NULL;
+	DECLARE @stg_name varchar(80) = '';
+	DECLARE @stg_orig uniqueidentifier = 0x00;
+
+	SELECT TOP 1
+		@cls_orig = mc.original,
+		@anc_cls = mc.ancestor_class,
+		@stg_name = mo.builtin_code,
+		@stg_orig = mo.original
+	FROM meta_class mc
+	JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
+	WHERE mc.class_name = @class_name
+	  AND mc.record_type = 'A'
+	  AND mc.object_owner IN (0x00, @org_uuid)
+	  AND mc.removed = 0
+	ORDER BY CASE WHEN mc.object_owner = @org_uuid THEN 0 ELSE 1 END;
+
+	IF @cls_orig IS NULL
+		RETURN;
+
+	-- Pokud odvozená STI třída nemá vlastní sloupce v meta_column, dědí sloupce ze svého ancestor_class
+	SET @col_parent_cls = @cls_orig;
+	IF @anc_cls IS NOT NULL AND NOT EXISTS (
+		SELECT 1 FROM meta_column WHERE parent_class = @cls_orig AND record_type = 'A' AND removed = 0
+	)
+	BEGIN
+		SET @col_parent_cls = @anc_cls;
+	END
+
+	SELECT
+		'A' AS row_kind,
+		0 AS is_tenant_l,
+		0 AS fallback_order,
+		c.original,
+		c.class_name,
+		c.storage_object,
+		c.ancestor_class,
+		c.sort_code,
+		c.svg_icon,
+		c.is_final,
+		c.is_protected,
+		c.inactive,
+		c.[language],
+		COALESCE(NULLIF(CAST(c_my.caption AS NVARCHAR(MAX)), ''), CAST(c.caption AS NVARCHAR(MAX)), '') AS caption,
+		COALESCE(NULLIF(CAST(c_my.caption_plural AS NVARCHAR(MAX)), ''), CAST(c.caption_plural AS NVARCHAR(MAX)), '') AS caption_plural,
+		COALESCE(NULLIF(CAST(c_my.description AS NVARCHAR(MAX)), ''), CAST(c.description AS NVARCHAR(MAX)), '') AS description,
+		COALESCE(NULLIF(CAST(c_my.helptext AS NVARCHAR(MAX)), ''), CAST(c.helptext AS NVARCHAR(MAX)), '') AS helptext,
+		@stg_name AS storage_table_name,
+		@stg_orig AS storage_original,
+		@col_parent_cls AS effective_col_parent_class
+	FROM meta_class c
+	LEFT JOIN meta_class c_my
+		ON c_my.original = c.original
+		AND c_my.record_type = 'A'
+		AND c_my.object_owner = @org_uuid
+		AND c_my.object_owner <> 0x00
+		AND c_my.removed = 0
+	WHERE c.original = @cls_orig
+	  AND c.record_type = 'A'
+	  AND c.object_owner IN (0x00, @org_uuid)
+	  AND c.removed = 0
+
+	UNION ALL
+
+	SELECT
+		'L' AS row_kind,
+		CASE WHEN l.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant_l,
+		fl.fallback_order,
+		l.original,
+		l.class_name,
+		l.storage_object,
+		l.ancestor_class,
+		l.sort_code,
+		l.svg_icon,
+		l.is_final,
+		l.is_protected,
+		l.inactive,
+		l.[language],
+		CAST(l.caption AS NVARCHAR(MAX)) AS caption,
+		CAST(l.caption_plural AS NVARCHAR(MAX)) AS caption_plural,
+		CAST(l.description AS NVARCHAR(MAX)) AS description,
+		CAST(l.helptext AS NVARCHAR(MAX)) AS helptext,
+		'' AS storage_table_name,
+		0x00 AS storage_original,
+		@col_parent_cls AS effective_col_parent_class
+	FROM meta_class l
+	JOIN @fl fl ON fl.[language] = l.[language]
+	WHERE l.original = @cls_orig
+	  AND l.record_type = 'L'
+	  AND l.removed = 0
+	  AND l.object_owner IN (0x00, @org_uuid)
+	ORDER BY row_kind ASC, fallback_order ASC, is_tenant_l DESC;
+END
+GO
+
+/* =============================================================================
+ * Procedura: dbo.p_em_get_columns_meta
+ * ============================================================================= */
+CREATE PROCEDURE dbo.p_em_get_columns_meta
+	@col_parent_class uniqueidentifier,
+	@org_uuid uniqueidentifier = NULL,
+	@requested_lang varchar(2) = NULL
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+	IF @org_uuid IS NULL OR @requested_lang IS NULL
+	BEGIN
+		SELECT TOP 1
+			@org_uuid = COALESCE(@org_uuid, organization, 0x00),
+			@requested_lang = COALESCE(NULLIF(LTRIM(RTRIM(@requested_lang)), ''), [language], 'cs')
+		FROM dbsession
+		WHERE spid = @@SPID;
+	END
+
+	SET @org_uuid = ISNULL(@org_uuid, 0x00);
+
+	DECLARE @fl TABLE (
+		[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+		fallback_order int NOT NULL
+	);
+	INSERT INTO @fl ([language], fallback_order)
+	SELECT [language], fallback_order
+	FROM dbo.f_language_list(@requested_lang)
+	WHERE fallback_order < 1000;
+
+	DECLARE @col_origs TABLE (
+		original uniqueidentifier NOT NULL PRIMARY KEY,
+		row_kind varchar(10) COLLATE DATABASE_DEFAULT NOT NULL
+	);
+
+	INSERT INTO @col_origs (original, row_kind)
+	SELECT c.original, 'A'
+	FROM meta_column c
+	WHERE c.parent_class = @col_parent_class
+	  AND c.record_type = 'A'
+	  AND c.object_owner = 0x00
+	  AND c.removed = 0;
+
+	INSERT INTO @col_origs (original, row_kind)
+	SELECT DISTINCT c.ancestor, 'ANC_A'
+	FROM @col_origs co
+	JOIN meta_column c
+		ON c.original = co.original
+		AND c.record_type = 'A'
+		AND c.object_owner = 0x00
+		AND c.removed = 0
+	WHERE co.row_kind = 'A'
+	  AND c.ancestor IS NOT NULL
+	  AND NOT EXISTS (SELECT 1 FROM @col_origs ex WHERE ex.original = c.ancestor);
+
+	SELECT co.row_kind, 0 AS is_tenant_l, 0 AS fallback_order, c.*
+	FROM @col_origs co
+	JOIN meta_column c
+		ON c.original = co.original
+		AND c.record_type = 'A'
+		AND c.object_owner = 0x00
+		AND c.removed = 0
+
+	UNION ALL
+
+	SELECT 'L' AS row_kind, CASE WHEN l.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant_l, fl.fallback_order, l.*
+	FROM @col_origs co
+	JOIN meta_column l
+		ON l.original = co.original
+		AND l.record_type = 'L'
+		AND l.removed = 0
+		AND l.object_owner IN (0x00, @org_uuid)
+	JOIN @fl fl ON fl.[language] = l.[language]
+	ORDER BY row_kind ASC, parent_order ASC, sort_code ASC, fallback_order ASC, is_tenant_l DESC;
+END
+GO
+
+/* =============================================================================
+ * Procedura: dbo.p_em_get_select_options
+ * Režimy (@mode):
+ * - 'source_code' : Položky meta_object (object_type = 'P') pro meta_phrase.source_code
+ * - 'codetable'   : Položky z meta_codetable podle @param_code = codetable_name
+ * - 'ref_class'   : Položky odkazované třídy @ref_class_uuid (pro sloupec @param_code)
+ * - 'parent_tree' : Nadřízené uzly stromové tabulky @storage_table s vyloučením
+ *                   podstromu @curr_guid a filtrem na složky (is_leaf = 0)
+ * ============================================================================= */
+CREATE PROCEDURE dbo.p_em_get_select_options
+	@mode varchar(30),
+	@param_code varchar(200) = '',
+	@ref_class_uuid uniqueidentifier = NULL,
+	@curr_guid uniqueidentifier = NULL,
+	@current_val uniqueidentifier = NULL,
+	@hier_uuid uniqueidentifier = NULL,
+	@storage_table varchar(128) = ''
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+	DECLARE @org_sql uniqueidentifier = 0x00;
+	DECLARE @sess_lang varchar(2) = 'cs';
+
+	SELECT TOP 1
+		@org_sql = ISNULL(organization, 0x00),
+		@sess_lang = ISNULL([language], 'cs')
+	FROM dbsession
+	WHERE spid = @@SPID;
+
+	DECLARE @fl TABLE (
+		[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+		fallback_order int NOT NULL
+	);
+	INSERT INTO @fl ([language], fallback_order)
+	SELECT [language], fallback_order
+	FROM dbo.f_language_list(@sess_lang)
+	WHERE fallback_order < 1000;
+
+	-- 1. Výběr PHP třídy / stránky z meta_object (pro meta_phrase.source_code)
+	IF @mode = 'source_code'
+	BEGIN
+		SELECT a.builtin_code AS value_code, a.builtin_code AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
+		FROM meta_object a
+		OUTER APPLY (
+			SELECT TOP 1 l.caption
+			FROM meta_object l
+			JOIN @fl fl ON fl.[language] = l.[language]
+			WHERE l.original = a.original
+			  AND l.record_type = 'L'
+			  AND l.removed = 0
+			  AND l.object_owner IN (@org_sql, 0x00)
+			  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+			ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org_sql THEN 0 ELSE 1 END ASC
+		) tr
+		WHERE a.object_type = 'P'
+		  AND a.builtin_code <> ''
+		  AND a.builtin_code <> 'global_phrase'
+		  AND a.object_owner = 0x00
+		  AND a.record_type = 'A'
+		  AND a.removed = 0
+		ORDER BY a.builtin_code;
+		RETURN;
+	END
+
+	-- 2. Výběr položek číselníku z meta_codetable
+	IF @mode = 'codetable'
+	BEGIN
+		SELECT c.value_code, c.value_code AS code_col, COALESCE(tr.caption, c.caption, c.value_code) AS caption
+		FROM (
+			SELECT original, value_code, caption, sort_code,
+				ROW_NUMBER() OVER (PARTITION BY value_code ORDER BY CASE WHEN object_owner = @org_sql THEN 0 ELSE 1 END) AS rn
+			FROM meta_codetable
+			WHERE codetable_name = @param_code
+			  AND object_owner IN (@org_sql, 0x00)
+			  AND record_type = 'A'
+			  AND removed = 0
+			  AND inactive = 0
+		) c
+		OUTER APPLY (
+			SELECT TOP 1 l.caption
+			FROM meta_codetable l
+			JOIN @fl fl ON fl.[language] = l.[language]
+			WHERE l.original = c.original
+			  AND l.record_type = 'L'
+			  AND l.removed = 0
+			  AND l.object_owner IN (@org_sql, 0x00)
+			  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+			ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org_sql THEN 0 ELSE 1 END ASC
+		) tr
+		WHERE c.rn = 1
+		ORDER BY c.sort_code, caption;
+		RETURN;
+	END
+
+	-- 3. Stromový výběr nadřízeného uzlu (parent_uuid) s ochranou proti zacyklení
+	IF @mode = 'parent_tree' AND @storage_table <> '' AND OBJECT_ID(@storage_table, 'U') IS NOT NULL
+	BEGIN
+		DECLARE @has_code bit = CASE WHEN COL_LENGTH(@storage_table, 'builtin_code') IS NOT NULL THEN 1 ELSE 0 END;
+		DECLARE @has_short bit = CASE WHEN COL_LENGTH(@storage_table, 'shortname') IS NOT NULL THEN 1 ELSE 0 END;
+		DECLARE @has_sort bit = CASE WHEN COL_LENGTH(@storage_table, 'sort_code') IS NOT NULL THEN 1 ELSE 0 END;
+		DECLARE @has_leaf bit = CASE WHEN COL_LENGTH(@storage_table, 'is_leaf') IS NOT NULL THEN 1 ELSE 0 END;
+		DECLARE @has_hier bit = CASE WHEN COL_LENGTH(@storage_table, 'hierarchy') IS NOT NULL THEN 1 ELSE 0 END;
+
+		DECLARE @code_expr nvarchar(100) = CASE WHEN @has_code = 1 THEN N'a.builtin_code' WHEN @has_short = 1 THEN N'a.shortname' ELSE N'''''' END;
+		DECLARE @sort_expr nvarchar(100) = CASE WHEN @has_sort = 1 THEN N'a.sort_code' ELSE N'''''' END;
+		DECLARE @leaf_cond nvarchar(200) = CASE WHEN @has_leaf = 1 AND @storage_table <> 'meta_menu' THEN N'AND (a.is_leaf = 0 OR a.original = @p_cur_val)' ELSE N'' END;
+		DECLARE @hier_cond nvarchar(200) = CASE WHEN @has_hier = 1 AND @hier_uuid IS NOT NULL THEN N'AND a.hierarchy = @p_hier' ELSE N'' END;
+
+		DECLARE @sql_tree nvarchar(max) = N'
+		DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+		INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list(@p_lang) WHERE fallback_order < 1000;
+
+		DECLARE @valid_nodes TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			code_col varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			parent_uuid uniqueidentifier NULL,
+			sort_code varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			caption varchar(200) COLLATE DATABASE_DEFAULT NULL
+		);
+
+		INSERT INTO @valid_nodes (original, code_col, parent_uuid, sort_code, caption)
+		SELECT original, ISNULL(code_col, ''''), parent_uuid, ISNULL(sort_code, ''''), caption
+		FROM (
+			SELECT a.original, ' + @code_expr + N' AS code_col, a.parent_uuid, ' + @sort_expr + N' AS sort_code, a.caption,
+				ROW_NUMBER() OVER (PARTITION BY a.original ORDER BY CASE WHEN a.object_owner = @p_org THEN 0 ELSE 1 END) AS rn
+			FROM [' + @storage_table + N'] a
+			WHERE a.object_owner IN (@p_org, 0x00)
+			  AND a.record_type = ''A''
+			  AND a.removed = 0
+			  ' + @leaf_cond + N'
+			  ' + @hier_cond + N'
+		) x
+		WHERE x.rn = 1;
+
+		DECLARE @descendants TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
+		IF @p_curr IS NOT NULL AND @p_curr <> 0x00
+		BEGIN
+			INSERT INTO @descendants (original)
+			SELECT original FROM @valid_nodes WHERE original = @p_curr;
+
+			WHILE @@ROWCOUNT > 0
+			BEGIN
+				INSERT INTO @descendants (original)
+				SELECT m.original
+				FROM @valid_nodes m
+				JOIN @descendants d ON m.parent_uuid = d.original
+				WHERE NOT EXISTS (SELECT 1 FROM @descendants ex WHERE ex.original = m.original);
+			END
+		END
+
+		SELECT r.original, r.code_col, COALESCE(tr.caption, r.caption, '''') AS caption
+		FROM @valid_nodes r
+		OUTER APPLY (
+			SELECT TOP 1 l.caption
+			FROM [' + @storage_table + N'] l
+			JOIN @fl fl ON fl.[language] = l.[language]
+			WHERE l.original = r.original
+			  AND l.record_type = ''L''
+			  AND l.removed = 0
+			  AND l.object_owner IN (@p_org, 0x00)
+			  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '''') IS NOT NULL
+			ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @p_org THEN 0 ELSE 1 END ASC
+		) tr
+		WHERE NOT EXISTS (SELECT 1 FROM @descendants d WHERE d.original = r.original)
+		ORDER BY CASE WHEN r.parent_uuid IS NULL THEN 0 ELSE 1 END, r.sort_code, r.code_col, caption;';
+
+		EXEC sp_executesql
+			@stmt = @sql_tree,
+			@params = N'@p_org uniqueidentifier, @p_lang varchar(2), @p_curr uniqueidentifier, @p_cur_val uniqueidentifier, @p_hier uniqueidentifier',
+			@p_org = @org_sql,
+			@p_lang = @sess_lang,
+			@p_curr = @curr_guid,
+			@p_cur_val = @current_val,
+			@p_hier = @hier_uuid;
+		RETURN;
+	END
+
+	-- 4. Obecný relační výběr (referenced_class)
+	IF @mode = 'ref_class' AND @ref_class_uuid IS NOT NULL
+	BEGIN
+		DECLARE @ref_table varchar(128) = '';
+		SELECT TOP 1 @ref_table = mo.builtin_code
+		FROM meta_class mc
+		JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
+		WHERE mc.original = @ref_class_uuid
+		  AND mc.object_owner IN (0x00, @org_sql)
+		  AND mc.record_type = 'A'
+		  AND mc.removed = 0;
+
+		IF @ref_table = '' OR OBJECT_ID(@ref_table, 'U') IS NULL
+			RETURN;
+
+		IF @ref_table = 'meta_class'
+		BEGIN
+			SELECT a.original, a.class_name AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
+			FROM meta_class a
+			OUTER APPLY (
+				SELECT TOP 1 l.caption
+				FROM meta_class l
+				JOIN @fl fl ON fl.[language] = l.[language]
+				WHERE l.original = a.original AND l.record_type = 'L' AND l.removed = 0 AND l.object_owner IN (@org_sql, 0x00)
+				  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+				ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org_sql THEN 0 ELSE 1 END ASC
+			) tr
+			WHERE a.object_owner IN (0x00, @org_sql) AND a.record_type = 'A' AND a.removed = 0
+			  AND (@ref_table <> @storage_table OR @curr_guid IS NULL OR a.original <> @curr_guid)
+			ORDER BY a.class_name;
+			RETURN;
+		END
+
+		IF @ref_table = 'meta_object'
+		BEGIN
+			SELECT a.original, a.builtin_code AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
+			FROM meta_object a
+			OUTER APPLY (
+				SELECT TOP 1 l.caption
+				FROM meta_object l
+				JOIN @fl fl ON fl.[language] = l.[language]
+				WHERE l.original = a.original AND l.record_type = 'L' AND l.removed = 0 AND l.object_owner IN (@org_sql, 0x00)
+				  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+				ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org_sql THEN 0 ELSE 1 END ASC
+			) tr
+			WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0
+			  AND (@param_code <> 'target_object' OR a.object_type = 'P')
+			  AND (@ref_table <> @storage_table OR @curr_guid IS NULL OR a.original <> @curr_guid)
+			ORDER BY a.object_type, a.builtin_code;
+			RETURN;
+		END
+
+		IF @ref_table = 'meta_column'
+		BEGIN
+			SELECT a.original, a.column_name AS code_col, COALESCE(tr.caption, a.caption, '') AS caption
+			FROM meta_column a
+			OUTER APPLY (
+				SELECT TOP 1 l.caption
+				FROM meta_column l
+				JOIN @fl fl ON fl.[language] = l.[language]
+				WHERE l.original = a.original AND l.record_type = 'L' AND l.removed = 0 AND l.object_owner IN (@org_sql, 0x00)
+				  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+				ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org_sql THEN 0 ELSE 1 END ASC
+			) tr
+			WHERE a.object_owner = 0x00 AND a.record_type = 'A' AND a.removed = 0
+			  AND (@ref_table <> @storage_table OR @curr_guid IS NULL OR a.original <> @curr_guid)
+			ORDER BY a.column_name;
+			RETURN;
+		END
+
+		-- Obecná cílová tabulka (např. hierarchy, organization, asset_class...)
+		DECLARE @ref_has_code bit = CASE WHEN COL_LENGTH(@ref_table, 'builtin_code') IS NOT NULL THEN 1 ELSE 0 END;
+		DECLARE @ref_has_sort bit = CASE WHEN COL_LENGTH(@ref_table, 'sort_code') IS NOT NULL THEN 1 ELSE 0 END;
+		DECLARE @ref_code_sql nvarchar(100) = CASE WHEN @ref_has_code = 1 THEN N'a.builtin_code' ELSE N'''''' END;
+		DECLARE @ref_sort_sql nvarchar(100) = CASE WHEN @ref_has_sort = 1 THEN N'a.sort_code' ELSE N'''''' END;
+		DECLARE @extra_ref_cond nvarchar(200) = CASE
+			WHEN @ref_table = 'hierarchy' AND @param_code = 'hierarchy' THEN N'AND (a.is_leaf = 1 OR a.original = @p_cur_val)'
+			ELSE N''
+		END;
+		DECLARE @excl_self_cond nvarchar(200) = CASE
+			WHEN @ref_table = @storage_table AND @curr_guid IS NOT NULL THEN N'AND a.original <> @p_curr'
+			ELSE N''
+		END;
+
+		DECLARE @sql_ref nvarchar(max) = N'
+		DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+		INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list(@p_lang) WHERE fallback_order < 1000;
+
+		SELECT r.original, r.code_col, COALESCE(tr.caption, r.caption, '''') AS caption
+		FROM (
+			SELECT a.original, ' + @ref_code_sql + N' AS code_col, ' + @ref_sort_sql + N' AS sort_code, a.caption,
+				ROW_NUMBER() OVER (PARTITION BY a.original ORDER BY CASE WHEN a.object_owner = @p_org THEN 0 ELSE 1 END) AS rn
+			FROM [' + @ref_table + N'] a
+			WHERE (a.object_owner IN (@p_org, 0x00) OR a.object_owner = a.original)
+			  AND a.record_type = ''A''
+			  AND a.removed = 0
+			  ' + @excl_self_cond + N'
+			  ' + @extra_ref_cond + N'
+		) r
+		OUTER APPLY (
+			SELECT TOP 1 l.caption
+			FROM [' + @ref_table + N'] l
+			JOIN @fl fl ON fl.[language] = l.[language]
+			WHERE l.original = r.original
+			  AND l.record_type = ''L''
+			  AND l.removed = 0
+			  AND (l.object_owner IN (@p_org, 0x00) OR l.object_owner = l.original)
+			  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '''') IS NOT NULL
+			ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @p_org THEN 0 ELSE 1 END ASC
+		) tr
+		WHERE r.rn = 1
+		ORDER BY r.sort_code, caption, r.code_col;';
+
+		EXEC sp_executesql
+			@stmt = @sql_ref,
+			@params = N'@p_org uniqueidentifier, @p_lang varchar(2), @p_curr uniqueidentifier, @p_cur_val uniqueidentifier',
+			@p_org = @org_sql,
+			@p_lang = @sess_lang,
+			@p_curr = @curr_guid,
+			@p_cur_val = @current_val;
+	END
+END
+GO

@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-27 19:55
+ * Verze: 2026-11-01 12:15
  * Soubor: page_meta_phrase.php
  * Třída: page_meta_phrase
  * Účel: Správa a lokalizace systémových i klientských textových frází,
@@ -10,24 +10,13 @@
  * ARCHITEKTONICKÉ VAZBY:
  * - Instancována dynamicky z routeru `index.php` při `?page=page_meta_phrase`.
  * - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou `'meta_phrase'`.
- * - Využívá `entity_manager`, který u metadatových tabulek umožňuje editaci
- *   funkčně významných atributů (`translate = 0`) výhradně vývojářům (`active_role = 'D'`),
- *   zatímco překladové sloupce (`caption`, `helptext`) může překládat každý uživatel.
- *   Sloupec `svg_icon` se zobrazuje pouze jako neredigovatelný vizuální náhled.
- * - Využívá `abstract_button` pro vykreslení tlačítka založení nové fráze (pouze pro 'D').
- * - V levém panelu nabízí filtrování podle zdrojového PHP objektu (`source_code` z `meta_object`),
- *   kde globální fráze používají pevný identifikátor `'global_phrase'`.
+ * - Využívá `dbo.p_em_get_select_options @mode = 'source_code'` pro načtení
+ *   lokalizovaného seznamu zdrojových PHP tříd v levém panelu.
  *
  * Změny:
- * 2026-10-27 19:55 - Tlačítko "+ Nová fráze" v render_master_top() napojeno na
- *                    asynchronní funkci loadDetailPanel() pro otevření detailu
- *                    bez refreshe levého panelu a bez ztráty filtru #master-filter.
- * 2026-10-20 11:35 - Přepnutí filtru globálních frází z bezejmenného '' na třídu
- *                    'global_phrase' a zamezení duplicitního výpisu v roletce.
- * 2026-10-19 14:45 - Čtení seznamu zdrojových tříd v render_master_top() převedeno
- *                    ze sqlrun/fetch na sqlarray_simple() (ochrana $dbquery).
- *                  - Nahrazen operátor && za AND a opraveny mezery před znakem $.
- * 2026-10-16 00:10 - První verze stránky pro správu tabulky meta_phrase.
+ * 2026-11-01 12:15 - V render_master_top() nahrazen přímý SQL dotaz do meta_object
+ *                    voláním procedury dbo.p_em_get_select_options @mode = 'source_code'
+ *                    a nastaveno $this->allow_insert podle role Developer ('D').
  * =============================================================================
  */
 
@@ -41,6 +30,7 @@ class page_meta_phrase extends abstract_page_master_detail {
 		parent::__construct();                                               // Inicializace frází a kontroly přístupu
 
 		$this->class_name = 'meta_phrase';                                   // Logická třída pro entity_manager
+		$this->allow_insert = (get_session_role() === 'D');                  // Zakládání nových frází pouze pro roli Developer ('D')
 		$this->page_title = $this->phrase('page_title', [], 'Správa textových frází a překladů'); // Lokalizovaný titulek
 
 		$grp_id = $this->phrase('grp_identification', [], 'Identifikace a zařazení fráze'); // Nadpis sekce identifikace
@@ -79,11 +69,7 @@ class page_meta_phrase extends abstract_page_master_detail {
 	}
 
 	protected function render_master_top(): void {
-		global $dbsession;                                                   // Globální kontext relace uživatele
-		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role přihlášeného uživatele
-
-		// Pouze Developer ('D') smí zakládat nové systémové fráze v UI
-		if ($active_role === 'D') {                                          // Kontrola vývojářského oprávnění
+		if ($this->allow_insert) {                                           // Pouze Developer ('D') smí zakládat nové systémové fráze v UI
 			$url_suffix = $this->get_context_url_suffix();                   // Přívažek URL pro zachování filtru
 			$new_url = "index.php?page=page_meta_phrase{$url_suffix}&update_guid=NEW"; // Cílová adresa pro novou frázi
 			$btn_new = new abstract_button('btn_new_phrase', '+ Nová fráze', 'page_meta_phrase'); // Tlačítko nové fráze
@@ -93,7 +79,6 @@ class page_meta_phrase extends abstract_page_master_detail {
 			echo $btn_new->render();                                         // Vykreslení tlačítka nad filtrem
 		}
 
-		// Roletka pro filtrování podle zdrojové PHP třídy / stránky (source_code)
 		$lbl_all = htmlspecialchars($this->phrase('opt_all_sources', [], '--- Všechny třídy a stránky ---')); // Volba všech tříd
 		$lbl_glob = htmlspecialchars($this->phrase('opt_global_phrases', [], 'global_phrase (Globální fráze systému)')); // Volba globálních frází
 		$sel_all = ($this->filter_source === '__ALL__') ? 'selected' : '';   // Označení volby všech zdrojů
@@ -102,21 +87,11 @@ class page_meta_phrase extends abstract_page_master_detail {
 		$options_html = "<option value=\"__ALL__\" {$sel_all}>{$lbl_all}</option>"; // První položka roletky
 		$options_html .= "<option value=\"global_phrase\" {$sel_glob}>{$lbl_glob}</option>"; // Druhá položka roletky pro global_phrase
 
-		$src_rows = sqlarray_simple("
-			SELECT builtin_code, caption
-			FROM meta_object
-			WHERE object_type = 'P'
-			  AND builtin_code <> ''
-			  AND builtin_code <> 'global_phrase'
-			  AND object_owner = 0x00
-			  AND record_type = 'A'
-			  AND removed = 0
-			ORDER BY builtin_code
-		");                                                                  // Načtení registrovaných PHP objektů mimo global_phrase
+		$src_rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'source_code'"); // Načtení lokalizovaných PHP tříd přes proceduru
 		if (is_array($src_rows)) {                                           // Kontrola platného pole výsledků
 			foreach ($src_rows as $r_src) {                                  // Iterace přes nalezené třídy a stránky
-				$b_code = (string)$r_src['builtin_code'];                    // Technický název třídy
-				$b_cap = (string)$r_src['caption'];                          // Popisek třídy z metadat
+				$b_code = (string)$r_src['value_code'];                      // Technický název třídy
+				$b_cap = (string)$r_src['caption'];                          // Lokalizovaný popisek třídy z metadat
 				$safe_code = htmlspecialchars($b_code);                      // Ošetřený kód třídy
 				$safe_cap = htmlspecialchars($b_cap);                        // Ošetřený popisek třídy
 				$sel = ($b_code === $this->filter_source) ? 'selected' : ''; // Kontrola shody s aktivním filtrem

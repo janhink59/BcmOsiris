@@ -6,6 +6,6 @@ REM RamsesDB - Spoustec PHP sestaveni
 REM ----------------------------------------------------------
 
 echo Spoustim PHP build skript...
-php BuildDb.php
+php "../BuildRelease.php" BuildListDb.txt
 
 pause

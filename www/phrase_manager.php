@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-27 16:10
+ * Verze: 2026-11-01 11:15
  * Soubor: phrase_manager.php
  * Třída: phrase_manager
  * Účel: Centralizovaný správce pro dávkové načítání, kešování, lokalizaci
@@ -9,25 +9,19 @@
  *
  * ARCHITEKTONICKÉ VAZBY:
  * - Instancován v `abstract_page` (a uložen v `$GLOBALS['phrase_manager']`)
- *   nebo prostřednictvím třídy `global_phrase` (`global_phrase.php`).
- * - Využívá `language_manager` (`language_manager.php`) a databázovou funkci
- *   `dbo.f_language_list()` s filtrem `fallback_order < 1000`.
- * - Využívá globální pole `$dbsession` (inicializované v `OsirisLib.php`).
- * - Čte a při auto-discovery zapisuje do tabulky `meta_phrase` (`table_meta_phrase.sql`)
- *   a zajišťuje registraci zdrojového objektu typu 'P' v `meta_object`.
+ *   nebo prostřednictvím funkce `translate_phrase()` (`new_functions.php`)
+ *   a třídy `global_phrase` (`global_phrase.php`).
+ * - Využívá `language_manager` (`language_manager.php`) a databázové procedury
+ *   `dbo.p_get_phrases` a `dbo.p_auto_register_phrase` (`p_phrases.sql`).
  * - Globální fráze jsou uloženy pod pevným `source_code = 'global_phrase'`.
  * - Poskytuje kompletní metadata frází (včetně `svg_icon`, `css_class` a `helptext`)
  *   pro vykreslování tlačítek ve třídě `abstract_button`.
  *
  * Změny:
- * 2026-10-27 16:10 - V metodě load_sources() nahrazeny vícenásobně vyhodnocované CTE
- *                    (;WITH s, fl, sy, my, mix) za indexované tabulkové proměnné
- *                    (@fl a @mix s PRIMARY KEY original) a přímý Index Seek.
- * 2026-10-22 17:45 - Přepracováno načítání frází v load_sources(): záznamy 'A' a 'L'
- *                    (s fallback_order < 1000 z dbo.f_language_list) se načtou
- *                    do dvou polí v PHP.
- * 2026-10-20 11:35 - Nahrazení bezejmenného source_code = '' pevným identifikátorem
- *                    'global_phrase' v lookup_chain, load_sources i auto_register_phrase.
+ * 2026-11-01 11:15 - Rozsáhlé inline T-SQL dotazy v metodách load_sources() a
+ *                    auto_register_phrase() přesunuty do uložených procedur
+ *                    dbo.p_get_phrases a dbo.p_auto_register_phrase (p_phrases.sql).
+ *                  - Doplněna statická pomocná metoda phrase_manager::translate().
  * =============================================================================
  */
 
@@ -68,7 +62,7 @@ class phrase_manager {
 			$sources_to_load = array_merge($sources_to_load, $hierarchy);    // Přidání hierarchie do dávky
 		}
 
-		if (!empty($extra_sources)) {                                        // Pokud jsou zadány doplňkové zdroje frází
+		if (! empty($extra_sources)) {                                       // Pokud jsou zadány doplňkové zdroje frází
 			$sources_to_load = array_merge($sources_to_load, $extra_sources); // Přidání doplňkových komponent
 		}
 
@@ -76,12 +70,33 @@ class phrase_manager {
 	}
 
 	/**
+	 * Statický zkrácený helper pro překlad fráze odkudkoliv z PHP kódu.
+	 *
+	 * @param string               $builtin_code    Kód fráze
+	 * @param string               $default_caption Výchozí český text
+	 * @param array<string, mixed> $vars            Proměnné pro interpolaci {$var}
+	 * @param string               $source_code     Zdrojová třída
+	 * @return string Přeložený a interpolovaný text
+	 */
+	public static function translate(string $builtin_code, string $default_caption = '', array $vars = [], string $source_code = ''): string { // Statický překlad
+		if (function_exists('translate_phrase')) {                           // Delegování na globální funkci z new_functions.php
+			return translate_phrase($builtin_code, $default_caption, $vars, $source_code); // Vrácení přeloženého textu
+		}
+		global $phrase_manager;                                              // Globální instance správce frází
+		if (! isset($phrase_manager) OR ! ($phrase_manager instanceof self)) { // Kontrola existence správce
+			$phrase_manager = new self($source_code ?: self::GLOBAL_SOURCE); // Inicializace správce frází
+			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
+		}
+		return $phrase_manager->get($builtin_code, $vars, $default_caption, $source_code); // Vyhodnocení fráze
+	}
+
+	/**
 	 * Ověří, zda v databázi již existuje tabulka meta_phrase (pojistka pro postupné nasazení).
 	 */
 	private function check_table_exists(): void {
 		$row = sqlfirstrow("SELECT OBJECT_ID('meta_phrase') AS obj_id");     // Dotaz na existenci tabulky přes sqlfirstrow
-		if (!empty($row)) {                                                  // Načtení výsledku kontroly tabulky
-			$this->table_exists = !empty($row['obj_id']);                    // Nastavení příznaku existence
+		if (! empty($row)) {                                                 // Načtení výsledku kontroly tabulky
+			$this->table_exists = ! empty($row['obj_id']);                   // Nastavení příznaku existence
 		}
 	}
 
@@ -97,7 +112,7 @@ class phrase_manager {
 		if ($class_name === '') {                                            // Ochrana proti prázdnému názvu třídy
 			$class_name = self::GLOBAL_SOURCE;                               // Přesměrování prázdného zdroje na global_phrase
 		}
-		if (!class_exists($class_name)) {                                    // Kontrola existence třídy v runtime
+		if (! class_exists($class_name)) {                                   // Kontrola existence třídy v runtime
 			return [$class_name];                                            // Fallback pokud třída neexistuje
 		}
 
@@ -112,9 +127,9 @@ class phrase_manager {
 		$ref = new ReflectionClass($class_name);                             // Reflexe cílové třídy
 		foreach ($ref->getProperties() as $prop) {                           // Průchod vlastnostmi třídy
 			$type = $prop->getType();                                        // Získání datového typu vlastnosti
-			if ($type instanceof ReflectionNamedType AND !$type->isBuiltin()) { // Pokud jde o objektovou vlastnost
+			if ($type instanceof ReflectionNamedType AND ! $type->isBuiltin()) { // Pokud jde o objektovou vlastnost
 				$prop_class = $type->getName();                              // Název třídy typované vlastnosti
-				if (!in_array($prop_class, $chain, true)) {                  // Kontrola duplicity v seznamu
+				if (! in_array($prop_class, $chain, true)) {                 // Kontrola duplicity v seznamu
 					$chain[] = $prop_class;                                  // Přidání komponenty do seznamu
 				}
 			}
@@ -124,14 +139,13 @@ class phrase_manager {
 	}
 
 	/**
-	 * Načte jedním optimalizovaným dotazem (s využitím tabulkových proměnných @fl a @mix)
-	 * všechny 'A' a 'L' záznamy (s fallback_order < 1000) pro zadané zdrojové třídy (source_code),
-	 * uloží je do dvou polí v PHP a vyhodnotí překlady.
+	 * Načte jedním voláním uložené procedury dbo.p_get_phrases všechny 'A' a 'L' záznamy
+	 * pro zadané zdrojové třídy (source_code), uloží je do dvou polí v PHP a vyhodnotí překlady.
 	 *
 	 * @param array<int, string> $sources Seznam identifikátorů source_code
 	 */
 	public function load_sources(array $sources): void {                     // Dávkové načtení frází pro zadané třídy
-		if (!$this->table_exists) {                                          // Kontrola existence tabulky meta_phrase
+		if (! $this->table_exists) {                                         // Kontrola existence tabulky meta_phrase
 			return;                                                          // Ukončení pokud tabulka neexistuje
 		}
 
@@ -141,10 +155,10 @@ class phrase_manager {
 			if ($src_key === '') {                                           // Zákaz bezejmenného source_code
 				$src_key = self::GLOBAL_SOURCE;                              // Přesměrování prázdného kódu na global_phrase
 			}
-			if (!isset($this->loaded_sources[$src_key])) {                   // Pokud zdroj ještě nebyl načten
-				$new_sources[] = charliteral($src_key);                      // SQL literál názvu třídy
+			if (! isset($this->loaded_sources[$src_key])) {                  // Pokud zdroj ještě nebyl načten
+				$new_sources[] = $src_key;                                   // Zařazení názvu třídy do seznamu pro DB proceduru
 				$this->loaded_sources[$src_key] = true;                      // Označení třídy jako načtené
-				if (!isset($this->phrases[$src_key])) {                      // Kontrola inicializace pole pro třídu
+				if (! isset($this->phrases[$src_key])) {                     // Kontrola inicializace pole pro třídu
 					$this->phrases[$src_key] = [];                           // Inicializace pole pro třídu
 				}
 			}
@@ -154,112 +168,12 @@ class phrase_manager {
 			return;                                                          // Ukončení bez SQL dotazu
 		}
 
-		$in_clause = implode(', ', $new_sources);                            // Složení klauzule IN (...)
 		$curr_lang = $this->lang_manager->get_current_language();            // Aktuální jazyk relace
+		$safe_csv = charliteral(implode(',', $new_sources));                 // SQL literál seznamu tříd oddělených čárkou
 		$safe_lang = charliteral($curr_lang, 2);                             // SQL literál aktuálního jazyka
 
-		$sql = "
-		SET NOCOUNT ON;
-
-		DECLARE @org_uuid uniqueidentifier = ISNULL((SELECT TOP 1 organization FROM dbsession WHERE spid = @@SPID), 0x00);
-
-		DECLARE @fl TABLE (
-			[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
-			fallback_order int NOT NULL
-		);
-		INSERT INTO @fl ([language], fallback_order)
-		SELECT [language], fallback_order
-		FROM dbo.f_language_list({$safe_lang})
-		WHERE fallback_order < 1000;
-
-		DECLARE @sy TABLE (
-			original uniqueidentifier NOT NULL PRIMARY KEY,
-			sys_uuid uniqueidentifier NOT NULL
-		);
-		INSERT INTO @sy (original, sys_uuid)
-		SELECT rc.original, rc.uuid
-		FROM meta_phrase rc
-		WHERE rc.object_owner = 0x00
-		  AND rc.record_type = 'A'
-		  AND rc.removed = 0
-		  AND rc.inactive = 0
-		  AND rc.source_code IN ({$in_clause});
-
-		DECLARE @my TABLE (
-			original uniqueidentifier NOT NULL PRIMARY KEY,
-			my_uuid uniqueidentifier NOT NULL
-		);
-		IF @org_uuid <> 0x00
-		BEGIN
-			INSERT INTO @my (original, my_uuid)
-			SELECT rc.original, rc.uuid
-			FROM meta_phrase rc
-			WHERE rc.object_owner = @org_uuid
-			  AND rc.record_type = 'A'
-			  AND rc.removed = 0
-			  AND rc.inactive = 0
-			  AND rc.source_code IN ({$in_clause});
-		END
-
-		DECLARE @mix TABLE (
-			original uniqueidentifier NOT NULL PRIMARY KEY,
-			win_uuid uniqueidentifier NOT NULL,
-			sys_uuid uniqueidentifier NULL
-		);
-		INSERT INTO @mix (original, win_uuid, sys_uuid)
-		SELECT my.original, my.my_uuid, sy.sys_uuid
-		FROM @my my
-		LEFT JOIN @sy sy ON sy.original = my.original
-		UNION ALL
-		SELECT sy.original, sy.sys_uuid, sy.sys_uuid
-		FROM @sy sy
-		LEFT JOIN @my my ON my.original = sy.original
-		WHERE my.original IS NULL;
-
-		SELECT
-			'A' AS row_kind,
-			m.original,
-			m.source_code,
-			m.builtin_code,
-			m.[language],
-			CASE WHEN m.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant,
-			ISNULL(fl.fallback_order, 1000) AS fallback_order,
-			COALESCE(NULLIF(CAST(m.caption AS NVARCHAR(MAX)), ''), CAST(o.caption AS NVARCHAR(MAX)), '') AS caption,
-			COALESCE(NULLIF(CAST(m.helptext AS NVARCHAR(MAX)), ''), CAST(o.helptext AS NVARCHAR(MAX)), '') AS helptext,
-			COALESCE(NULLIF(CAST(m.svg_icon AS NVARCHAR(MAX)), ''), CAST(o.svg_icon AS NVARCHAR(MAX)), '') AS svg_icon,
-			COALESCE(NULLIF(m.css_class, ''), o.css_class, '') AS css_class
-		FROM @mix mk
-		JOIN meta_phrase m ON m.uuid = mk.win_uuid
-		LEFT JOIN meta_phrase o ON o.uuid = mk.sys_uuid
-		LEFT JOIN @fl fl ON fl.[language] = m.[language]
-
-		UNION ALL
-
-		SELECT
-			'L' AS row_kind,
-			l.original,
-			m.source_code,
-			m.builtin_code,
-			l.[language],
-			CASE WHEN l.object_owner <> 0x00 THEN 1 ELSE 0 END AS is_tenant,
-			fl.fallback_order,
-			CAST(l.caption AS NVARCHAR(MAX)) AS caption,
-			CAST(l.helptext AS NVARCHAR(MAX)) AS helptext,
-			'' AS svg_icon,
-			'' AS css_class
-		FROM @mix mk
-		JOIN meta_phrase m ON m.uuid = mk.win_uuid
-		JOIN meta_phrase l
-			ON l.original = mk.original
-			AND l.record_type = 'L'
-			AND l.removed = 0
-			AND (l.object_owner = 0x00 OR l.object_owner = @org_uuid)
-		JOIN @fl fl ON fl.[language] = l.[language]
-		ORDER BY row_kind ASC, fallback_order ASC, is_tenant DESC;
-		";                                                                   // Optimalizovaný dotaz pro 'A' i 'L' záznamy frází bez CTE
-
-		$rows = sqlarray_simple($sql);                                       // Načtení všech řádků do paměti
-		if (!is_array($rows)) {                                              // Kontrola platného výsledku
+		$rows = sqlarray_simple("EXEC dbo.p_get_phrases @sources_csv = {$safe_csv}, @requested_lang = {$safe_lang}"); // Volání DB procedury
+		if (! is_array($rows)) {                                             // Kontrola platného výsledku
 			return;                                                          // Ukončení při prázdném výsledku
 		}
 
@@ -274,7 +188,7 @@ class phrase_manager {
 				$a_rows[$orig] = $row;                                       // Uložení do hlavního pole
 			} else {
 				$lang = (string)$row['language'];                            // Kód jazyka 'L' záznamu
-				if (!isset($l_rows[$orig][$lang])) {                         // První záznam pro daný jazyk (tenant má přednost díky ORDER BY)
+				if (! isset($l_rows[$orig][$lang])) {                        // První záznam pro daný jazyk (tenant má přednost díky ORDER BY)
 					$l_rows[$orig][$lang] = [                                // Inicializace položky podřízeného pole
 						'caption'   => (string)$row['caption'],              // Text překladu
 						'helptext'  => (string)$row['helptext'],             // Nápověda překladu
@@ -292,7 +206,7 @@ class phrase_manager {
 		}
 
 		// 2. Vyhodnocení výsledné jazykové verze pro každý 'original' typu 'A'
-		foreach ($a_rows as $orig => $a_row) {                               // Průchod všemi 'A' záznamů
+		foreach ($a_rows as $orig => $a_row) {                               // Průchod všemi 'A' záznamy
 			$src = trim((string)$a_row['source_code']);                      // Zdrojová třída fráze
 			if ($src === '') {                                               // Pojistka pro prázdný zdroj
 				$src = self::GLOBAL_SOURCE;                                  // Mapování na global_phrase
@@ -303,15 +217,13 @@ class phrase_manager {
 			$final_vals = ['caption' => '', 'helptext' => ''];               // Výsledné přeložené texty
 			foreach (['caption', 'helptext'] as $field) {                    // Vyhodnocení pro caption a helptext
 				$a_val = (string)($a_row[$field] ?? '');                     // Hodnota v 'A' záznamu
-				$has_tenant_l_curr = (!empty($l_rows[$orig][$curr_lang]['is_tenant']) AND $l_rows[$orig][$curr_lang][$field] !== ''); // Zda má tenant vlastní L
+				$has_tenant_l_curr = (! empty($l_rows[$orig][$curr_lang]['is_tenant']) AND $l_rows[$orig][$curr_lang][$field] !== ''); // Zda má tenant vlastní L
 
-				// Pravidlo 1: Je-li jazyk 'A' shodný s aktuálním jazykem (a tenant nemá vlastní L override), bereme rovnou 'A'
-				if ($a_lang === $curr_lang AND $a_val !== '' AND !$has_tenant_l_curr) { // Shoda jazyka 'A' s aktuálním
+				if ($a_lang === $curr_lang AND $a_val !== '' AND ! $has_tenant_l_curr) { // Shoda jazyka 'A' s aktuálním
 					$final_vals[$field] = $a_val;                            // Přímé použití hodnoty z 'A'
 					continue;                                                // Není třeba hledat v podřízeném poli
 				}
 
-				// Pravidlo 2: Průchod podřízeným polem seřazeným podle fallback_order
 				$found = '';                                                 // Nalezená hodnota ve fallback řetězci
 				foreach ($lang_chain as $fl_lang) {                          // Průchod jazyky dle fallback_order
 					if (isset($l_rows[$orig][$fl_lang]) AND $l_rows[$orig][$fl_lang][$field] !== '') { // Nalezena neprázdná hodnota v 'L'
@@ -324,7 +236,6 @@ class phrase_manager {
 					}
 				}
 
-				// Pravidlo 3: Pokud se v podřízeném poli nic nenašlo, vezmeme hodnotu z 'A' (i v neznámém jazyce)
 				$final_vals[$field] = ($found !== '') ? $found : $a_val;     // Výsledná hodnota pole
 			}
 
@@ -341,11 +252,6 @@ class phrase_manager {
 	 * Vrátí kompletní sadu atributů fráze (caption, helptext, svg_icon, css_class).
 	 * Pokud fráze v databázi neexistuje a je zadán $default_caption, automaticky ji založí.
 	 *
-	 * @param string $builtin_code    Identifikátor fráze (např. 'btn_save', 'confirm_delete')
-	 * @param string $default_caption Výchozí text pro případ, že fráze v DB dosud neexistuje
-	 * @param string $source_code     Explicitní určení třídy (pokud prázdné, prohledá se lookup_chain)
-	 * @param string $default_svg     Výchozí SVG ikona při automatickém založení
-	 * @param string $default_css     Výchozí CSS třída při automatickém založení
 	 * @return array{caption: string, helptext: string, svg_icon: string, css_class: string}
 	 */
 	public function get_meta(
@@ -357,20 +263,17 @@ class phrase_manager {
 	): array {
 		$source_code = trim($source_code);                                   // Očištění názvu zdrojové třídy
 
-		// 1. Pokud je zadán konkrétní source_code, ujistíme se, že je načten, a hledáme nejprve v něm
 		if ($source_code !== '') {                                           // Pokud je zadána explicitní třída
-			if (!isset($this->loaded_sources[$source_code])) {               // Kontrola, zda je třída již v keši
+			if (! isset($this->loaded_sources[$source_code])) {              // Kontrola, zda je třída již v keši
 				$this->load_sources([$source_code]);                         // Doffetchnutí chybějící třídy
 			}
 			if (isset($this->phrases[$source_code][$builtin_code])) {        // Hledání přímo v požadované třídě
 				return $this->phrases[$source_code][$builtin_code];          // Nalezeno přímo v požadované třídě
 			}
-			// Fallback na globální frázi ('global_phrase')
 			if (isset($this->phrases[self::GLOBAL_SOURCE][$builtin_code])) { // Hledání v globálních frázích
 				return $this->phrases[self::GLOBAL_SOURCE][$builtin_code];   // Nalezeno v globálních frázích
 			}
 		} else {
-			// 2. Prohledání celého řetězce dědičnosti (potomek -> předek -> globální 'global_phrase')
 			foreach ($this->lookup_chain as $src) {                          // Průchod hierarchií tříd stránky
 				if (isset($this->phrases[$src][$builtin_code])) {            // Kontrola existence v dané vrstvě
 					return $this->phrases[$src][$builtin_code];              // Nalezeno v hierarchii stránky
@@ -378,7 +281,6 @@ class phrase_manager {
 			}
 		}
 
-		// 3. Fallback a Auto-discovery: Fráze nebyla v DB nalezena
 		$target_source = ($source_code !== '') ? $source_code : ($this->lookup_chain[0] ?? self::GLOBAL_SOURCE); // Cílová třída zápisu
 		if ($target_source === '') {                                         // Pojistka proti prázdnému source_code
 			$target_source = self::GLOBAL_SOURCE;                            // Vždy zapisujeme minimálně pod global_phrase
@@ -422,14 +324,13 @@ class phrase_manager {
 
 	/**
 	 * Bezpečně nahradí zástupné symboly {$var} v textu hodnotami z pole $vars nebo $GLOBALS.
-	 * Nepoužívá nebezpečný eval().
 	 *
 	 * @param string               $text Text šablony obsahující {$promenne}
 	 * @param array<string, mixed> $vars Explicitně předané proměnné
 	 * @return string Text s nahrazenými hodnotami
 	 */
 	public function interpolate(string $text, array $vars = []): string {    // Interpolace proměnných v textu fráze
-		if (!str_contains($text, '{' . chr(36))) {                           // Kontrola přítomnosti znaku proměnné
+		if (! str_contains($text, '{' . chr(36))) {                          // Kontrola přítomnosti znaku proměnné
 			return $text;                                                    // Rychlý návrat pokud text nemá proměnné
 		}
 
@@ -448,8 +349,7 @@ class phrase_manager {
 
 	/**
 	 * Automaticky zaregistruje dosud neexistující frázi do tabulky meta_phrase (A + symetrické L)
-	 * a zajistí existenci zdrojové třídy v meta_object (typ 'P' včetně symetrického 'L'),
-	 * aby se následně objevila ve vygenerovaném souboru meta_object.xlsx.
+	 * zavoláním uložené procedury dbo.p_auto_register_phrase.
 	 */
 	private function auto_register_phrase(
 		string $source_code,                                                 // Zdrojová PHP třída nebo stránka
@@ -458,75 +358,13 @@ class phrase_manager {
 		string $svg_icon = '',                                               // Volitelná SVG ikona tlačítka
 		string $css_class = ''                                               // Volitelná CSS třída tlačítka
 	): void {
-		global $dbsession;                                                   // Globální kontext relace
-		$user_session = guidliteral((string)($dbsession['login_session_uuid'] ?? '0x00')); // SQL literál relace uživatele
-
-		$clean_source = trim($source_code);                                  // Očištění zdrojové třídy
-		if ($clean_source === '') {                                          // Zákaz zápisu bezejmenného source_code
-			$clean_source = self::GLOBAL_SOURCE;                             // Fallback na global_phrase
-		}
-
+		$clean_source = trim($source_code) ?: self::GLOBAL_SOURCE;           // Očištění zdrojové třídy
 		$safe_src = charliteral($clean_source, 80);                          // SQL literál source_code
 		$safe_code = charliteral($builtin_code, 80);                         // SQL literál builtin_code
 		$safe_cap = charliteral($caption);                                   // SQL literál výchozího textu
 		$safe_svg = charliteral($svg_icon);                                  // SQL literál SVG ikony
 		$safe_css = charliteral($css_class, 200);                            // SQL literál CSS třídy
 
-		$sql = "
-		DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
-		DECLARE @obj_orig uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', {$safe_src});
-		DECLARE @orig uuid = dbo.f_generate_original('meta_phrase', @sys_owner, {$safe_src}, {$safe_code});
-
-		IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @obj_orig AND object_owner = @sys_owner AND record_type = 'A' AND removed = 0)
-		BEGIN
-			INSERT INTO meta_object (
-				uuid, object_owner, original, record_type, approval_status, [language],
-				import_origin, object_type, builtin_code, system_role, caption,
-				who_created, who_modified
-			) VALUES (
-				@obj_orig, @sys_owner, @obj_orig, 'A', 'A', 'cs',
-				'AUTO_DISCOVERED', 'P', {$safe_src}, 'U', {$safe_src},
-				{$user_session}, {$user_session}
-			);
-		END
-
-		IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @obj_orig AND object_owner = @sys_owner AND record_type = 'L' AND [language] = 'cs' AND removed = 0)
-		BEGIN
-			INSERT INTO meta_object (
-				uuid, object_owner, original, record_type, approval_status, [language],
-				import_origin, object_type, builtin_code, system_role, caption,
-				who_created, who_modified
-			) VALUES (
-				NEWID(), @sys_owner, @obj_orig, 'L', 'A', 'cs',
-				'AUTO_DISCOVERED', 'P', {$safe_src}, 'U', {$safe_src},
-				{$user_session}, {$user_session}
-			);
-		END
-
-		IF NOT EXISTS (SELECT 1 FROM meta_phrase WHERE original = @orig AND object_owner = @sys_owner AND record_type = 'A' AND removed = 0)
-		BEGIN
-			INSERT INTO meta_phrase (
-				uuid, object_owner, original, record_type, approval_status, [language],
-				import_origin, source_code, builtin_code, caption, svg_icon, css_class,
-				who_created, who_modified
-			) VALUES (
-				@orig, @sys_owner, @orig, 'A', 'A', 'cs',
-				'AUTO_DISCOVERED', {$safe_src}, {$safe_code}, {$safe_cap}, {$safe_svg}, {$safe_css},
-				{$user_session}, {$user_session}
-			);
-
-			INSERT INTO meta_phrase (
-				uuid, object_owner, original, record_type, approval_status, [language],
-				import_origin, source_code, builtin_code, caption, svg_icon, css_class,
-				who_created, who_modified
-			) VALUES (
-				NEWID(), @sys_owner, @orig, 'L', 'A', 'cs',
-				'AUTO_DISCOVERED', {$safe_src}, {$safe_code}, {$safe_cap}, {$safe_svg}, {$safe_css},
-				{$user_session}, {$user_session}
-			);
-		END
-		";                                                                   // SQL dávka pro idempotentní auto-registraci
-
-		sqlrun($sql);                                                        // Zápis nově objevené fráze do DB
+		sqlrun("EXEC dbo.p_auto_register_phrase @source_code = {$safe_src}, @builtin_code = {$safe_code}, @caption = {$safe_cap}, @svg_icon = {$safe_svg}, @css_class = {$safe_css}"); // Volání DB procedury
 	}
 }

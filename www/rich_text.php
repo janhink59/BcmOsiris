@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-27 14:10
+ * Verze: 2026-11-01 12:45
  * Soubor: rich_text.php
  * Třída: rich_text
  * Účel: Centrální služba pro detekci formátu (Markdown vs. HTML), obousměrnou
@@ -16,21 +16,16 @@
  *   2. league/html-to-markdown (převod HTML -> Markdown včetně tabulek),
  *   3. symfony/html-sanitizer (bezpečnostní sanitizace HTML proti XSS).
  * - Na klientské straně (Vanilla JS) využívá Toast UI Editor
- *   (js/toastui-editor-all.min.js a css/toastui-editor.min.css s CDN fallbackem).
- * - V detailním formuláři (render_editor) zobrazuje čistý Preview režim se štítkem
- *   formátu a tlačítkem „Upravit“, které otevře prostorný modální panel na popředí.
- * - Volána z entity_manager::render_dynamic_input(), entity_manager_write::extract_post_data()
- *   a ze schvalovací obrazovky page_approval::render_detail().
- * - Využívá globální $phrase_manager pro plnou lokalizaci ovládacích prvků editoru.
+ *   (js/toastui-editor-all.min.js a js/toastui-editor.min.css s CDN fallbackem).
+ * - Volána z entity_manager, page_org_users a page_approval.
  *
  * Změny:
- * 2026-10-27 14:10 - Přepracování render_editor() na Preview box v detailu s tlačítkem
- *                    „Upravit“, které otevře modální editor na popředí (mimo .md-table).
- *                  - Oprava spojených řádků ($clean v sanitize_html a $raw_html v to_html)
- *                    a doplnění mezer před znakem $ dle Anti-LaTeX pravidla.
- *                  - Doplněna CSS pojistka pro .toastui-editor-tooltip a ikony lišty
- *                    proti uskakování tlačítka More a podpora AJAX načtení detailu.
- * 2026-10-26 13:50 - Vytvoření centrální třídy pro podporu Markdownu a HTML.
+ * 2026-11-01 12:45 - Minimální cílená oprava editace is_html = 1 při AJAX načítání:
+ *                    1. getOrCreateModal() nejprve zkontroluje existující element
+ *                       document.getElementById('bcm-rt-modal-overlay') a stav drží
+ *                       v window.bcmRtState (zamezení duplicitě modálu v DOMu).
+ *                    2. Primární cesta k CSS nastavena na js/toastui-editor.min.css.
+ *                    3. Odstraněna syntaxe heredocu, kterou webové rozhraní slučovalo.
  * =============================================================================
  */
 
@@ -69,8 +64,6 @@ class rich_text {
 
 	/**
 	 * Rozpozná, zda je předaný text ve formátu 'markdown' nebo 'html'.
-	 * Prázdný text nebo běžný text bez HTML struktury je vždy vyhodnocen jako 'markdown'
-	 * (v souladu s preferencí uživatelů).
 	 *
 	 * @param string $text Vstupní text z databáze nebo formuláře
 	 * @return string 'markdown' nebo 'html'
@@ -88,14 +81,14 @@ class rich_text {
 			return 'markdown';                                               // Jednoznačně Markdown
 		}
 
-		// Pokud text začíná typickou Markdown syntaxí (nadpis #, citace >, seznam -/*, kód ```), jde o Markdown
-		if (preg_match('/^(#+\s|>\s|[-*+]\s|\d+\.\s|```)/m', $trimmed)) {    // Detekce blokové Markdown syntaxe
-			if (!preg_match('/<\/(p|div|table|ul|ol)>/i', $trimmed)) {       // Pokud současně neobsahuje uzavírací HTML bloky
+		$md_regex = '/^(#+\s' . chr(124) . '>\s' . chr(124) . '[-*+]\s' . chr(124) . '\d+\.\s' . chr(124) . '```)/m'; // Vzorek blokového Markdownu
+		$html_regex = '/<\/(p' . chr(124) . 'div' . chr(124) . 'table' . chr(124) . 'ul' . chr(124) . 'ol)>/i'; // Vzorek uzavíracích HTML bloků
+		if (preg_match($md_regex, $trimmed)) {                               // Detekce blokové Markdown syntaxe
+			if (!preg_match($html_regex, $trimmed)) {                        // Pokud současně neobsahuje uzavírací HTML bloky
 				return 'markdown';                                           // Vyhodnoceno jako Markdown
 			}
 		}
 
-		// Detekce typických blokových a formátovacích HTML značek (bez použití znaku pipe v kódu)
 		$html_tags = [                                                       // Seznam sledovaných HTML značek
 			'<p>', '<p ', '</p>', '<div>', '<div ', '</div>',
 			'<table', '</table>', '<ul>', '<ul ', '</ul>', '<ol>', '<ol ', '</ol>', '<li>', '</li>',
@@ -116,14 +109,13 @@ class rich_text {
 	}
 
 	/**
-	 * Očistí HTML řetězec od nebezpečných značek a atributů (XSS ochrana)
-	 * pomocí knihovny symfony/html-sanitizer.
+	 * Očistí HTML řetězec od nebezpečných značek a atributů (XSS ochrana).
 	 *
 	 * @param string $raw_html Surový HTML řetězec
 	 * @return string Bezpečný sanitizovaný HTML řetězec
 	 */
 	public static function sanitize_html(string $raw_html): string {         // Sanitizace HTML proti XSS
-		$clean = preg_replace('/^<!--(html|md)-->\s*/', '', $raw_html) ?? $raw_html; // Odstranění případné interní značky
+		$clean = preg_replace('/^<!--(html' . chr(124) . 'md)-->\s*/', '', $raw_html) ?? $raw_html; // Odstranění interní značky
 		if (trim($clean) === '') {                                           // Prázdný řetězec není třeba čistit
 			return '';                                                       // Vrácení prázdného řetězce
 		}
@@ -138,20 +130,18 @@ class rich_text {
 			return $sanitizer->sanitize($clean);                             // Vrácení bezpečného HTML
 		}
 
-		// Nouzový fallback, pokud by knihovna nebyla načtena
 		$allowed = '<p><br><div><span><strong><b><em><i><u><s><del><ins><h1><h2><h3><h4><h5><h6><ul><ol><li><table><thead><tbody><tfoot><tr><th><td><blockquote><pre><code><a><hr><sub><sup>'; // Povolené značky
 		return strip_tags($clean, $allowed);                                 // Základní oříznutí nepovolených značek
 	}
 
 	/**
-	 * Převede Markdown (nebo HTML) na bezpečný, sanitizovaný HTML kód
-	 * pomocí knihovny league/commonmark (s podporou GFM tabulek a seznamů).
+	 * Převede Markdown (nebo HTML) na bezpečný, sanitizovaný HTML kód.
 	 *
 	 * @param string $text Vstupní text v Markdownu nebo HTML
 	 * @return string Výsledný sanitizovaný HTML kód
 	 */
 	public static function to_html(string $text): string {                   // Převod Markdown/HTML na bezpečné HTML
-		$clean = preg_replace('/^<!--(html|md)-->\s*/', '', $text) ?? $text; // Odstranění případného komentářového prefixu
+		$clean = preg_replace('/^<!--(html' . chr(124) . 'md)-->\s*/', '', $text) ?? $text; // Odstranění komentářového prefixu
 		if (trim($clean) === '') {                                           // Kontrola prázdného vstupu
 			return '';                                                       // Vrácení prázdného řetězce
 		}
@@ -185,7 +175,7 @@ class rich_text {
 	 * @return string Výsledný text ve formátu Markdown
 	 */
 	public static function to_markdown(string $text): string {               // Převod HTML na Markdown
-		$clean = preg_replace('/^<!--(html|md)-->\s*/', '', $text) ?? $text; // Odstranění případného komentářového prefixu
+		$clean = preg_replace('/^<!--(html' . chr(124) . 'md)-->\s*/', '', $text) ?? $text; // Odstranění komentářového prefixu
 		$clean = str_replace("\r\n", "\n", $clean);                          // Sjednocení konců řádků na LF
 		if (trim($clean) === '') {                                           // Kontrola prázdného vstupu
 			return '';                                                       // Vrácení prázdného řetězce
@@ -213,7 +203,6 @@ class rich_text {
 
 	/**
 	 * Normalizuje a očistí odeslanou hodnotu z formuláře před zápisem do databáze.
-	 * Zajišťuje serverovou konverzi mezi Markdownem a HTML a bezpečnostní sanitizaci.
 	 *
 	 * @param string $raw_val       Surová hodnota z $_POST
 	 * @param string $target_format Požadovaný cílový formát ('markdown', 'html', 'auto')
@@ -233,7 +222,6 @@ class rich_text {
 			return self::to_html($val);                                      // Převod případného Markdownu a sanitizace HTML
 		}
 
-		// Režim 'auto': zachováme detekovaný formát, u HTML provedeme sanitizaci
 		if (self::detect_format($val) === 'html') {                          // Pokud je hodnota v HTML
 			return self::sanitize_html($val);                                // Očištění HTML přes Symfony HtmlSanitizer
 		}
@@ -243,10 +231,6 @@ class rich_text {
 	/**
 	 * Vykreslí bezpečný zformátovaný HTML výstup pro režim pouze pro čtení ($is_readonly)
 	 * nebo pro porovnávací tabulku schvalování (page_approval.php).
-	 *
-	 * @param string $value      Uložený Markdown nebo HTML text
-	 * @param bool   $show_badge Zda zobrazit štítek detekovaného formátu ([Markdown] / [HTML])
-	 * @return string HTML kód zformátovaného bloku
 	 */
 	public static function render_formatted(string $value, bool $show_badge = false): string { // Vykreslení formátovaného textu
 		if (trim($value) === '') {                                           // Prázdná hodnota
@@ -270,7 +254,6 @@ class rich_text {
 
 	/**
 	 * Jednorázově vloží do stránky CSS/JS zdroje pro Toast UI Editor a obsluhu modálního editoru na popředí.
-	 * Pokud by stránka načetla první rich_text prvek až přes AJAX, JavaScript sám zajistí načtení CSS/JS.
 	 */
 	private static function render_assets_once(): string {
 		if (self::$assets_rendered) {                                        // Pokud již byly skripty v tomto requestu vypsány
@@ -278,21 +261,21 @@ class rich_text {
 		}
 		self::$assets_rendered = true;                                       // Označení, že skripty jsou již vloženy
 
-		$local_css = 'css/toastui-editor.min.css';                           // Standardní cesta k lokálnímu CSS souboru
-		$alt_css   = 'js/toastui-editor.min.css';                            // Alternativní umístění CSS souboru
+		$js_css    = 'js/toastui-editor.min.css';                            // Primární cesta k lokálnímu CSS v adresáři js/
+		$local_css = 'css/toastui-editor.min.css';                           // Alternativní cesta v adresáři css/
 		$local_js  = 'js/toastui-editor-all.min.js';                         // Cesta k lokálnímu JS souboru
 
-		if (is_file(__DIR__ . '/' . $local_css) AND filesize(__DIR__ . '/' . $local_css) > 1000) { // Ověření platného CSS v css/
+		if (is_file(__DIR__ . '/' . $js_css) AND filesize(__DIR__ . '/' . $js_css) > 1000) { // Ověření CSS v js/
+			$css_url = $js_css;                                              // Použijeme lokální CSS v adresáři js/
+		} elseif (is_file(__DIR__ . '/' . $local_css) AND filesize(__DIR__ . '/' . $local_css) > 1000) { // Ověření v css/
 			$css_url = $local_css;                                           // Použijeme lokální CSS v adresáři css/
-		} elseif (is_file(__DIR__ . '/' . $alt_css) AND filesize(__DIR__ . '/' . $alt_css) > 1000) { // Ověření v js/
-			$css_url = $alt_css;                                             // Použijeme lokální CSS v adresáři js/
 		} else {
-			$css_url = 'https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor.min.css'; // Spolehlivý CDN fallback
+			$css_url = '[https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor.min.css](https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor.min.css)'; // CDN fallback
 		}
 
 		$js_url = (is_file(__DIR__ . '/' . $local_js) AND filesize(__DIR__ . '/' . $local_js) > 1000)
 			? $local_js
-			: 'https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor-all.min.js'; // Lokální JS nebo CDN fallback
+			: '[https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor-all.min.js](https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor-all.min.js)'; // Lokální JS nebo CDN fallback
 
 		$safe_css_url = htmlspecialchars($css_url);                          // Ošetřená URL adresa CSS
 		$safe_js_url  = htmlspecialchars($js_url);                           // Ošetřená URL adresa JS
@@ -305,13 +288,12 @@ class rich_text {
 		$tip_conv        = addslashes(self::phrase('tip_convert_format', 'Převede stávající text mezi formáty Markdown a HTML a přepne režim editoru')); // Tooltip konverze
 		$btn_apply       = addslashes(self::phrase('btn_apply_modal', 'Použít v detailu')); // Tlačítko potvrzení modálu
 		$btn_cancel      = addslashes(self::phrase('btn_cancel_modal', 'Zrušit')); // Tlačítko zrušení modálu
-		$msg_modal_hint  = addslashes(self::phrase('msg_modal_footer_hint', 'Po kliknutí na „Použít v detailu“ se upravený text propíše do náhledu. Pro trvalý zápis do databáze pak uložte záznam.')); // Nápověda v patičce
+		$msg_modal_hint  = addslashes(self::phrase('msg_modal_footer_hint', 'Po kliknutí na „Použít v detailu“ se upravený text propíše do náhledu. Pro trvalý zápis do databáze pak uložte záznam.')); // Nápověda
 		$txt_empty_prev  = addslashes(self::phrase('txt_empty_preview', '(Prázdné – klikněte na Upravit)')); // Text prázdného náhledu
 
-		return <<<HTML
-<link rel="stylesheet" href="{$safe_css_url}" id="bcm-toastui-css">
-<script src="{$safe_js_url}" id="bcm-toastui-js"></script>
-<style>
+		$out  = '<link rel="stylesheet" href="' . $safe_css_url . '" id="bcm-toastui-css">' . "\n"; // Odkaz na CSS soubor
+		$out .= '<script src="' . $safe_js_url . '" id="bcm-toastui-js"></script>' . "\n"; // Odkaz na JS soubor
+		$out .= '<style>
 	/* Preview karta přímo v tabulce detailu */
 	.bcm-rt-preview-card { border: 1px solid #cbd5e1; border-radius: 4px; background-color: #ffffff; overflow: hidden; }
 	.bcm-rt-preview-bar { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; gap: 8px; }
@@ -358,64 +340,66 @@ class rich_text {
 </style>
 <script>
 	(function() {
-		let modalOverlay = null;
-		let modalEditorInstance = null;
-		let activeFieldCfg = null;
+		if (!window.bcmRtState) {
+			window.bcmRtState = {
+				modalOverlay: null,
+				modalEditorInstance: null,
+				activeFieldCfg: null
+			};
+		}
 
-		// Ověří, zda je v dokumentu skutečně aplikováno CSS pro Toast UI Editor; pokud ne, připojí CDN záložní styl
 		function ensureToastUiCssLoaded() {
-			const testEl = document.createElement('div');
-			testEl.className = 'toastui-editor-defaultUI';
-			testEl.style.display = 'none';
+			const testEl = document.createElement("div");
+			testEl.className = "toastui-editor-defaultUI";
+			testEl.style.display = "none";
 			document.body.appendChild(testEl);
 			const pos = window.getComputedStyle(testEl).position;
 			document.body.removeChild(testEl);
 
-			if (pos !== 'relative' && !document.getElementById('bcm-toastui-css-cdn-fallback')) {
-				const link = document.createElement('link');
-				link.id = 'bcm-toastui-css-cdn-fallback';
-				link.rel = 'stylesheet';
-				link.href = 'https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor.min.css';
+			if (pos !== "relative" && !document.getElementById("bcm-toastui-css-cdn-fallback")) {
+				const link = document.createElement("link");
+				link.id = "bcm-toastui-css-cdn-fallback";
+				link.rel = "stylesheet";
+				link.href = "' . $safe_css_url . '";
 				document.head.appendChild(link);
 			}
 		}
 
-		// Pokud by selhalo načtení sprite ikon z CSS, doplní tlačítkům čitelné popisky
 		function ensureToolbarButtonsReadable(rootEl) {
 			if (!rootEl) return;
 			const fallbackLabels = {
-				'heading': 'H',
-				'bold': 'B',
-				'italic': 'I',
-				'strike': 'S',
-				'hr': '―',
-				'quote': '❝',
-				'ul': '•',
-				'ol': '1.',
-				'task': '☑',
-				'table': '⊞',
-				'link': '🔗',
-				'code': '<>',
-				'codeblock': '{ }',
-				'more': '⋯'
+				"heading": "H",
+				"bold": "B",
+				"italic": "I",
+				"strike": "S",
+				"hr": "―",
+				"quote": "❝",
+				"ul": "•",
+				"ol": "1.",
+				"task": "☑",
+				"table": "⊞",
+				"link": "🔗",
+				"code": "<>",
+				"codeblock": "{ }",
+				"more": "⋯"
 			};
-			rootEl.querySelectorAll('.toastui-editor-toolbar-icons').forEach(function(btn) {
+			rootEl.querySelectorAll(".toastui-editor-toolbar-icons").forEach(function(btn) {
 				const bg = window.getComputedStyle(btn).backgroundImage;
-				if (!bg || bg === 'none') {
-					btn.style.width = 'auto';
-					btn.style.minWidth = '28px';
-					btn.style.height = '26px';
-					btn.style.padding = '0 6px';
-					btn.style.margin = '2px';
-					btn.style.border = '1px solid #cbd5e1';
-					btn.style.borderRadius = '3px';
-					btn.style.background = '#ffffff';
-					btn.style.fontWeight = 'bold';
-					btn.style.fontSize = '12px';
-					btn.style.color = '#1e293b';
-					btn.style.cursor = 'pointer';
+				if (!bg || bg === "none") {
+					btn.style.width = "auto";
+					btn.style.minWidth = "28px";
+					btn.style.height = "26px";
+					btn.style.padding = "0 6px";
+					btn.style.margin = "2px";
+					btn.style.border = "1px solid #cbd5e1";
+					btn.style.borderRadius = "3px";
+					btn.style.background = "#ffffff";
+					btn.style.fontWeight = "bold";
+					btn.style.fontSize = "12px";
+					btn.style.color = "#1e293b";
+					btn.style.cursor = "pointer";
 					Object.keys(fallbackLabels).forEach(function(cls) {
-						if (btn.classList.contains(cls) && btn.textContent.trim() === '') {
+						if (btn.classList.contains(cls) && btn.textContent.trim() === "") {
 							btn.textContent = fallbackLabels[cls];
 						}
 					});
@@ -423,77 +407,81 @@ class rich_text {
 			});
 		}
 
-		// Jednorázově vytvoří DOM modálního okna v document.body
 		function getOrCreateModal() {
-			if (modalOverlay && document.body.contains(modalOverlay)) {
-				return modalOverlay;
+			const existingDom = document.getElementById("bcm-rt-modal-overlay");
+			if (existingDom) {
+				window.bcmRtState.modalOverlay = existingDom;
+				return existingDom;
 			}
 
 			ensureToastUiCssLoaded();
 
-			modalOverlay = document.createElement('div');
-			modalOverlay.id = 'bcm-rt-modal-overlay';
-			modalOverlay.className = 'bcm-rt-modal-overlay';
-			modalOverlay.innerHTML = ''
-				+ '<div class="bcm-rt-modal-dialog" onclick="event.stopPropagation();">'
-				+ '	<div class="bcm-rt-modal-header">'
-				+ '		<h3 class="bcm-rt-modal-title" id="bcm-rt-modal-title"></h3>'
-				+ '		<div class="bcm-rt-modal-controls">'
-				+ '			<label for="bcm-rt-modal-fmt" style="font-weight: bold; color: #334155;">{$lbl_fmt}</label>'
-				+ '			<select id="bcm-rt-modal-fmt" style="padding: 4px 8px; font-size: 12px; border: 1px solid #cbd5e1; border-radius: 3px;">'
-				+ '				<option value="markdown">{$opt_md}</option>'
-				+ '				<option value="html">{$opt_htm}</option>'
-				+ '			</select>'
-				+ '			<button type="button" id="bcm-rt-modal-conv" class="bcm-rt-convert-btn" title="{$tip_conv}">{$btn_conv}</button>'
-				+ '		</div>'
-				+ '	</div>'
-				+ '	<div class="bcm-rt-modal-body">'
-				+ '		<textarea id="bcm-rt-modal-fallback-ta" class="bcm-rt-modal-fallback-ta"></textarea>'
-				+ '		<div id="bcm-rt-modal-mount" class="bcm-rt-modal-mount"></div>'
-				+ '	</div>'
-				+ '	<div class="bcm-rt-modal-footer">'
-				+ '		<div class="bcm-rt-modal-hint">{$msg_modal_hint}</div>'
-				+ '		<div class="bcm-rt-modal-actions">'
-				+ '			<button type="button" id="bcm-rt-modal-cancel" class="btn btn-secondary" style="padding: 8px 14px;">{$btn_cancel}</button>'
-				+ '			<button type="button" id="bcm-rt-modal-apply" class="btn btn-success" style="padding: 8px 16px;">{$btn_apply}</button>'
-				+ '		</div>'
-				+ '	</div>'
-				+ '</div>';
+			const modalOverlay = document.createElement("div");
+			modalOverlay.id = "bcm-rt-modal-overlay";
+			modalOverlay.className = "bcm-rt-modal-overlay";
+			modalOverlay.innerHTML = ""
+				+ "<div class=\"bcm-rt-modal-dialog\" onclick=\"event.stopPropagation();\">"
+				+ "	<div class=\"bcm-rt-modal-header\">"
+				+ "		<h3 class=\"bcm-rt-modal-title\" id=\"bcm-rt-modal-title\"></h3>"
+				+ "		<div class=\"bcm-rt-modal-controls\">"
+				+ "			<label for=\"bcm-rt-modal-fmt\" style=\"font-weight: bold; color: #334155;\">' . $lbl_fmt . '</label>"
+				+ "			<select id=\"bcm-rt-modal-fmt\" style=\"padding: 4px 8px; font-size: 12px; border: 1px solid #cbd5e1; border-radius: 3px;\">"
+				+ "				<option value=\"markdown\">' . $opt_md . '</option>"
+				+ "				<option value=\"html\">' . $opt_htm . '</option>"
+				+ "			</select>"
+				+ "			<button type=\"button\" id=\"bcm-rt-modal-conv\" class=\"bcm-rt-convert-btn\" title=\"' . $tip_conv . '\">' . $btn_conv . '</button>"
+				+ "		</div>"
+				+ "	</div>"
+				+ "	<div class=\"bcm-rt-modal-body\">"
+				+ "		<textarea id=\"bcm-rt-modal-fallback-ta\" class=\"bcm-rt-modal-fallback-ta\"></textarea>"
+				+ "		<div id=\"bcm-rt-modal-mount\" class=\"bcm-rt-modal-mount\"></div>"
+				+ "	</div>"
+				+ "	<div class=\"bcm-rt-modal-footer\">"
+				+ "		<div class=\"bcm-rt-modal-hint\">' . $msg_modal_hint . '</div>"
+				+ "		<div class=\"bcm-rt-modal-actions\">"
+				+ "			<button type=\"button\" id=\"bcm-rt-modal-cancel\" class=\"btn btn-secondary\" style=\"padding: 8px 14px;\">' . $btn_cancel . '</button>"
+				+ "			<button type=\"button\" id=\"bcm-rt-modal-apply\" class=\"btn btn-success\" style=\"padding: 8px 16px;\">' . $btn_apply . '</button>"
+				+ "		</div>"
+				+ "	</div>"
+				+ "</div>";
 
 			document.body.appendChild(modalOverlay);
+			window.bcmRtState.modalOverlay = modalOverlay;
 
-			const fmtSelect = document.getElementById('bcm-rt-modal-fmt');
-			const convBtn   = document.getElementById('bcm-rt-modal-conv');
-			const cancelBtn = document.getElementById('bcm-rt-modal-cancel');
-			const applyBtn  = document.getElementById('bcm-rt-modal-apply');
+			const fmtSelect = document.getElementById("bcm-rt-modal-fmt");
+			const convBtn   = document.getElementById("bcm-rt-modal-conv");
+			const cancelBtn = document.getElementById("bcm-rt-modal-cancel");
+			const applyBtn  = document.getElementById("bcm-rt-modal-apply");
 
-			fmtSelect.addEventListener('change', function() {
-				if (!modalEditorInstance) return;
-				if (this.value === 'html') {
-					modalEditorInstance.changeMode('wysiwyg', true);
+			fmtSelect.addEventListener("change", function() {
+				const ed = window.bcmRtState.modalEditorInstance;
+				if (!ed) return;
+				if (this.value === "html") {
+					ed.changeMode("wysiwyg", true);
 				} else {
-					modalEditorInstance.changeMode('markdown', true);
+					ed.changeMode("markdown", true);
 				}
 				setTimeout(function() { ensureToolbarButtonsReadable(modalOverlay); }, 50);
 			});
 
-			convBtn.addEventListener('click', function() {
-				if (!modalEditorInstance) return;
-				if (fmtSelect.value === 'markdown') {
-					fmtSelect.value = 'html';
-					modalEditorInstance.changeMode('wysiwyg', true);
+			convBtn.addEventListener("click", function() {
+				const ed = window.bcmRtState.modalEditorInstance;
+				if (!ed) return;
+				if (fmtSelect.value === "markdown") {
+					fmtSelect.value = "html";
+					ed.changeMode("wysiwyg", true);
 				} else {
-					fmtSelect.value = 'markdown';
-					modalEditorInstance.changeMode('markdown', true);
+					fmtSelect.value = "markdown";
+					ed.changeMode("markdown", true);
 				}
 				setTimeout(function() { ensureToolbarButtonsReadable(modalOverlay); }, 50);
 			});
 
-			cancelBtn.addEventListener('click', closeRichTextModal);
-			applyBtn.addEventListener('click', applyRichTextModal);
+			cancelBtn.addEventListener("click", closeRichTextModal);
+			applyBtn.addEventListener("click", applyRichTextModal);
 
-			document.addEventListener('keydown', function(ev) {
-				if (ev.key === 'Escape' && modalOverlay && modalOverlay.classList.contains('active')) {
+			document.addEventListener("keydown", function(ev) {
+				if (ev.key === "Escape" && modalOverlay.classList.contains("active")) {
 					closeRichTextModal();
 				}
 			});
@@ -502,40 +490,44 @@ class rich_text {
 		}
 
 		function closeRichTextModal() {
-			if (!modalOverlay) return;
-			modalOverlay.classList.remove('active');
-			if (modalEditorInstance && typeof modalEditorInstance.destroy === 'function') {
-				try { modalEditorInstance.destroy(); } catch (e) {}
+			const st = window.bcmRtState;
+			const overlay = document.getElementById("bcm-rt-modal-overlay");
+			if (overlay) {
+				overlay.classList.remove("active");
 			}
-			modalEditorInstance = null;
-			activeFieldCfg = null;
+			if (st.modalEditorInstance && typeof st.modalEditorInstance.destroy === "function") {
+				try { st.modalEditorInstance.destroy(); } catch (e) {}
+			}
+			st.modalEditorInstance = null;
+			st.activeFieldCfg = null;
 		}
 
 		function applyRichTextModal() {
-			if (!activeFieldCfg) return;
-			const taEl      = document.getElementById(activeFieldCfg.textareaId);
-			const fmtEl     = document.getElementById(activeFieldCfg.formatInputId);
-			const prevBody  = document.getElementById(activeFieldCfg.previewBodyId);
-			const badgeEl   = document.getElementById(activeFieldCfg.badgeId);
-			const modalFmt  = document.getElementById('bcm-rt-modal-fmt');
-			const fallbackTa = document.getElementById('bcm-rt-modal-fallback-ta');
+			const st = window.bcmRtState;
+			if (!st.activeFieldCfg) return;
+			const taEl       = document.getElementById(st.activeFieldCfg.textareaId);
+			const fmtEl      = document.getElementById(st.activeFieldCfg.formatInputId);
+			const prevBody   = document.getElementById(st.activeFieldCfg.previewBodyId);
+			const badgeEl    = document.getElementById(st.activeFieldCfg.badgeId);
+			const modalFmt   = document.getElementById("bcm-rt-modal-fmt");
+			const fallbackTa = document.getElementById("bcm-rt-modal-fallback-ta");
 
-			const chosenFormat = modalFmt ? modalFmt.value : 'markdown';
-			let newRawValue = '';
-			let newPreviewHtml = '';
+			const chosenFormat = modalFmt ? modalFmt.value : "markdown";
+			let newRawValue = "";
+			let newPreviewHtml = "";
 
-			if (modalEditorInstance) {
-				if (chosenFormat === 'html') {
-					newRawValue = modalEditorInstance.getHTML();
+			if (st.modalEditorInstance) {
+				if (chosenFormat === "html") {
+					newRawValue = st.modalEditorInstance.getHTML();
 				} else {
-					newRawValue = modalEditorInstance.getMarkdown();
+					newRawValue = st.modalEditorInstance.getMarkdown();
 				}
-				newPreviewHtml = modalEditorInstance.getHTML();
+				newPreviewHtml = st.modalEditorInstance.getHTML();
 			} else if (fallbackTa) {
 				newRawValue = fallbackTa.value;
-				newPreviewHtml = '<pre style="margin:0; white-space:pre-wrap; font-family:inherit;">'
-					+ newRawValue.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-					+ '</pre>';
+				newPreviewHtml = "<pre style=\"margin:0; white-space:pre-wrap; font-family:inherit;\">"
+					+ newRawValue.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+					+ "</pre>";
 			}
 
 			if (taEl) {
@@ -545,102 +537,117 @@ class rich_text {
 				fmtEl.value = chosenFormat;
 			}
 			if (badgeEl) {
-				badgeEl.textContent = (chosenFormat === 'html') ? 'HTML' : 'Markdown';
-				badgeEl.className = 'bcm-rt-badge ' + (chosenFormat === 'html' ? 'bcm-rt-badge-html' : 'bcm-rt-badge-md');
+				badgeEl.textContent = (chosenFormat === "html") ? "HTML" : "Markdown";
+				badgeEl.className = "bcm-rt-badge " + (chosenFormat === "html" ? "bcm-rt-badge-html" : "bcm-rt-badge-md");
 			}
 			if (prevBody) {
-				if (newRawValue.trim() === '') {
-					prevBody.innerHTML = '<span class="bcm-rt-empty-placeholder">{$txt_empty_prev}</span>';
+				if (newRawValue.trim() === "") {
+					prevBody.innerHTML = "<span class=\"bcm-rt-empty-placeholder\">' . $txt_empty_prev . '</span>";
 				} else {
 					prevBody.innerHTML = newPreviewHtml;
 				}
 			}
 
-			if (typeof isFormDirty !== 'undefined') {
+			if (typeof isFormDirty !== "undefined") {
 				isFormDirty = true;
 			}
 
 			closeRichTextModal();
 		}
 
-		// Otevře modální editor na popředí pro vybrané pole detailu
 		window.bcmOpenRichTextModal = function(cfg) {
+			const st         = window.bcmRtState;
 			const overlay    = getOrCreateModal();
-			const titleEl    = document.getElementById('bcm-rt-modal-title');
-			const fmtSelect  = document.getElementById('bcm-rt-modal-fmt');
-			const convBtn    = document.getElementById('bcm-rt-modal-conv');
-			const mountEl    = document.getElementById('bcm-rt-modal-mount');
-			const fallbackTa = document.getElementById('bcm-rt-modal-fallback-ta');
+			const titleEl    = document.getElementById("bcm-rt-modal-title");
+			const fmtSelect  = document.getElementById("bcm-rt-modal-fmt");
+			const convBtn    = document.getElementById("bcm-rt-modal-conv");
+			const mountEl    = document.getElementById("bcm-rt-modal-mount");
+			const fallbackTa = document.getElementById("bcm-rt-modal-fallback-ta");
 
 			const taEl  = document.getElementById(cfg.textareaId);
 			const fmtEl = document.getElementById(cfg.formatInputId);
 			if (!taEl || !fmtEl) return;
 
-			activeFieldCfg = cfg;
-			const currentVal = taEl.value || '';
-			const currentFmt = (fmtEl.value === 'html') ? 'html' : 'markdown';
+			st.activeFieldCfg = cfg;
+			const currentVal = taEl.value || "";
+			const currentFmt = (fmtEl.value === "html") ? "html" : "markdown";
 
 			if (titleEl) {
-				titleEl.textContent = '{$lbl_modal_title} ' + (cfg.fieldLabel || cfg.columnName || '');
+				titleEl.textContent = "' . $lbl_modal_title . ' " + (cfg.fieldLabel || cfg.columnName || "");
 			}
 			if (fmtSelect) {
 				fmtSelect.value = currentFmt;
 			}
 
-			if (modalEditorInstance && typeof modalEditorInstance.destroy === 'function') {
-				try { modalEditorInstance.destroy(); } catch (e) {}
-				modalEditorInstance = null;
+			if (st.modalEditorInstance && typeof st.modalEditorInstance.destroy === "function") {
+				try { st.modalEditorInstance.destroy(); } catch (e) {}
+				st.modalEditorInstance = null;
 			}
-			mountEl.innerHTML = '';
+			mountEl.innerHTML = "";
+			overlay.classList.add("active");
 
-			overlay.classList.add('active');
-
-			if (typeof toastui === 'undefined' || !toastui.Editor) {
-				mountEl.style.display = 'none';
-				fallbackTa.style.display = 'block';
-				fallbackTa.value = currentVal;
-				if (convBtn) convBtn.style.display = 'none';
-				fallbackTa.focus();
-				return;
-			}
-
-			fallbackTa.style.display = 'none';
-			mountEl.style.display = 'block';
-			if (convBtn) convBtn.style.display = 'inline-block';
-
-			const isHtmlInit = (currentFmt === 'html');
-			const previewMode = (window.innerWidth >= 900) ? 'vertical' : 'tab';
-
-			modalEditorInstance = new toastui.Editor({
-				el: mountEl,
-				height: '100%',
-				initialEditType: isHtmlInit ? 'wysiwyg' : 'markdown',
-				previewStyle: previewMode,
-				usageStatistics: false,
-				initialValue: isHtmlInit ? '' : currentVal,
-				toolbarItems: [
-					['heading', 'bold', 'italic', 'strike'],
-					['hr', 'quote'],
-					['ul', 'ol', 'task'],
-					['table', 'link'],
-					['code', 'codeblock']
-				]
-			});
-
-			if (isHtmlInit && currentVal.trim() !== '') {
-				modalEditorInstance.setHTML(currentVal);
-			}
-
-			setTimeout(function() {
-				ensureToolbarButtonsReadable(overlay);
-				if (modalEditorInstance && typeof modalEditorInstance.focus === 'function') {
-					modalEditorInstance.focus();
+			function initEditorWhenReady() {
+				if (typeof toastui === "undefined" || !toastui.Editor) {
+					mountEl.style.display = "none";
+					fallbackTa.style.display = "block";
+					fallbackTa.value = currentVal;
+					if (convBtn) convBtn.style.display = "none";
+					fallbackTa.focus();
+					return;
 				}
-			}, 60);
+
+				fallbackTa.style.display = "none";
+				mountEl.style.display = "block";
+				if (convBtn) convBtn.style.display = "inline-block";
+
+				const isHtmlInit = (currentFmt === "html");
+				const previewMode = (window.innerWidth >= 900) ? "vertical" : "tab";
+
+				st.modalEditorInstance = new toastui.Editor({
+					el: mountEl,
+					height: "100%",
+					initialEditType: isHtmlInit ? "wysiwyg" : "markdown",
+					previewStyle: previewMode,
+					usageStatistics: false,
+					initialValue: isHtmlInit ? "" : currentVal,
+					toolbarItems: [
+						["heading", "bold", "italic", "strike"],
+						["hr", "quote"],
+						["ul", "ol", "task"],
+						["table", "link"],
+						["code", "codeblock"]
+					]
+				});
+
+				if (isHtmlInit && currentVal.trim() !== "") {
+					st.modalEditorInstance.setHTML(currentVal);
+				}
+
+				setTimeout(function() {
+					ensureToolbarButtonsReadable(overlay);
+					if (st.modalEditorInstance && typeof st.modalEditorInstance.focus === "function") {
+						st.modalEditorInstance.focus();
+					}
+				}, 60);
+			}
+
+			if (typeof toastui !== "undefined" && toastui.Editor) {
+				initEditorWhenReady();
+			} else {
+				let attempts = 0;
+				const waitTimer = setInterval(function() {
+					attempts++;
+					if ((typeof toastui !== "undefined" && toastui.Editor) || attempts > 30) {
+						clearInterval(waitTimer);
+						initEditorWhenReady();
+					}
+				}, 50);
+			}
 		};
 	})();
-</script>
-HTML;
+</script>' . "\n"; // Uzavření skriptu modálního editoru
+
+		return $out;                                                         // Vrácení CSS a JS zdrojů
 	}
 
 	/**
@@ -691,20 +698,18 @@ HTML;
 
 		$pencil_svg = '<svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>'; // Ikona tužky
 
-		return <<<HTML
-{$assets_html}
-<div class="bcm-rt-preview-card">
-	<div class="bcm-rt-preview-bar">
-		<span id="{$badge_id}" class="bcm-rt-badge {$badge_cls}">{$badge_txt}</span>
-		<button type="button" class="bcm-rt-edit-btn" title="{$tip_edit_btn}" onclick="window.bcmOpenRichTextModal({$safe_onclick_cfg});">
-			{$pencil_svg}
-			<span>{$btn_edit_lbl}</span>
-		</button>
-	</div>
-	<div id="{$prev_id}" class="bcm-rt-preview-body" ondblclick="window.bcmOpenRichTextModal({$safe_onclick_cfg});" title="{$tip_edit_btn}" style="cursor: pointer;">{$rendered_preview}</div>
-	<textarea id="{$ta_id}" name="{$safe_name}" style="display: none;">{$safe_val}</textarea>
-	<input type="hidden" id="{$fmt_id}" name="{$safe_name}__target_format" value="{$detected_format}">
-</div>
-HTML;
+		return $assets_html
+			. "<div class=\"bcm-rt-preview-card\">\n"
+			. "\t<div class=\"bcm-rt-preview-bar\">\n"
+			. "\t\t<span id=\"{$badge_id}\" class=\"bcm-rt-badge {$badge_cls}\">{$badge_txt}</span>\n"
+			. "\t\t<button type=\"button\" class=\"bcm-rt-edit-btn\" title=\"{$tip_edit_btn}\" onclick=\"window.bcmOpenRichTextModal({$safe_onclick_cfg});\">\n"
+			. "\t\t\t{$pencil_svg}\n"
+			. "\t\t\t<span>{$btn_edit_lbl}</span>\n"
+			. "\t\t</button>\n"
+			. "\t</div>\n"
+			. "\t<div id=\"{$prev_id}\" class=\"bcm-rt-preview-body\" ondblclick=\"window.bcmOpenRichTextModal({$safe_onclick_cfg});\" title=\"{$tip_edit_btn}\" style=\"cursor: pointer;\">{$rendered_preview}</div>\n"
+			. "\t<textarea id=\"{$ta_id}\" name=\"{$safe_name}\" style=\"display: none;\">{$safe_val}</textarea>\n"
+			. "\t<input type=\"hidden\" id=\"{$fmt_id}\" name=\"{$safe_name}__target_format\" value=\"{$detected_format}\">\n"
+			. "</div>";                                                      // Výsledný HTML kód Preview karty
 	}
 }
