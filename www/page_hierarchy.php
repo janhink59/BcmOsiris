@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-31 11:00
+ * Verze: 2026-10-31 16:15
  * Soubor: page_hierarchy.php
  * Třída: page_hierarchy
  * Účel: Správa registru sekundárních hierarchií a stromů štítků / tagů (tabulka hierarchy).
@@ -22,6 +22,11 @@
  *   v tabulce `link`, nelze hierarchii přepodřizovat ani smazat.
  *
  * Změny:
+ * 2026-10-31 16:15 - Oprava inicializace výchozích hodnot `is_leaf = '1'`, `multiple = '1'`
+ *                    a `leaf_only = '1'` při zakládání nového záznamu (`update_guid === 'NEW'`),
+ *                    kterou dříve přebíjela výchozí nula checkboxu z `abstract_page_master_detail`.
+ *                  - Doplněno varovné upozornění u existujících záznamů s `is_leaf = 0`
+ *                    (složka registru vs. samostatná koncová hierarchie).
  * 2026-10-31 11:00 - Vytvoření první verze stránky pro správu registru hierarchií a tagů.
  * =============================================================================
  */
@@ -34,8 +39,8 @@ class page_hierarchy extends abstract_page_tree {
 		parent::__construct();                                               // Inicializace frází, kontroly přístupu a D&D v předkovi
 
 		$this->class_name = 'hierarchy';                                     // Logická třída pro entity_manager
-		$this->can_edit_structure = !$this->is_readonly;                     // Povolení úpravy struktury a D&D v editačním režimu
-		$this->allow_insert = !$this->is_readonly;                           // Povolení zakládání nových hierarchií a složek
+		$this->can_edit_structure = ! $this->is_readonly;                    // Povolení úpravy struktury a D&D v editačním režimu
+		$this->allow_insert = ! $this->is_readonly;                          // Povolení zakládání nových hierarchií a složek
 		$this->storage_key_prefix = 'bcm_tree_hierarchy';                    // Klíč v sessionStorage pro sbalené větve
 
 		$this->page_title = $this->phrase('page_title', [], 'Sekundární hierarchie a štítky (Tagy)'); // Lokalizovaný titulek stránky
@@ -110,13 +115,14 @@ class page_hierarchy extends abstract_page_tree {
 	}
 
 	/**
-	 * Vykreslí v horní části detailu banner Drag & Dropu a metodickou nápovědu.
+	 * Vykreslí v horní části detailu banner Drag & Dropu, upozornění u složky (is_leaf = 0) a metodickou nápovědu.
 	 */
 	protected function render_detail_top(): void {
 		global $datarow;                                                     // Aktuálně načtený řádek detailu
 		$update_guid = trim((string)getinput('update_guid'));                // Identifikátor záznamu z požadavku
 
-		if ($update_guid === 'NEW' AND is_array($datarow) AND ($datarow['is_leaf'] ?? '') === '') { // Výchozí hodnoty pro novou hierarchii
+		// Při otevření formuláře pro novou hierarchii (mimo návrat po chybě v POSTu) vždy předvyplníme is_leaf = 1, multiple = 1, leaf_only = 1
+		if ($update_guid === 'NEW' AND is_array($datarow) AND ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') { // Výchozí stav nové hierarchie
 			$datarow['is_leaf'] = '1';                                       // Výchozí stav = koncová hierarchie (1)
 			$datarow['multiple'] = '1';                                      // Výchozí povolení vícenásobného přiřazení (1)
 			$datarow['leaf_only'] = '1';                                     // Výchozí povolení vazeb pouze na koncové listy (1)
@@ -124,7 +130,12 @@ class page_hierarchy extends abstract_page_tree {
 
 		parent::render_detail_top();                                         // Aplikace D&D hodnot a vykreslení pruhu z předka
 
-		$note = htmlspecialchars($this->phrase('msg_hierarchy_type_hint', [], 'Tip: Záznamy s příznakem „Koncový uzel (is_leaf = 1)“ představují samostatné hierarchie nebo sady štítků (tagů), které se automaticky registrují do logických tříd (meta_class) a v nichž lze spravovat jednotlivé položky. Záznamy s is_leaf = 0 slouží jako organizační složky tohoto registru.')); // Metodická nápověda
+		if ($update_guid !== '' AND $update_guid !== 'NEW' AND empty($datarow['is_leaf'])) { // Upozornění u složky registru (is_leaf = 0)
+			$msg_folder = htmlspecialchars($this->phrase('msg_hierarchy_is_folder_notice', [], '📁 Tato položka má nezaškrtnutý příznak „Samostatná hierarchie (is_leaf = 0)“, proto slouží pouze jako organizační složka tohoto registru a nenabízí se na stránce Položky sekundárních hierarchií. Pokud do ní chcete vkládat položky (uzly), zaškrtněte pole „Samostatná hierarchie (list)“ a uložte změny.')); // Text upozornění
+			echo "<div class=\"msg-info\" style=\"margin-bottom: 12px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e; font-weight: normal; font-size: 12px;\">{$msg_folder}</div>\n"; // Žlutý informační box
+		}
+
+		$note = htmlspecialchars($this->phrase('msg_hierarchy_type_hint', [], 'Tip: Záznamy s příznakem „Samostatná hierarchie (is_leaf = 1)“ představují koncové hierarchie nebo sady štítků (tagů), které se automaticky registrují do logických tříd (meta_class) a v nichž lze spravovat jednotlivé položky. Záznamy s is_leaf = 0 slouží jako organizační složky tohoto registru.')); // Metodická nápověda
 		echo "<div style=\"color: #475569; font-size: 12px; margin-bottom: 12px;\">{$note}</div>\n"; // Výpis nápovědy
 	}
 }

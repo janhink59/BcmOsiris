@@ -3,7 +3,7 @@ GO
 
 /* =============================================================================
  * Procedura: p_fix_meta_column
- * Verze: 2026-10-31 11:00
+ * Verze: 2026-10-31 16:30
  * Soubor: p_fix_meta_column.sql
  * Účel: Plně automatizovaná synchronizace a provazování dědičnosti metadat.
  *       Plně respektuje STI architekturu – sloupce se vážou výhradně
@@ -20,12 +20,15 @@ GO
  *   'sys_global_columns' (object_type = 'C'), ze kterého čerpá entity_manager.php.
  *
  * Změny:
+ * - 2026-10-31 16:30: Doplněno nastavení povinnosti (is_mandatory = 1) pro klíčové
+ *   a identifikační sloupce v sys_global_columns i podle meta_original_keys.
+ *   Doplněna oprava bezdětných záznamů v tabulce hierarchy s is_leaf = 0 na is_leaf = 1
+ *   a zpřesněn lokální popisek sloupce is_leaf pro třídu hierarchy.
  * - 2026-10-31 11:00: V sekci 2d omezeno promítání hierarchií do meta_class
  *   pouze na koncové hierarchie (is_leaf = 1) včetně symetrických 'L' záznamů.
  *   V sekci 4 omezeno automatické generování sloupců v meta_column na bázové
  *   třídy (ancestor_class IS NULL), aby odvozené STI hierarchie čistě dědily
- *   sloupce z třídy hierarchy_item bez duplicit. Doplněny výchozí české popisky
- *   pro sloupce is_leaf, multiple, leaf_only a hierarchy v sys_global_columns.
+ *   sloupce z třídy hierarchy_item bez duplicit.
  * - 2026-10-30 23:35: Skrytí technických sloupců ancestor_link a is_derived
  *   v globálním slovníku a napojení sloupce hierarchy_item.hierarchy na hierarchy.
  * ============================================================================= */
@@ -270,6 +273,23 @@ BEGIN
 		DECLARE @stg_hier_item uuid = dbo.f_generate_original('meta_object', @sys_owner, 'T', 'hierarchy_item');
 		DECLARE @cls_hier_item uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy_item', '');
 
+		-- Oprava dříve založených hierarchií, které se kvůli nezaškrtnutému checkboxu uložily s is_leaf = 0,
+		-- přestože nemají žádné podřízené položky v tabulce hierarchy
+		UPDATE h
+		SET h.is_leaf = 1,
+			h.multiple = CASE WHEN h.multiple = 0 AND h.leaf_only = 0 THEN 1 ELSE h.multiple END,
+			h.leaf_only = CASE WHEN h.multiple = 0 AND h.leaf_only = 0 THEN 1 ELSE h.leaf_only END
+		FROM hierarchy h
+		WHERE h.is_leaf = 0
+		  AND h.removed = 0
+		  AND h.builtin_code <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM hierarchy ch
+			WHERE ch.parent_uuid = h.original
+			  AND ch.record_type = 'A'
+			  AND ch.removed = 0
+		  );
+
 		-- Označení tříd v meta_class jako removed = 1, pokud byla odpovídající hierarchie změněna na složku (is_leaf = 0) nebo smazána
 		UPDATE mc
 		SET mc.removed = 1,
@@ -283,6 +303,29 @@ BEGIN
 		  AND mc.class_name <> 'hierarchy_item'
 		  AND mc.removed = 0
 		  AND (h.uuid IS NULL OR h.removed = 1 OR h.is_leaf = 0);
+
+		-- Obnova dříve zrušených záznamů v meta_class, pokud je odpovídající hierarchie opět platná a koncová (is_leaf = 1)
+		UPDATE mc
+		SET mc.removed = 0,
+			mc.inactive = h.inactive,
+			mc.caption = NULLIF(h.caption, ''),
+			mc.caption_plural = NULLIF(h.caption, ''),
+			mc.description = NULLIF(h.description_text, ''),
+			mc.helptext = NULLIF(h.help_text, ''),
+			mc.sort_code = LEFT(h.sort_code, 20),
+			mc.svg_icon = NULLIF(h.svg_icon, ''),
+			mc.date_modified = @batch_time
+		FROM meta_class mc
+		JOIN hierarchy h
+			ON h.builtin_code = mc.class_name
+			AND h.object_owner = mc.object_owner
+			AND h.record_type = 'A'
+			AND h.is_leaf = 1
+			AND h.removed = 0
+		WHERE mc.storage_object = @stg_hier_item
+		  AND mc.class_name <> 'hierarchy_item'
+		  AND mc.record_type = 'A'
+		  AND mc.removed = 1;
 
 		-- Vložení chybějících 'A' záznamů do meta_class pouze pro koncové hierarchie (is_leaf = 1)
 		INSERT INTO meta_class (
@@ -654,6 +697,43 @@ BEGIN
 			'caption_forward', 'caption_backward', 'note'
 		)
 
+	-- Nastavení povinnosti (is_mandatory = 1) pro klíčové a základní identifikační sloupce v globálním slovníku
+	UPDATE meta_column
+	SET is_mandatory = 1
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND who_modified = 0x00
+	  AND column_name IN (
+		'builtin_code', 'class_name', 'column_name', 'source_code',
+		'codetable_name', 'value_code', 'link_code', 'hierarchy',
+		'caption', 'login_name', 'link_def', 'from_object', 'to_object'
+	  );
+
+	-- Nastavení povinnosti (is_mandatory = 1) u lokálních klíčových sloupců evidovaných v meta_original_keys
+	IF OBJECT_ID('meta_original_keys') IS NOT NULL
+	BEGIN
+		UPDATE mc
+		SET mc.is_mandatory = 1
+		FROM meta_column mc
+		JOIN meta_class mcl
+			ON mcl.original = mc.parent_class
+			AND mcl.object_owner = 0x00
+			AND mcl.record_type = 'A'
+			AND mcl.removed = 0
+		JOIN meta_object mo
+			ON mo.original = mcl.storage_object
+			AND mo.object_owner = 0x00
+			AND mo.record_type = 'A'
+			AND mo.removed = 0
+		JOIN meta_original_keys mok
+			ON mok.table_name = mo.builtin_code
+			AND (mok.key1_column = mc.column_name OR mok.key2_column = mc.column_name)
+		WHERE mc.object_owner = 0x00
+		  AND mc.record_type = 'A'
+		  AND mc.who_modified = 0x00
+		  AND ISNULL(mc.is_mandatory, 0) = 0;
+	END
+
 	-- Výchozí zapnutí podpory formátovaného textu (Markdown / HTML: is_html = 1)
 	-- pro víceřádkové popisné sloupce v globálním slovníku (pokud nebyly ručně změněny)
 	UPDATE meta_column
@@ -742,8 +822,19 @@ BEGIN
 	-- -------------------------------------------------------------------------
 	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
 	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');
-	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
+	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_column', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
 	DECLARE @cls_hierarchy uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy', '');
+
+	-- Specifický popisek sloupce is_leaf u třídy hierarchy (odlišení samostatné hierarchie od složky registru)
+	UPDATE meta_column
+	SET caption = 'Samostatná hierarchie / sada štítků (is_leaf)',
+		label = 'Samostatná hierarchie (is_leaf)',
+		header = 'Hierarchie',
+		helptext = 'Zaškrtněte (1) u koncové definice hierarchie nebo sady štítků, do které budete vkládat položky. Odškrtněte (0) pouze u nadřazené organizační složky v tomto registru.'
+	WHERE parent_class = @cls_hierarchy
+	  AND object_owner = 0x00
+	  AND column_name = 'is_leaf'
+	  AND who_modified = 0x00;
 
 	UPDATE meta_column
 	SET referenced_class = @cls_meta_class

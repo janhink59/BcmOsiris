@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-31 11:00
+ * Verze: 2026-10-31 16:30
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – čtecí, metadatová a UI vrstva (STI Architektura).
  *       Zápisové a schvalovací metody jsou vyčleněny do traitu entity_manager_write
@@ -30,23 +30,19 @@
  *    `load_metadata()`, `fetch_rows()` i `render_dynamic_input()` materializované
  *    tabulkové proměnné (`DECLARE @t TABLE`) s primárními klíči, které umožňují
  *    provádět přímý Index Seek operace nad fyzickými tabulkami.
- * 3. Uzamčení klíčových sloupců z meta_original_keys a uzamčení hierarchií
+ * 3. Povinnost, unikátnost a uzamčení klíčových sloupců z meta_original_keys
  *    Klíčové sloupce určující deterministický hash `original` (včetně 4složkového klíče
- *    v tabulce `link`) lze zadat výhradně při zakládání nového záznamu (`update_guid === 'NEW'`).
- *    U hierarchických tabulek se sloupcem `parent_uuid` metoda `is_hierarchy_node_locked()`
- *    uzamyká přepodřizování (`parent_uuid`), rušení koncového příznaku (`is_leaf`) a mazání
- *    uzlů, na nichž nebo na jejichž podřízených uzlech již existují platné vazby v `link`.
+ *    v tabulce `link`) jsou povinné (`required`) a lze je zadat výhradně při zakládání
+ *    nového záznamu (`update_guid === 'NEW'`). Případnou chybu prázdného nebo duplicitního
+ *    klíče vrací `get_last_save_error()` pro zobrazení v detailu bez ztráty dat.
  * 
  * Změny:
+ * 2026-10-31 16:30 - Doplněna vlastnost `$last_save_error` a metody `get_last_save_error()`
+ *                    a `set_last_save_error()` pro čisté předání chyby validace klíčů do UI.
+ *                  - V `render_dynamic_input()` vynucen atribut `required` pro všechny
+ *                    klíčové sloupce z `$this->original_key_cols` (mimo `ancestor_link`).
  * 2026-10-31 11:00 - V `fetch_rows()` omezen výraz `COALESCE(m.[col], o.[col])` u nechráněných
- *                    sloupců pouze na metadatové tabulky (`meta_*`), aby u věcných tabulek
- *                    mohl tenant v overridu nastavit `parent_uuid = NULL` (přesun do kořene)
- *                    nebo `valid_to = NULL` bez nechtěného návratu systémové hodnoty `o`.
- *                  - V `render_dynamic_input()` doplněn filtr `a.is_leaf = 1` pro výběr
- *                    nadřízené hierarchie (`column_name === 'hierarchy'`) v `hierarchy_item`.
- * 2026-10-31 00:40 - Sjednocení názvu vazebního sloupce `hierarchy` v tabulce `hierarchy_item`.
- * 2026-10-30 23:55 - Rozšíření klíčových sloupců tabulky `link` na 4 složky a doplnění
- *                    metody `is_hierarchy_node_locked()`.
+ *                    sloupců pouze na metadatové tabulky (`meta_*`).
  * =============================================================================
  */
 
@@ -72,6 +68,7 @@ class entity_manager {
 	private array $col_nulls = [];                                           // Příznaky nullability fyzických sloupců
 	private array $original_key_cols = [];                                   // Klíčové sloupce z meta_original_keys (uzamčené mimo NEW)
 	private array $hierarchy_lock_cache = [];                                // Keš vyhodnocení uzamčení uzlů hierarchie v requestu
+	private string $last_save_error = '';                                    // Text poslední validační chyby při pokusu o uložení
 
 	/**
 	 * Konstruktor třídy.
@@ -119,10 +116,24 @@ class entity_manager {
 
 	/**
 	 * Vrátí pole klíčových sloupců (z meta_original_keys nebo link), které definují
-	 * deterministický klíč original a nesmí se u existujících záznamů měnit.
+	 * deterministický klíč original a nesmí se u existujícího záznamu měnit.
 	 */
 	public function get_original_key_columns(): array {
 		return $this->original_key_cols;                                     // Vrácení seznamu klíčových sloupců
+	}
+
+	/**
+	 * Vrátí text poslední validační chyby při ukládání (prázdný řetězec = bez chyby).
+	 */
+	public function get_last_save_error(): string {
+		return $this->last_save_error;                                       // Vrácení chybové hlášky ze save_post_data()
+	}
+
+	/**
+	 * Nastaví text validační chyby při ukládání.
+	 */
+	public function set_last_save_error(string $msg): void {                 // Nastavení chybové hlášky zápisu
+		$this->last_save_error = $msg;                                       // Uložení textu chyby
 	}
 
 	/**
@@ -552,18 +563,24 @@ class entity_manager {
 				}
 			}
 
+			// Klíčové sloupce z meta_original_keys jsou vždy povinné
+			$c_name = (string)$col['column_name'];                           // Technický název sloupce
+			if (in_array($c_name, $this->original_key_cols, true) AND $c_name !== 'ancestor_link') { // Klíčový sloupec originálu
+				$col['is_mandatory'] = 1;                                    // Vynucení příznaku povinného sloupce
+			}
+
 			// B) Vyhodnocení překládaných textových vlastností (včetně dědění z předka)
 			foreach ($trans_col_fields as $tf) {                             // Průchod překládanými vlastnostmi sloupce
 				$col[$tf] = $this->resolve_field_from_arrays($orig, $tf, $col_a_map, $col_anc_map, $col_l_map, $curr_lang, $lang_chain, 'ancestor'); // Překlad
 			}
 
-			$this->columns_meta[$col['column_name']] = $col;                 // Uložení kompletních metadat sloupce
+			$this->columns_meta[$c_name] = $col;                             // Uložení kompletních metadat sloupce
 
 			if ($col['list_order'] !== null) {                               // Pokud má sloupec pořadí v Master panelu
 				$header_val = $col['header'] ?: $col['caption'];             // Záhlaví sloupce v seznamu
 				$list_cols_temp[(int)$col['list_order']] = [                 // Uložení sloupce pod klíčem pořadí
-					'name'   => $col['column_name'],                         // Technický název sloupce
-					'header' => $header_val ?: $col['column_name']           // Zobrazované záhlaví sloupce
+					'name'   => $c_name,                                     // Technický název sloupce
+					'header' => $header_val ?: $c_name                       // Zobrazované záhlaví sloupce
 				];                                                           // Konec položky seznamu
 			}
 		}
@@ -1278,7 +1295,7 @@ HTML;
 
 	/**
 	 * Dynamický HTML generátor formulářových prvků na základě metadat v DB.
-	 * Zajišťuje vizuální vykreslení datových typů, maximálních délek, zamykání polí
+	 * Zajišťuje vizuální vykreslení datových typů, maximálních délek, povinnosti, zamykání polí
 	 * (včetně uzamčení klíčových sloupců z meta_original_keys mimo update_guid === 'NEW'
 	 * a uzamčení hierarchie při navázaných záznamech) i Preview náhledu s modálním
 	 * Markdown / HTML editorem na popředí pro sloupce s is_html = 1.
@@ -1324,7 +1341,9 @@ HTML;
 		if (!empty($meta['max_length'])) {                                   // Pokud má sloupec omezení délky
 			$attrs[] = "maxlength=\"{$meta['max_length']}\"";                // Atribut maxlength
 		}
-		if (!empty($meta['is_mandatory'])) {                                 // Pokud je sloupec povinný
+
+		$is_key_col = (in_array($column_name, $this->original_key_cols, true) AND $column_name !== 'ancestor_link'); // Povinný klíčový sloupec
+		if (!empty($meta['is_mandatory']) OR $is_key_col) {                  // Pokud je sloupec povinný v metadatech nebo je klíčem originálu
 			$attrs[] = "required";                                           // HTML5 atribut required
 		}
 		

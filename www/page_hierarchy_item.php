@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-31 11:00
+ * Verze: 2026-10-31 16:15
  * Soubor: page_hierarchy_item.php
  * Třída: page_hierarchy_item
  * Účel: Správa uzlů (vnitřních složek is_leaf = 0 i koncových listů is_leaf = 1)
@@ -22,6 +22,11 @@
  *   odškrtnout `is_leaf = 1` ani jej smazat.
  *
  * Změny:
+ * 2026-10-31 16:15 - Doplněna automatická oprava bezdětných záznamů v `hierarchy`
+ *                    s `is_leaf = 0`, pokud v databázi dosud neexistovala žádná
+ *                    koncová hierarchie s `is_leaf = 1` (zpřístupnění dříve založených hierarchií).
+ *                  - Oprava inicializace `is_leaf = '1'` u nového uzlu (`update_guid === 'NEW'`)
+ *                    a odstranění duplicitního inline `<script>` pro uzamčení roletky `hierarchy`.
  * 2026-10-31 11:00 - Vytvoření první verze stránky pro správu uzlů sekundárních hierarchií.
  * =============================================================================
  */
@@ -37,8 +42,8 @@ class page_hierarchy_item extends abstract_page_tree {
 		parent::__construct();                                               // Inicializace frází, kontroly přístupu a D&D v předkovi
 
 		$this->class_name = 'hierarchy_item';                                // Logická třída pro entity_manager
-		$this->can_edit_structure = !$this->is_readonly;                     // Povolení úpravy stromu a D&D v editačním režimu
-		$this->allow_insert = !$this->is_readonly;                           // Povolení vkládání nových uzlů
+		$this->can_edit_structure = ! $this->is_readonly;                    // Povolení úpravy stromu a D&D v editačním režimu
+		$this->allow_insert = ! $this->is_readonly;                          // Povolení vkládání nových uzlů
 		$this->page_title = $this->phrase('page_title', [], 'Položky sekundární hierarchie'); // Výchozí titulek stránky
 		$this->tree_heading = $this->phrase('master_heading', [], 'Strom položek hierarchie'); // Nadpis levého panelu
 		$this->tree_caption_header = $this->phrase('th_item_caption', [], 'Uzel hierarchie (Strom)'); // Záhlaví sloupce stromu
@@ -51,6 +56,36 @@ class page_hierarchy_item extends abstract_page_tree {
 
 		global $dbsession;                                                   // Globální kontext relace uživatele
 		$org_sql = guidliteral((string)($dbsession['organization'] ?? '0x00')); // SQL literál aktivní organizace
+
+		// Pojistka pro již založené hierarchie: pokud v tabulce hierarchy neexistuje žádný záznam s is_leaf = 1,
+		// ale existují bezdětné záznamy s is_leaf = 0 (založené před opravou výchozí hodnoty checkboxu),
+		// přepneme tyto koncové záznamy na is_leaf = 1 (čímž je trigger promítne i do meta_class).
+		$leaf_check = sqlfirstrow("
+			SELECT COUNT(1) AS leaf_cnt
+			FROM hierarchy
+			WHERE object_owner IN (0x00, {$org_sql})
+			  AND record_type = 'A'
+			  AND removed = 0
+			  AND is_leaf = 1
+		");                                                                  // Kontrola počtu koncových hierarchií
+		if (empty($leaf_check['leaf_cnt'])) {                                // Pokud zatím není žádná hierarchie označena is_leaf = 1
+			sqlrun("
+				UPDATE h
+				SET h.is_leaf = 1
+				FROM hierarchy h
+				WHERE h.object_owner IN (0x00, {$org_sql})
+				  AND h.record_type = 'A'
+				  AND h.removed = 0
+				  AND h.is_leaf = 0
+				  AND h.builtin_code <> ''
+				  AND NOT EXISTS (
+					SELECT 1 FROM hierarchy ch
+					WHERE ch.parent_uuid = h.original
+					  AND ch.record_type = 'A'
+					  AND ch.removed = 0
+				  )
+			");                                                              // Automatické povýšení bezdětných záznamů na koncové hierarchie
+		}
 
 		$this->parent_hierarchy = trim((string)getinput('hierarchy'));       // Načtení vybrané hierarchie z URL nebo POSTu
 
@@ -66,7 +101,7 @@ class page_hierarchy_item extends abstract_page_tree {
 				  AND is_leaf = 1
 				ORDER BY CASE WHEN object_owner = {$org_sql} THEN 0 ELSE 1 END, sort_code, builtin_code
 			");                                                              // Dotaz na první platnou hierarchii
-			if (!empty($r_def)) {                                            // Pokud byla nalezena alespoň jedna hierarchie
+			if (! empty($r_def)) {                                           // Pokud byla nalezena alespoň jedna hierarchie
 				$this->parent_hierarchy = (string)$r_def['original'];        // Nastavení výchozí hierarchie
 				$_GET['hierarchy'] = $this->parent_hierarchy;                // Zápis do $_GET pro přenos kontextu v odkazech
 			}
@@ -79,7 +114,7 @@ class page_hierarchy_item extends abstract_page_tree {
 			$em_parent = new entity_manager('hierarchy');                    // Správce entit pro načtení nadřazené hierarchie
 			$where_par = "m.original = " . guidliteral($this->parent_hierarchy); // Podmínka pro vyhledání hierarchie
 			$par_row = $em_parent->fetch_row($where_par);                    // Načtení hierarchie s vyhodnocením překladů
-			if (!empty($par_row)) {                                          // Pokud byla definice hierarchie nalezena
+			if (! empty($par_row)) {                                         // Pokud byla definice hierarchie nalezena
 				$this->parent_hierarchy_name = (string)$par_row['caption'] !== '' ? (string)$par_row['caption'] : (string)$par_row['builtin_code']; // Název
 				$this->page_title = $this->phrase('page_title_with_hier', ['hierarchy' => $this->parent_hierarchy_name], 'Položky hierarchie: {' . chr(36) . 'hierarchy}'); // Titulek
 			}
@@ -170,7 +205,7 @@ class page_hierarchy_item extends abstract_page_tree {
 		");                                                                  // Načtení dostupných koncových hierarchií
 
 		$options_html = '';                                                  // HTML položek roletky hierarchií
-		if (is_array($hier_rows) AND !empty($hier_rows)) {                   // Pokud existují koncové hierarchie
+		if (is_array($hier_rows) AND ! empty($hier_rows)) {                  // Pokud existují koncové hierarchie
 			foreach ($hier_rows as $h_row) {                                 // Průchod hierarchiemi
 				$h_uuid = (string)$h_row['original'];                        // UUID hierarchie
 				$h_code = htmlspecialchars((string)$h_row['builtin_code']);  // Ošetřený kód hierarchie
@@ -200,8 +235,8 @@ HTML;
 	}
 
 	/**
-	 * Předvyplní vazbu na aktuální hierarchii (`hierarchy`) u nového záznamu (`update_guid=NEW`),
-	 * uzamkne roletku `hierarchy` proti nechtěnému přesunu do jiného stromu a zavolá předka.
+	 * Předvyplní vazbu na aktuální hierarchii (`hierarchy`) a příznak `is_leaf = 1` u nového záznamu (`update_guid=NEW`).
+	 * Uzamčení roletky `hierarchy` zajišťuje přímo `entity_manager::render_dynamic_input()`.
 	 */
 	protected function render_detail_top(): void {
 		global $datarow;                                                     // Aktuálně načtený datový řádek detailu
@@ -211,31 +246,11 @@ HTML;
 			if ($this->parent_hierarchy !== '') {                            // Pokud máme vybranou nadřazenou hierarchii
 				$datarow['hierarchy'] = $this->parent_hierarchy;             // Pevné předvyplnění příslušnosti k vybrané hierarchii
 			}
-			if (($datarow['is_leaf'] ?? '') === '') {                        // Výchozí stav koncového uzlu
+			if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {             // Při prvotním otevření nového formuláře
 				$datarow['is_leaf'] = '1';                                   // Nová položka je ve výchozím stavu koncovým listem (1)
 			}
 		}
 
 		parent::render_detail_top();                                         // Aplikace D&D hodnot, předvyplnění rodiče a výpis banneru
-
-		// U nového záznamu uzamkneme v DOMu pole `hierarchy` na vybranou hierarchii (u existujícího záznamu jej již zamyká meta_original_keys)
-		if ($update_guid === 'NEW' AND $this->parent_hierarchy !== '') {     // Pojistka uzamčení roletky hierarchy u nového uzlu
-			echo <<<HTML
-			<script>
-				setTimeout(function() {
-					const hSel = document.querySelector('.md-detail form select[name="hierarchy"]');
-					if (hSel && hSel.value !== '') {
-						const hid = document.createElement('input');
-						hid.type = 'hidden';
-						hid.name = 'hierarchy';
-						hid.value = hSel.value;
-						hSel.parentNode.insertBefore(hid, hSel);
-						hSel.disabled = true;
-						hSel.style.backgroundColor = '#f4f4f4';
-					}
-				}, 20);
-			</script>
-HTML;
-		}
 	}
 }
