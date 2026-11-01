@@ -1,18 +1,17 @@
 /* =============================================================================
- * Verze: 2026-10-31 11:00
+ * Verze: 2026-11-01 18:00
  * Soubor: fillup_meta_object.sql
  * Účel:   Idempotentní prvotní naplnění a registrace systémových PHP stránek
  *         a UI tříd (object_type = 'P', object_owner = 0x00) do tabulky meta_object
  *         včetně symetrických 'L' záznamů pro výchozí jazyk ('cs').
- *         Vyčleněno z DDL skriptu table_meta_object.sql.
  * Vazby:  - Vyžaduje existenci tabulky meta_object (table_meta_object.sql)
  *           a funkce dbo.f_generate_original (f_generate_original.sql).
  *         - Slouží jako podklad pro navigační vazby target_object v fillup_meta_menu.sql
  *           a pro kontrolu oprávnění v abstract_page::check_system_role_access().
- * Změny:  - 2026-10-31 11:00: Doplněna registrace šablony abstract_page_tree
+ * Změny:  - 2026-11-01 18:00: Doplněna registrace stromových katalogových stránek
+ *           CRMM: page_asset_class, page_threat, page_impact a page_scenario.
+ *         - 2026-10-31 11:00: Doplněna registrace šablony abstract_page_tree
  *           a stránek page_hierarchy a page_hierarchy_item (system_role = 'U').
- *         - 2026-10-29 16:00: Stránkám page_organization a page_organization_licence
- *           změněna system_role z 'S' na 'A'.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -55,6 +54,10 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('menu_manager', 'Správce navigace', 'Třída pro sestavení a vykreslení drobečkové navigace a menu', 'U'),
 ('entity_manager', 'Správce logických entit', 'Dynamický generátor SQL dotazů, seznamů a formulářů podle metadat', 'U'),
 ('page_main', 'Hlavní panel', 'Úvodní rozcestník aplikace po přihlášení', 'U'),
+('page_asset_class', 'Třídy aktiv (Katalog CRMM)', 'Správa hierarchického katalogu tříd aktiv v modulu CRMM', 'U'),
+('page_threat', 'Katalog hrozeb (CRMM)', 'Správa hierarchického katalogu hrozeb a jejich výchozího hodnocení v modulu CRMM', 'U'),
+('page_impact', 'Katalog dopadů (CRMM)', 'Správa hierarchického číselníku dopadů v modulu CRMM', 'U'),
+('page_scenario', 'Rizikové scénáře (Katalog CRMM)', 'Správa hierarchického katalogu rizikových scénářů a událostí v modulu CRMM', 'U'),
 ('page_hierarchy', 'Sekundární hierarchie a štítky (Tagy)', 'Správa registru sekundárních hierarchií a stromů štítků (tagů)', 'U'),
 ('page_hierarchy_item', 'Položky sekundárních hierarchií', 'Správa uzlů a položek jednotlivých sekundárních hierarchií a štítků', 'U'),
 ('page_meta_class', 'Logické třídy (Objekty)', 'Správa logických entit, jejich vlastností a překladů', 'U'),

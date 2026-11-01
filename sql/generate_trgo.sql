@@ -1,10 +1,12 @@
 /* =============================================================================
- * Verze: 2026-10-30 23:35
+ * Verze: 2026-11-01 18:00
  * Soubor: generate_trgo.sql
  * DÁVKA: Generátor deterministických triggerů (trgo_%)
  * Účel: Hromadné odstranění a znovuvytvoření triggerů pro vazební a katalogové tabulky.
  *       Triggery nastavují deterministické identifikátory (sloupce "uuid" a "original")
- *       při vložení záznamu pro tabulky uvedené v "meta_original_keys".
+ *       při vložení záznamu pro tabulky uvedené v "meta_original_keys", pokud jsou
+ *       klíčové sloupce vyplněny. Pokud je klíčový sloupec (např. builtin_code
+ *       u běžného tenanta) prázdný, ponechá se náhodně vygenerované UUID (NEWID()).
  *
  * Vazby na okolí:
  * - Čte seznam tabulek a klíčových sloupců z tabulky meta_original_keys
@@ -15,12 +17,11 @@
  *   to_object, ancestor_link).
  *
  * Změny:
+ * - 2026-11-01 18:00: Doplněna podmínka neprázdnosti klíčových sloupců
+ *   (@has_key_expr): pokud je builtin_code prázdný, trigger nenapojuje parent
+ *   přes prázdný řetězec a nepřepisuje uuid/original deterministickým hashem
+ *   prázdného řetězce, ale použije náhodný identifikátor i.uuid (NEWID()).
  * - 2026-10-30 23:35: Trigger trgo_link rozšířen o 4. klíčovou složku ancestor_link.
- * - 2026-10-29 15:30: Triggery trgo_% a trgo_link změněny z AFTER INSERT, UPDATE
- *   výhradně na AFTER INSERT (změna klíčových sloupců u existujících záznamů je
- *   zakázána). Doplněna ochrana, aby u vkládaných záznamů typu 'D', 'L' a 'H',
- *   které již mají přiřazený i.original <> 0x00, trigger nikdy nepřepsal jejich
- *   vazbu na původní 'A' záznam.
  * ============================================================================= */
 DECLARE @drop_sql NVARCHAR(MAX) = '';
 
@@ -46,10 +47,12 @@ WHILE @@FETCH_STATUS = 0
 BEGIN
 	DECLARE @key1_expr VARCHAR(200) = 'CAST(i.[' + @key1 + '] AS VARCHAR(MAX))';
 	DECLARE @key2_expr VARCHAR(200) = CASE WHEN @key2 IS NOT NULL THEN 'CAST(i.[' + @key2 + '] AS VARCHAR(MAX))' ELSE 'NULL' END;
+	DECLARE @has_key_expr VARCHAR(500) = 'LTRIM(RTRIM(ISNULL(CAST(i.[' + @key1 + '] AS VARCHAR(MAX)), ''''))) <> ''''';
 	DECLARE @join_expr VARCHAR(MAX) = 'parent.[' + @key1 + '] = i.[' + @key1 + ']';
 	
 	IF @key2 IS NOT NULL 
 	BEGIN
+		SET @has_key_expr = '(' + @has_key_expr + ' AND LTRIM(RTRIM(ISNULL(CAST(i.[' + @key2 + '] AS VARCHAR(MAX)), ''''))) <> '''')';
 		SET @join_expr = @join_expr + ' AND parent.[' + @key2 + '] = i.[' + @key2 + ']';
 	END
 
@@ -64,17 +67,18 @@ BEGIN
 	UPDATE t
 	SET 
 		original = CASE
-			WHEN i.record_type = ''A'' OR i.original = 0x00 THEN
+			WHEN ' + @has_key_expr + ' AND (i.record_type = ''A'' OR i.original = 0x00) THEN
 				dbo.f_generate_original(
 					''' + @table_name + ''',
 					ISNULL(parent.object_owner, i.object_owner),
 					' + @key1_expr + ',
 					' + @key2_expr + '
 				)
+			WHEN i.original = 0x00 THEN i.uuid
 			ELSE i.original
 		END,
 		uuid = CASE 
-			WHEN i.record_type = ''A'' AND parent.uuid IS NULL THEN 
+			WHEN ' + @has_key_expr + ' AND i.record_type = ''A'' AND parent.uuid IS NULL THEN 
 				dbo.f_generate_original(
 					''' + @table_name + ''',
 					i.object_owner,
@@ -86,7 +90,8 @@ BEGIN
 	FROM [' + @table_name + '] t
 	JOIN inserted i ON i.uuid = t.uuid
 	LEFT JOIN [' + @table_name + '] parent 
-		ON ' + @join_expr + '
+		ON ' + @has_key_expr + '
+		AND ' + @join_expr + '
 		AND (parent.object_owner = 0x00 OR parent.object_owner = i.template)
 		AND parent.record_type = ''A''
 		AND parent.removed = 0

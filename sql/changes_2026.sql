@@ -1,12 +1,12 @@
 /* =============================================================================
- * Verze: 2026-10-29 22:00
+ * Verze: 2026-11-01 18:00
  * Soubor: changes_2026.sql
  * Účel:   Jednorázové změny struktury a dat databáze v kalendářním roce 2026.
  *         Spouští se samostatně PŘED hlavním slepeným skriptem BcmOsirisDb.sql.
  *
  * Pravidla pro údržbu a přidávání změn:
  * - Verze databáze (system_constant.database_version) má formát 'RR.MM.DD.N'
- *   (např. '26.10.20.0', kde poslední číslice N je intradenní pořadí změny).
+ *   (např. '26.11.01.0', kde poslední číslice N je intradenní pořadí změny).
  * - Všechny změnové bloky běží v transakci zahájené příkazem BEGIN TRAN.
  * - Příkaz COMMIT musí být uveden VÝHRADNĚ na konci posledního odladěného bloku
  *   (předchozí příkazy COMMIT při přidání nového bloku odstraň).
@@ -22,14 +22,13 @@
  *   databází neprovede žádné změny a nezpůsobí žádnou škodu.
  *
  * Změny:
- * - 2026-10-29 22:00 (26.10.29.0): Odstraněn statický INSERT do organization_licence
- *   způsobující chybu kompilace nad starší verzí tabulky bez sloupce login_disabled
- *   (vložení systémové licence přesunuto do fillup_organization_licence.sql).
- * - 2026-10-29 15:30 (26.10.29.0): Narovnání sloupců mezi organization_licence
- *   a organization (přesun licence_level a login_disabled do licence, doplnění
- *   nastavení organizace a CRMM limitů do organization, zrušení tabulky
- *   organization_settings) a přesun organizačně závislých sloupců z user_account
- *   do user_organization_access.
+ * - 2026-11-01 18:00 (26.11.01.0): Oprava vazby referenced_class u sloupce
+ *   ancestor v sys_global_columns, zrušení globální povinnosti is_mandatory = 1
+ *   u sloupce builtin_code pro běžné věcné tabulky a doplnění sloupců
+ *   builtin_code, svg_icon, is_final, is_protected do tabulky asset_class.
+ * - 2026-10-29 22:00 (26.10.29.0): Reorganizace sloupců mezi organization_licence
+ *   a organization a přesun organizačně závislých sloupců z user_account do
+ *   user_organization_access.
  * ============================================================================= */
 
 SET XACT_ABORT ON;
@@ -54,7 +53,6 @@ IF EXISTS (
 BEGIN
 	PRINT '20.10.2026 (26.10.20.0): Inicializace systému upgradů databáze a tabulky service_logbook';
 
-	-- 1. Zajištění existence tabulky service_logbook pro evidenci běhu skriptů a importů
 	IF OBJECT_ID('service_logbook') IS NULL
 	BEGIN
 		CREATE TABLE service_logbook (
@@ -68,18 +66,15 @@ BEGIN
 		);
 	END
 
-	-- 2. Výměna DEFAULT constraintu na sloupci database_version v tabulce system_constant
 	EXEC sp_drop_default 'system_constant', 'database_version';
 
 	ALTER TABLE system_constant
 		ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.10.20.0' FOR database_version;
 
-	-- 3. Posunutí verze databáze na výchozí bod 26.10.20.0
 	UPDATE system_constant
 	SET database_version = '26.10.20.0',
 		date_modified = GETDATE();
 
-	-- 4. Zápis o provedeném upgradu do provozního deníku service_logbook
 	INSERT INTO service_logbook ([name], [version], content)
 	VALUES (
 		'changes_2026.sql',
@@ -101,14 +96,12 @@ IF EXISTS (
 BEGIN
 	PRINT '29.10.2026 (26.10.29.0): Narovnání sloupců v organization_licence, organization, user_account a user_organization_access';
 
-	-- 1. Doplnění nových sloupců do organization_licence a migrace z organization
 	EXEC p_create_missing_column 'organization_licence', 'builtin_code', 'varchar(80) NOT NULL DEFAULT ''''';
 	EXEC p_create_missing_column 'organization_licence', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
 	EXEC p_create_missing_column 'organization_licence', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 	EXEC p_create_missing_column 'organization_licence', 'import_origin', 'varchar(255) NULL';
 	EXEC p_create_missing_column 'organization_licence', 'login_disabled', 'bit NOT NULL DEFAULT 0';
 
-	-- Pokud byl v organization_licence příznak is_developer = 1, povýšíme licence_level na 255 (Developer)
 	IF EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'organization_licence' AND colname = 'is_developer')
 	BEGIN
 		EXEC('UPDATE organization_licence SET licence_level = 255 WHERE is_developer = 1 AND licence_level < 255');
@@ -121,7 +114,6 @@ BEGIN
 		EXEC sp_drop_column 'organization_licence', 'organization_name';
 	END
 
-	-- Přenos login_disabled z tabulky organization do organization_licence
 	IF EXISTS (SELECT 1 FROM v_syscolumns WHERE tabname = 'organization' AND colname = 'login_disabled')
 	BEGIN
 		EXEC('
@@ -133,11 +125,9 @@ BEGIN
 		');
 	END
 
-	-- Odstranění licence_level a login_disabled z tabulky organization
 	EXEC sp_drop_column 'organization', 'licence_level';
 	EXEC sp_drop_column 'organization', 'login_disabled';
 
-	-- 2. Doplnění regionálních a CRMM výpočtových parametrů přímo do tabulky organization
 	EXEC p_create_missing_column 'organization', 'preferred_language', 'varchar(2) NOT NULL DEFAULT ''cs''';
 	EXEC p_create_missing_column 'organization', 'currency_unit', 'varchar(40) NOT NULL DEFAULT ''tis. Kč''';
 	EXEC p_create_missing_column 'organization', 'currency_digits', 'tinyint NOT NULL DEFAULT 2';
@@ -156,10 +146,8 @@ BEGIN
 	EXEC p_create_missing_column 'organization', 'residual_risk_min_financial', 'decimal(18,2) NULL';
 	EXEC p_create_missing_column 'organization', 'evaluation_method', 'varchar(40) NOT NULL DEFAULT ''''';
 
-	-- Odstranění opuštěné tabulky organization_settings
 	EXEC dropni 'organization_settings';
 
-	-- 3. Přesun organizačně závislých atributů z user_account do user_organization_access
 	EXEC p_create_missing_column 'user_organization_access', 'department_name', 'varchar(150) NOT NULL DEFAULT ''''';
 	EXEC p_create_missing_column 'user_organization_access', 'job_title', 'varchar(150) NOT NULL DEFAULT ''''';
 	EXEC p_create_missing_column 'user_organization_access', 'manager_uuid', 'uuid NULL';
@@ -184,7 +172,6 @@ BEGIN
 		EXEC sp_drop_column 'user_account', 'note';
 	END
 
-	-- 4. Aktualizace výchozí verze databáze v system_constant a zápis do service_logbook
 	EXEC sp_drop_default 'system_constant', 'database_version';
 
 	ALTER TABLE system_constant
@@ -199,6 +186,86 @@ BEGIN
 		'changes_2026.sql',
 		'26.10.29.0',
 		'Reorganizace sloupců mezi organization_licence / organization a user_account / user_organization_access, zrušení organization_settings'
+	);
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Verze 26.11.01.0: Oprava referenced_class u sloupce ancestor, úprava povinnosti
+--                   builtin_code a rozšíření asset_class pro Krok C CRMM
+-- -----------------------------------------------------------------------------
+IF EXISTS (
+	SELECT 1
+	FROM system_constant
+	WHERE database_version < '26.11.01.0'
+)
+BEGIN
+	PRINT '01.11.2026 (26.11.01.0): Oprava referenced_class u ancestor, odemčení builtin_code pro věcné tabulky a rozšíření asset_class';
+
+	-- 1. Doplnění chybějících sloupců do tabulky asset_class
+	IF OBJECT_ID('asset_class', 'U') IS NOT NULL
+	BEGIN
+		EXEC p_create_missing_column 'asset_class', 'builtin_code', 'varchar(80) NOT NULL DEFAULT ''''';
+		EXEC p_create_missing_column 'asset_class', 'svg_icon', 'varchar(max) NOT NULL DEFAULT ''''';
+		EXEC p_create_missing_column 'asset_class', 'is_final', 'bit NOT NULL DEFAULT 0';
+		EXEC p_create_missing_column 'asset_class', 'is_protected', 'bit NOT NULL DEFAULT 0';
+		EXEC('UPDATE asset_class SET builtin_code = ''ROOT'' WHERE uuid = 0x00 AND builtin_code = ''''');
+	END
+
+	-- 2. Oprava nesprávného hashe referenced_class u sloupce ancestor a úprava povinnosti builtin_code v meta_column
+	IF OBJECT_ID('meta_column', 'U') IS NOT NULL AND OBJECT_ID('meta_class', 'U') IS NOT NULL AND OBJECT_ID('f_generate_original', 'FN') IS NOT NULL
+	BEGIN
+		DECLARE @sys_own uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+		DECLARE @cls_glob uuid = dbo.f_generate_original('meta_class', CAST(@sys_own AS varchar(36)), 'sys_global_columns', '');
+		DECLARE @cls_mcol uuid = dbo.f_generate_original('meta_class', CAST(@sys_own AS varchar(36)), 'meta_column', '');
+
+		-- Oprava referenced_class u sloupce ancestor v globálním slovníku
+		UPDATE meta_column
+		SET referenced_class = @cls_mcol
+		WHERE parent_class = @cls_glob
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'ancestor'
+		  AND ISNULL(referenced_class, 0x00) <> @cls_mcol;
+
+		-- V globálním slovníku není builtin_code bezpodmínečně povinný (povinnost se řídí kontextem 0x00 / šablony / metadat)
+		UPDATE meta_column
+		SET is_mandatory = 0
+		WHERE parent_class = @cls_glob
+		  AND object_owner = 0x00
+		  AND column_name = 'builtin_code'
+		  AND who_modified = 0x00
+		  AND is_mandatory = 1;
+
+		-- U lokálních sloupců builtin_code mimo metadatové tabulky a mimo tabulku hierarchy vrátíme is_mandatory na NULL (dědí z globálního slovníku)
+		UPDATE mc
+		SET mc.is_mandatory = NULL
+		FROM meta_column mc
+		JOIN meta_class mcl ON mcl.original = mc.parent_class AND mcl.object_owner = 0x00 AND mcl.record_type = 'A'
+		WHERE mc.parent_class <> @cls_glob
+		  AND mc.object_owner = 0x00
+		  AND mc.column_name = 'builtin_code'
+		  AND mc.who_modified = 0x00
+		  AND mc.is_mandatory = 1
+		  AND mcl.class_name NOT LIKE 'meta_%'
+		  AND mcl.class_name <> 'hierarchy';
+	END
+
+	-- 3. Povýšení verze databáze v system_constant a zápis do service_logbook
+	EXEC sp_drop_default 'system_constant', 'database_version';
+
+	ALTER TABLE system_constant
+		ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.11.01.0' FOR database_version;
+
+	UPDATE system_constant
+	SET database_version = '26.11.01.0',
+		date_modified = GETDATE();
+
+	INSERT INTO service_logbook ([name], [version], content)
+	VALUES (
+		'changes_2026.sql',
+		'26.11.01.0',
+		'Oprava referenced_class u sloupce ancestor, úprava podmíněné povinnosti builtin_code a doplnění sloupců do asset_class'
 	);
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
@@ -219,7 +286,7 @@ GO
 -- =============================================================================
 IF @@TRANCOUNT > 0 ROLLBACK;
 
-DECLARE @expected_version varchar(20) = '26.10.29.0';                          -- Požadovaná cílová verze tohoto skriptu
+DECLARE @expected_version varchar(20) = '26.11.01.0';                          -- Požadovaná cílová verze tohoto skriptu
 DECLARE @current_version varchar(20) = '';                                     -- Skutečná verze zjištěná v system_constant
 DECLARE @msg varchar(800) = '';                                                -- Text výsledné zprávy pro operátora
 DECLARE @severity int = 16;                                                    -- Závažnost (1 = OK/Info, 16 = Červená chyba)

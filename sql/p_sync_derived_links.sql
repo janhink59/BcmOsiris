@@ -1,25 +1,21 @@
 /* =============================================================================
- * Verze: 2026-10-31 00:40
+ * Verze: 2026-11-01 18:00
  * Soubor: p_sync_derived_links.sql
  * Funkce:    dbo.f_is_hierarchy_node_locked
  * Procedura: dbo.p_sync_derived_links
  * Účel:   1. Funkce f_is_hierarchy_node_locked ověří, zda je daný uzel hierarchie
  *            (nebo libovolný podřízený uzel v jeho podstromu) již navázán na jiné
- *            entity v tabulce link (příp. asset), což uzamyká uzel proti změně
- *            nadřízeného uzlu (parent_uuid) nebo smazání.
+ *            entity v tabulce link (příp. scenario nebo asset), což uzamyká uzel
+ *            proti změně nadřízeného uzlu (parent_uuid) nebo smazání.
  *         2. Procedura p_sync_derived_links provádí materializaci (a výmaz)
  *            zděděných vazeb v tabulce link pomocí sloupce ancestor_link.
- *            Přiřazení vazby k vnitřnímu uzlu hierarchie (is_leaf = 0) vytvoří
- *            v tabulce link odvozené záznamy (ancestor_link = root_link.original,
- *            is_derived = 1) pro všechny podřízené uzly v hierarchii.
- *            Díky samostatnému ancestor_link v unikátním klíči se přepočet vždy
- *            týká pouze jediné zdrojové vazby bez nutnosti přepočítávat ostatní
- *            hierarchie.
- * Vazby:  - Čte tabulky link, meta_link_def, meta_class, meta_object a v_syscolumns.
+ * Vazby:  - Čte tabulky link, meta_link_def, meta_class, meta_object, asset_class,
+ *           threat, impact, scenario, hierarchy, hierarchy_item a v_syscolumns.
  *         - Využívá deterministickou funkci dbo.f_link_original.
- *         - Volána z entity_manager_write.php po uložení nebo schválení vazby.
- * Změny:  - 2026-10-31 00:40: Opraven překlep v deklaraci tabulkové proměnné
- *           @subtree ve funkci dbo.f_is_hierarchy_node_locked.
+ *         - Volána z entity_manager_ui.php a entity_manager_write.php.
+ * Změny:  - 2026-11-01 18:00: Do funkce dbo.f_is_hierarchy_node_locked doplněn
+ *           průchod podstromem pro katalogové tabulky threat, impact a scenario
+ *           a kontrola přímých odkazů ze scenario (threat_uuid, asset_class_uuid).
  * ============================================================================= */
 
 EXECUTE dropni 'p_sync_derived_links', 'P';
@@ -29,8 +25,8 @@ GO
 /* =============================================================================
  * Funkce: dbo.f_is_hierarchy_node_locked
  * Účel:   Vrátí 1, pokud na zadaném uzlu (@node_original) nebo jeho podřízených
- *         uzlech v tabulce @table_name již existují platné přímé vazby v tabulce
- *         link (nebo položky v hierarchy_item). Jinak vrátí 0.
+ *         uzlech v tabulce @table_name již existují platné vazby v tabulce link
+ *         (nebo odkazy ze scenario / hierarchy_item). Jinak vrátí 0.
  * ============================================================================= */
 CREATE FUNCTION dbo.f_is_hierarchy_node_locked(
 	@table_name varchar(128),
@@ -46,7 +42,7 @@ BEGIN
 	DECLARE @subtree TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
 	INSERT INTO @subtree (original) VALUES (@node_original);
 
-	-- Sběr podstromu pro známé hierarchické tabulky
+	-- Sběr podstromu pro hierarchické tabulky CRMM
 	IF @table_name = 'asset_class' AND OBJECT_ID('asset_class') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
@@ -54,6 +50,68 @@ BEGIN
 			INSERT INTO @subtree (original)
 			SELECT DISTINCT c.original
 			FROM asset_class c
+			JOIN @subtree s ON c.parent_uuid = s.original
+			WHERE c.record_type = 'A'
+			  AND c.removed = 0
+			  AND c.object_owner IN (0x00, @object_owner)
+			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
+		END
+
+		IF OBJECT_ID('scenario') IS NOT NULL
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM scenario sc
+				JOIN @subtree s ON s.original = sc.asset_class_uuid
+				WHERE sc.record_type = 'A' AND sc.removed = 0
+			)
+				RETURN 1;
+		END
+	END
+	ELSE IF @table_name = 'threat' AND OBJECT_ID('threat') IS NOT NULL
+	BEGIN
+		WHILE @@ROWCOUNT > 0
+		BEGIN
+			INSERT INTO @subtree (original)
+			SELECT DISTINCT c.original
+			FROM threat c
+			JOIN @subtree s ON c.parent_uuid = s.original
+			WHERE c.record_type = 'A'
+			  AND c.removed = 0
+			  AND c.object_owner IN (0x00, @object_owner)
+			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
+		END
+
+		IF OBJECT_ID('scenario') IS NOT NULL
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM scenario sc
+				JOIN @subtree s ON s.original = sc.threat_uuid
+				WHERE sc.record_type = 'A' AND sc.removed = 0
+			)
+				RETURN 1;
+		END
+	END
+	ELSE IF @table_name = 'impact' AND OBJECT_ID('impact') IS NOT NULL
+	BEGIN
+		WHILE @@ROWCOUNT > 0
+		BEGIN
+			INSERT INTO @subtree (original)
+			SELECT DISTINCT c.original
+			FROM impact c
+			JOIN @subtree s ON c.parent_uuid = s.original
+			WHERE c.record_type = 'A'
+			  AND c.removed = 0
+			  AND c.object_owner IN (0x00, @object_owner)
+			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
+		END
+	END
+	ELSE IF @table_name = 'scenario' AND OBJECT_ID('scenario') IS NOT NULL
+	BEGIN
+		WHILE @@ROWCOUNT > 0
+		BEGIN
+			INSERT INTO @subtree (original)
+			SELECT DISTINCT c.original
+			FROM scenario c
 			JOIN @subtree s ON c.parent_uuid = s.original
 			WHERE c.record_type = 'A'
 			  AND c.removed = 0
@@ -75,7 +133,6 @@ BEGIN
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
 
-		-- Pro tabulku hierarchy zkontrolujeme i vazby na její položky v hierarchy_item
 		IF OBJECT_ID('hierarchy_item') IS NOT NULL
 		BEGIN
 			IF EXISTS (
@@ -252,7 +309,6 @@ BEGIN
 		INSERT INTO #desc_from (original) VALUES (@f_obj);
 		INSERT INTO #desc_to (original) VALUES (@t_obj);
 
-		-- Rozbalení podstromu zdrojového uzlu (pokud zdrojová tabulka není asset)
 		IF @f_par = 1 AND @f_tab <> 'asset'
 		BEGIN
 			DECLARE @sql_f nvarchar(max) = N'
@@ -271,7 +327,6 @@ BEGIN
 			EXEC sp_executesql @sql_f, N'@p_owner uniqueidentifier', @p_owner = @r_owner;
 		END
 
-		-- Rozbalení podstromu cílového uzlu (pokud cílová tabulka není asset)
 		IF @t_par = 1 AND @t_tab <> 'asset'
 		BEGIN
 			DECLARE @sql_t nvarchar(max) = N'
@@ -290,7 +345,6 @@ BEGIN
 			EXEC sp_executesql @sql_t, N'@p_owner uniqueidentifier', @p_owner = @r_owner;
 		END
 
-		-- Smazání již neplatných odvozených vazeb pro tento @r_orig
 		DELETE d
 		FROM link d
 		WHERE d.ancestor_link = @r_orig
@@ -304,7 +358,6 @@ BEGIN
 			  AND NOT (df.original = @f_obj AND dt.original = @t_obj)
 		  );
 
-		-- Vložení chybějících odvozených vazeb pro všechny podřízené kombinace
 		INSERT INTO link (
 			uuid, object_owner, original, record_type, approval_status, [language],
 			link_def, from_object, to_object, ancestor_link,

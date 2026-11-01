@@ -1,23 +1,28 @@
 ﻿/* =============================================================================
- * Verze: 2026-10-23 11:00
+ * Verze: 2026-11-01 18:00
  * Soubor: table_asset_class.sql
  * Tabulka: asset_class (Třídy aktiv)
- * Popis:	Hierarchický číselník pro klasifikaci aktiv v modulu CRMM.
+ * Popis:	Hierarchický katalog pro klasifikaci aktiv v modulu CRMM.
  *			Určuje strukturu (např. Umístění -> Budova -> Místnost), 
- *			definuje koncové uzly a umožňuje dědění rolí editorů.
+ *			definuje koncové uzly (is_leaf = 1) a umožňuje dědění rolí editorů
+ *			a vazeb na hrozby, scénáře a klasifikační číselníky.
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
+ * Vazby:	- parent_uuid ukazuje na nadřízený uzel asset_class.original.
+ *			- Koncové uzly (is_leaf = 1) jsou odkazovány ze sloupce
+ *			  asset.primary_asset_class a z tabulky link.
+ *			- Spravováno stromovou stránkou page_asset_class.php.
  * Změny:
- * - 2026-10-23 11:00: Odstraněn destruktivní příkaz DROP TABLE IF EXISTS asset_class
- *   pro zachování existujících dat. Doplněny sloupce draft_author, approval_note
- *   a import_origin přímo do CREATE TABLE i přes p_create_missing_column a indexy
- *   přes sp_create_index.
+ * - 2026-11-01 18:00: Doplněny sloupce builtin_code, svg_icon, is_final,
+ *   is_protected a index ix_asset_class_parent_sort pro sjednocení se šablonou
+ *   abstract_page_tree.
+ * - 2026-10-23 11:00: Doplněny sloupce draft_author, approval_note a import_origin.
  * ============================================================================= */
 
 IF OBJECT_ID('asset_class') IS NULL
 BEGIN
 	CREATE TABLE asset_class (
 		-- ---------------------------------------------------------------------
-		-- Standardní RAC a SSC sloupce (dle domluvených konvencí)
+		-- Standardní RAC a SSC sloupce
 		-- ---------------------------------------------------------------------
 		uuid uuid NOT NULL,
 		object_owner uuid NOT NULL DEFAULT 0x00,
@@ -36,17 +41,7 @@ BEGIN
 		import_origin varchar(255) NULL,
 		
 		-- ---------------------------------------------------------------------
-		-- Společné textové vlastnosti (podpora UTF-8)
-		-- ---------------------------------------------------------------------
-		caption varchar(200) NOT NULL DEFAULT '',
-		shortname varchar(40) NOT NULL DEFAULT '',
-		external_code varchar(200) NOT NULL DEFAULT '',
-		instance_class_name varchar(80) NOT NULL DEFAULT '',
-		description_text varchar(max) NOT NULL DEFAULT '',
-		help_text varchar(max) NOT NULL DEFAULT '',
-		
-		-- ---------------------------------------------------------------------
-		-- Auditní stopy (uuid vazby, bez denormalizovaných jmen)
+		-- Auditní stopy
 		-- ---------------------------------------------------------------------
 		date_created datetime NOT NULL DEFAULT getdate(),
 		who_created uuid NOT NULL DEFAULT 0x00,
@@ -54,24 +49,30 @@ BEGIN
 		who_modified uuid NOT NULL DEFAULT 0x00,
 
 		-- ---------------------------------------------------------------------
-		-- Specifické sloupce pro asset_class (Třídy aktiv CRMM a Stromová struktura)
+		-- Společné identifikační a prezentační vlastnosti (podpora UTF-8)
 		-- ---------------------------------------------------------------------
-		
-		-- Hierarchický odkaz na nadřízenou třídu. Slouží k primárnímu udržování sémantické 
-		-- struktury stromu a přesunům větví bez vyvolání lavinových updatů v konceptech.
-		parent_uuid uuid NULL,
-		
-		-- Textový klíč pro rychlé třídění a čtení struktury stromu na frontendu.
-		sort_code varchar(200) NOT NULL DEFAULT '',
-		
-		-- Příznak koncového uzlu. Dle striktních pravidel mohou být aktiva vázána pouze na 
-		-- uzly, které mají is_leaf = 1. Pokud klient pod tento uzel přidá vlastní větev, 
-		-- je nutné toto dynamicky ošetřit ve View nebo provést aplikační migraci.
-		is_leaf bit NOT NULL DEFAULT 0,
-		
-		-- Odkaz na roli. Definuje, která role je oprávněná k editaci aktiv v této třídě. 
-		-- Tato vlastnost se může dědit do podřízených tříd (uzlů).
-		editor_role_uuid uuid NULL,
+		builtin_code varchar(80) NOT NULL DEFAULT '',      -- Kód pro deterministický originál (povinný v 0x00 a šablonách)
+		caption varchar(200) NOT NULL DEFAULT '',
+		shortname varchar(40) NOT NULL DEFAULT '',
+		external_code varchar(200) NOT NULL DEFAULT '',
+		instance_class_name varchar(80) NOT NULL DEFAULT '',
+		description_text varchar(max) NOT NULL DEFAULT '',
+		help_text varchar(max) NOT NULL DEFAULT '',
+		svg_icon varchar(max) NOT NULL DEFAULT '',
+
+		-- ---------------------------------------------------------------------
+		-- Stromová struktura a specifické sloupce pro asset_class
+		-- ---------------------------------------------------------------------
+		parent_uuid uuid NULL,                             -- Nadřízená třída aktiv (asset_class.original)
+		sort_code varchar(200) NOT NULL DEFAULT '',        -- Pořadí v rámci sourozenců
+		is_leaf bit NOT NULL DEFAULT 1,                    -- 1 = Koncová třída aktiv (lze navázat aktiva), 0 = Složka
+		editor_role_uuid uuid NULL,                        -- Role oprávněná k editaci aktiv v této třídě (dědí se)
+
+		-- ---------------------------------------------------------------------
+		-- Ochrana systémových struktur
+		-- ---------------------------------------------------------------------
+		is_final bit NOT NULL DEFAULT 0,
+		is_protected bit NOT NULL DEFAULT 0,
 
 		CONSTRAINT pk_asset_class PRIMARY KEY (uuid)
 	);
@@ -85,13 +86,15 @@ GO
 EXEC p_create_missing_column 'asset_class', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
 EXEC p_create_missing_column 'asset_class', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'asset_class', 'import_origin', 'varchar(255) NULL';
+EXEC p_create_missing_column 'asset_class', 'builtin_code', 'varchar(80) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'asset_class', 'svg_icon', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'asset_class', 'is_final', 'bit NOT NULL DEFAULT 0';
+EXEC p_create_missing_column 'asset_class', 'is_protected', 'bit NOT NULL DEFAULT 0';
 GO
 
 -- -----------------------------------------------------------------------------
--- Indexy pro zajištění RAC a SSC architektury
+-- Indexy pro zajištění RAC a SSC architektury a průchodu stromem
 -- -----------------------------------------------------------------------------
-
--- Zajištění unikátnosti aktivního záznamu (Active) pro daného vlastníka a originál.
 EXEC sp_create_index 
 	@tname = 'asset_class', 
 	@iname = 'uq_asset_class_active', 
@@ -100,7 +103,6 @@ EXEC sp_create_index
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
 GO
 
--- Zajištění unikátnosti jazykových verzí (Language) pro daného vlastníka a originál.
 EXEC sp_create_index 
 	@tname = 'asset_class', 
 	@iname = 'uq_asset_class_language', 
@@ -109,7 +111,6 @@ EXEC sp_create_index
 	@options = 'WHERE record_type = ''L'' AND removed = 0';
 GO
 
--- Zajištění unikátnosti konceptu (Draft) pro kombinaci originál, vlastník, jazyk a autor konceptu.
 EXEC sp_create_index 
 	@tname = 'asset_class', 
 	@iname = 'uq_asset_class_draft', 
@@ -118,34 +119,27 @@ EXEC sp_create_index
 	@options = 'WHERE record_type = ''D'' AND removed = 0';
 GO
 
+EXEC sp_create_index 
+	@tname = 'asset_class', 
+	@iname = 'ix_asset_class_parent_sort', 
+	@colnames = 'parent_uuid, sort_code, builtin_code', 
+	@uni = '', 
+	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
 -- -----------------------------------------------------------------------------
--- Inicializační systémový záznam (0x00)
--- Nutný pro bezproblémové fungování cross joinů a skládání systémových dat.
+-- Inicializační systémový kořenový záznam (0x00)
 -- -----------------------------------------------------------------------------
 IF NOT EXISTS (SELECT 1 FROM asset_class WHERE uuid = 0x00)
 BEGIN
 	INSERT INTO asset_class (
-		uuid, 
-		object_owner, 
-		original, 
-		record_type, 
-		approval_status, 
-		caption, 
-		shortname, 
-		description_text,
-		is_leaf,
-		sort_code
+		uuid, object_owner, original, record_type, approval_status,
+		builtin_code, caption, shortname, description_text,
+		is_leaf, sort_code
 	) VALUES (
-		0x00, 
-		0x00, 
-		0x00, 
-		'A', 
-		'A', 
-		'Kořenová třída aktiv', 
-		'ROOT', 
-		'Výchozí systémový uzel pro hierarchii tříd aktiv.',
-		0,
-		'000'
+		0x00, 0x00, 0x00, 'A', 'A',
+		'ROOT', 'Kořenová třída aktiv', 'ROOT', 'Výchozí systémový uzel pro hierarchii tříd aktiv.',
+		0, '000'
 	);
 END
 GO

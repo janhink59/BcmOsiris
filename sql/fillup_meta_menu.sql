@@ -1,29 +1,25 @@
 /* =============================================================================
- * Verze: 2026-10-31 11:00
+ * Verze: 2026-11-01 18:00
  * Soubor: fillup_meta_menu.sql
  * Účel:   Prvotní idempotentní naplnění systémové navigace (object_owner = 0x00)
  *         v tabulce meta_menu s rozestupy sort_code po desítkách ('010', '020'...).
- *         Odděleno od čistého DDL skriptu table_meta_menu.sql.
  * Vazby:  - Odkazuje na záznamy stránek (object_type = 'P') v tabulce meta_object
  *           (musí běžet až po fillup_meta_object.sql).
  *         - Využívá deterministickou funkci dbo.f_generate_original.
- *         - Aktualizaci struktury (parent_uuid, sort_code, target_object, system_role)
- *           provádí u 'A' záznamů pouze tehdy, pokud dosud nebyly ručně upraveny
- *           uživatelem v UI (who_modified = 0x00), nebo při jednorázovém přechodu
- *           ze starých 2znakových kódů (LEN(sort_code) = 2) na 3znakové desítky.
- *         - Technické sloupce v jazykových 'L' záznamech synchronizuje podle 'A'
- *           vždy bez ohledu na l.who_modified.
- * Změny:  - 2026-10-31 11:00: Pod kořenem home založena nová hlavní složka
- *           crmm_folder ('Analýza a řízení rizik (CRMM)', sort_code = '010')
- *           a v ní položky hierarchy ('010') a hierarchy_item ('020').
- *         - 2026-10-29 16:00: Položkám menu organization a organization_licence
- *           změněna system_role z 'S' na 'A'.
+ * Změny:  - 2026-11-01 18:00: Do složky crmm_folder doplněny 4 primární
+ *           hierarchické katalogy CRMM: asset_class ('010'), threat ('020'),
+ *           impact ('030'), scenario ('040') a posunuto pořadí hierarchy ('050')
+ *           a hierarchy_item ('060').
  * ============================================================================= */
 
 DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 
 -- 1. Zjištění ID cílových stránek (meta_object.original) se sjednoceným prefixem page_
 DECLARE @tgt_main uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_main');
+DECLARE @tgt_asset_class uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_asset_class');
+DECLARE @tgt_threat uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_threat');
+DECLARE @tgt_impact uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_impact');
+DECLARE @tgt_scenario uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_scenario');
 DECLARE @tgt_hierarchy uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_hierarchy');
 DECLARE @tgt_hierarchy_item uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_hierarchy_item');
 DECLARE @tgt_meta_class uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_meta_class');
@@ -43,6 +39,10 @@ DECLARE @tgt_audit_login uuid = dbo.f_generate_original('meta_object', @sys_owne
 -- 2. Příprava originálů menu uzlů pro vzájemné provázání (parent_uuid)
 DECLARE @mnu_home uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'home', '');
 DECLARE @mnu_crmm_folder uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'crmm_folder', '');
+DECLARE @mnu_asset_class uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'asset_class', '');
+DECLARE @mnu_threat uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'threat', '');
+DECLARE @mnu_impact uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'impact', '');
+DECLARE @mnu_scenario uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'scenario', '');
 DECLARE @mnu_hierarchy uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'hierarchy', '');
 DECLARE @mnu_hierarchy_item uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'hierarchy_item', '');
 DECLARE @mnu_meta_folder uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'metadata_folder', '');
@@ -73,8 +73,12 @@ INSERT INTO @init_menu VALUES
 
 -- 1. úroveň: Složka "Analýza a řízení rizik (CRMM)" (sort_code = '010') a její podřízené položky po desítkách
 (@mnu_crmm_folder, @mnu_home, '010', 'crmm_folder', 'Analýza a řízení rizik (CRMM)', 'Katalogy tříd aktiv, hrozeb, dopadů, scénářů, sekundárních hierarchií, štítků a hodnocení rizik', NULL, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>'),
-(@mnu_hierarchy, @mnu_crmm_folder, '010', 'hierarchy', 'Sekundární hierarchie a štítky', 'Správa registru sekundárních hierarchií, klasifikačních stromů a štítků (tagů)', @tgt_hierarchy, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 11V3h-7v3H9V3H2v8h7V8h2v10h4v3h7v-8h-7v3h-2V8h2v3z"/></svg>'),
-(@mnu_hierarchy_item, @mnu_crmm_folder, '020', 'hierarchy_item', 'Položky sekundárních hierarchií', 'Správa uzlů a koncových položek jednotlivých sekundárních hierarchií a štítků', @tgt_hierarchy_item, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>'),
+(@mnu_asset_class, @mnu_crmm_folder, '010', 'asset_class', 'Třídy aktiv', 'Správa hierarchického katalogu tříd aktiv, koncových uzlů a rolí editorů', @tgt_asset_class, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>'),
+(@mnu_threat, @mnu_crmm_folder, '020', 'threat', 'Katalog hrozeb', 'Správa hierarchického katalogu hrozeb a jejich výchozích hodnot skóre', @tgt_threat, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>'),
+(@mnu_impact, @mnu_crmm_folder, '030', 'impact', 'Katalog dopadů', 'Správa hierarchického katalogu druhů a oblastí dopadů', @tgt_impact, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>'),
+(@mnu_scenario, @mnu_crmm_folder, '040', 'scenario', 'Rizikové scénáře', 'Správa hierarchického katalogu rizikových scénářů (událostí) a mezí reziduálního rizika', @tgt_scenario, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>'),
+(@mnu_hierarchy, @mnu_crmm_folder, '050', 'hierarchy', 'Sekundární hierarchie a štítky', 'Správa registru sekundárních hierarchií, klasifikačních stromů a štítků (tagů)', @tgt_hierarchy, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22 11V3h-7v3H9V3H2v8h7V8h2v10h4v3h7v-8h-7v3h-2V8h2v3z"/></svg>'),
+(@mnu_hierarchy_item, @mnu_crmm_folder, '060', 'hierarchy_item', 'Položky sekundárních hierarchií', 'Správa uzlů a koncových položek jednotlivých sekundárních hierarchií a štítků', @tgt_hierarchy_item, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></svg>'),
 
 -- 1. úroveň: Složka "Práce s metadaty" (sort_code = '080') a její podřízené položky po desítkách
 (@mnu_meta_folder, @mnu_home, '080', 'metadata_folder', 'Práce s metadaty', 'Správa logických tříd, sloupců, textových frází, navigace a vývojářských balíčků metadat', NULL, 'U', '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3C7.58 3 4 4.79 4 7s3.58 4 8 4 8-1.79 8-4-3.58-4-8-4zM4 9v3c0 2.21 3.58 4 8 4s8-1.79 8-4V9c0 2.21-3.58 4-8 4s-8-1.79-8-4zm0 5v3c0 2.21 3.58 4 8 4s8-1.79 8-4v-3c0 2.21-3.58 4-8 4s-8-1.79-8-4z"/></svg>'),
@@ -121,7 +125,7 @@ WHERE NOT EXISTS (
 	SELECT 1 FROM meta_menu m WHERE m.original = i.original AND m.record_type = 'L' AND m.[language] = 'cs' AND m.object_owner = @sys_owner AND m.removed = 0
 );
 
--- 6. Aktualizace výchozí hierarchie a system_role u 'A' záznamů
+-- 6. Aktualizace výchozí hierarchie a system_role u 'A' záznamů (pokud nebyly ručně upraveny)
 UPDATE m
 SET m.parent_uuid = i.parent_uuid,
 	m.sort_code = i.sort_code,
@@ -136,7 +140,7 @@ WHERE m.object_owner = @sys_owner
 	m.who_modified = @sys_owner
 	OR LEN(m.sort_code) = 2
 	OR (i.parent_uuid = @mnu_meta_folder AND m.parent_uuid = @mnu_admin)
-	OR i.builtin_code IN ('organization', 'organization_licence')
+	OR i.builtin_code IN ('organization', 'organization_licence', 'hierarchy', 'hierarchy_item')
   )
   AND (
 	ISNULL(m.parent_uuid, 0x00) <> ISNULL(i.parent_uuid, 0x00)
@@ -146,8 +150,7 @@ WHERE m.object_owner = @sys_owner
 	OR (m.helptext = '' AND i.helptext <> '')
   );
 
--- 7. Technické atributy (parent_uuid, sort_code, target_object, system_role) v jazykových
---    záznamech 'L' musí vždy zrcadlit svůj hlavní 'A' záznam (bez ohledu na l.who_modified).
+-- 7. Technické atributy v jazykových záznamech 'L' zrcadlí svůj hlavní 'A' záznam
 UPDATE l
 SET l.parent_uuid = a.parent_uuid,
 	l.sort_code = a.sort_code,
