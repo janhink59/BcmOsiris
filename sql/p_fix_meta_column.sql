@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-01 11:45
+ * Verze: 2026-11-01 17:15
  * Soubor: p_fix_meta_column.sql
  * Procedury: dbo.p_sync_hierarchy_to_meta_class, dbo.p_fix_meta_column
  * Účel: 1. dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
@@ -18,12 +18,11 @@
  * - Využívá deterministickou hashovací funkci dbo.f_generate_original.
  *
  * Změny:
- * - 2026-11-01 11:45: Vyčleněna sdílená procedura dbo.p_sync_hierarchy_to_meta_class
- *   (odstranění duplicity mezi table_hierarchy.sql a p_fix_meta_column.sql).
- *   Opraveno vynucení is_html = 1 pro 5 popisných sloupců v sys_global_columns
- *   (i pokud měly who_modified <> 0x00 po starším importu) a vyčištění is_html = 0
- *   na NULL u zděděných lokálních sloupců. Do kurzoru cur_rac doplněno automatické
- *   zajištění indexů uq_<table>_active a uq_<table>_language.
+ * - 2026-11-01 17:15: Opraven první parametr při výpočtu @cls_meta_column
+ *   na 'meta_class' (místo 'meta_column') a odstraněn zdvojený UPDATE pro is_leaf
+ *   u třídy hierarchy.
+ * - 2026-11-01 11:45: Vyčleněna sdílená procedura dbo.p_sync_hierarchy_to_meta_class.
+ *   Opraveno vynucení is_html = 1 pro 5 popisných sloupců v sys_global_columns.
  * ============================================================================= */
 
 EXECUTE dropni 'p_fix_meta_column', 'P';
@@ -877,20 +876,10 @@ BEGIN
 	-- -------------------------------------------------------------------------
 	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
 	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');
-	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_column', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
+	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
 	DECLARE @cls_hierarchy uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy', '');
 
 	-- Specifický popisek sloupce is_leaf u třídy hierarchy (odlišení samostatné hierarchie od složky registru)
-	UPDATE meta_column
-	SET caption = 'Samostatná hierarchie / sada štítků (is_leaf)',
-		label = 'Samostatná hierarchie (is_leaf)',
-		header = 'Hierarchie',
-		helptext = 'Zaškrtněte (1) u koncové definice hierarchie nebo sady štítků, do které budete vkládat položky. Odškrtněte (0) pouze u nadřazené organizační složky v tomto registru.'
-	WHERE parent_class = @cls_hierarchy
-	  AND object_owner = 0x00
-	  AND column_name = 'is_leaf'
-	  AND who_modified = 0x00;
-
 	UPDATE meta_column
 	SET caption = 'Samostatná hierarchie / sada štítků (is_leaf)',
 		label = 'Samostatná hierarchie (is_leaf)',

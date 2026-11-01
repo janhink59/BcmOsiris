@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-31 16:15
+ * Verze: 2026-11-01 17:15
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  * Účel: Zápisová, validační, klonovací a schvalovací (SSC) část třídy entity_manager.
@@ -13,39 +13,18 @@
  * - Využívá vlastnosti třídy `entity_manager` (`storage_table`, `physical_cols`,
  *   `col_types`, `col_nulls`, `columns_meta`, `class_meta`, `is_initialized`)
  *   a její metody `phrase()`, `is_metadata_entity()`, `get_original_key_columns()`,
- *   `is_hierarchy_node_locked()` a `evaluate_remove_permission()`.
+ *   `set_last_save_error()`, `is_hierarchy_node_locked()` a `evaluate_remove_permission()`.
  * - Využívá třídu `rich_text` (`rich_text.php`) pro normalizaci, konverzi (Markdown ⇄ HTML)
  *   a bezpečnostní sanitizaci formátovaných sloupců (`is_html = 1`) při ukládání z POSTu.
+ * - Využívá funkce `is_zero_guid()` a `is_sys_org()` z `new_functions.php`.
  * - Volán z `abstract_page_master_detail::process_save()` a `page_approval::process_save()`.
  *
- * KLÍČOVÉ KONCEPTY:
- * 1. Validace neprázdnosti a unikátnosti klíčových sloupců (meta_original_keys / link)
- *    Při zakládání nového záznamu (`update_guid === ''`) se oříznou okrajové mezery
- *    klíčových položek, ověří se jejich neprázdnost a před INSERTem se otestuje,
- *    že v databázi neexistují shodné klíčové údaje vedoucí k výpočtu duplicitního
- *    originálu (včetně kontroly záznamů v koši `removed = 1` a kolize `hierarchy.builtin_code`
- *    s `meta_class.class_name`). Chybové hlášení lze načíst metodou `get_last_save_error()`.
- * 2. Asymetrický zápis překladů (right_translate) a symetrie A-L
- *    Společně se zápisem do 'A' záznamu se vždy udržuje symetrický 'L' záznam.
- * 3. Klonování s modifikací (Override vzor)
- *    Pomocí metod `insert_from_map()` a `clone_with_map()` zakládá kompletní kopii
- *    systémového záznamu, ve které nahradí upravené hodnoty.
- * 4. Ochrana klíčových sloupců a uzamčených větví hierarchií
- *    U existujícího záznamu (update_guid !== '') jsou klíčové sloupce při UPDATE
- *    odfiltrovány, aby nikdy nemohlo dojít k nekonzistenci vůči deterministickému originálu.
- *    U uzamčených větví hierarchie (`is_hierarchy_node_locked`) je blokována změna
- *    `parent_uuid` a zrušení `is_leaf = 1`.
- * 5. Automatická synchronizace odvozených vazeb v `link`
- *    Po uložení/schválení vazby v `link` spouští `p_sync_derived_links @root_link_original`.
- *
  * Změny:
- * 2026-10-31 16:15 - Doplněno ořezávání (`trim`) klíčových sloupců v `extract_post_data()`.
- *                  - Do `save_post_data()` doplněna předběžná kontrola neprázdnosti
- *                    klíčových sloupců (`meta_original_keys`, `link`) a databázový test
- *                    unikátnosti klíčových údajů / `original` před provedením příkazu INSERT.
- *                  - Doplněny metody `set_save_error()` a `get_last_save_error()` pro čisté
- *                    zobrazení validační chyby v detailu bez pádu do `fatal_error()`.
- * 2026-10-31 11:00 - Oprava Delta porovnání s $baseline_row v save_post_data() pouze pro meta_*.
+ * 2026-11-01 17:15 - Oprava chyby TypeError u 7 validačních volání $this->phrase()
+ *                    (sjednoceno pořadí argumentů na $builtin_code, $default_caption, $vars).
+ *                  - Napojení na set_last_save_error(), is_zero_guid() a is_sys_org().
+ * 2026-10-31 16:15 - Doplněno ořezávání (trim) klíčových sloupců a databázový test
+ *                    unikátnosti klíčových údajů / original před provedením INSERTu.
  * =============================================================================
  */
 
@@ -56,26 +35,6 @@ if (file_exists(__DIR__ . '/rich_text.php')) {
 }
 
 trait entity_manager_write {
-
-	/**
-	 * Uloží chybovou zprávu z validace zápisu pro zobrazení v UI formuláři.
-	 */
-	private function set_save_error(string $msg): void {                     // Nastavení chybové zprávy při ukládání
-		$GLOBALS['em_last_save_error'] = $msg;                               // Uložení chyby do globálního kontextu
-		if (property_exists($this, 'last_save_error')) {                     // Kontrola existence vlastnosti v objektu
-			$this->last_save_error = $msg;                                   // Zápis chyby přímo do vlastnosti instance
-		}
-	}
-
-	/**
-	 * Vrátí poslední chybovou zprávu vzniklou při validaci v save_post_data() (nebo '' pokud zápis prošel).
-	 */
-	public function get_last_save_error(): string {                          // Získání poslední chyby při ukládání
-		if (property_exists($this, 'last_save_error') AND $this->last_save_error !== '') { // Kontrola vlastnosti instance
-			return (string)$this->last_save_error;                           // Vrácení chyby z vlastnosti instance
-		}
-		return (string)($GLOBALS['em_last_save_error'] ?? '');               // Vrácení chyby z globálního kontextu
-	}
 
 	/**
 	 * Převede SQL literál (např. `'hodnota'` nebo `'NULL'`) zpět na čistou textovou hodnotu pro validaci.
@@ -212,7 +171,7 @@ trait entity_manager_write {
 		// Pojistka: Pokud by sloupec removed chyběl v columns_meta, ale fyzicky v tabulce existuje a přišel v POSTu
 		if (! isset($data['removed']) AND isset($_POST['removed']) AND in_array('removed', $this->physical_cols, true)) { // Kontrola removed v POSTu
 			$raw_rem = (string)$_POST['removed'];                            // Surová hodnota removed z formuláře
-			$data[$colname = 'removed'] = ($raw_rem === '1' OR strtolower($raw_rem) === 'true') ? 1 : 0; // Převod na bit 1/0
+			$data['removed'] = ($raw_rem === '1' OR strtolower($raw_rem) === 'true') ? 1 : 0; // Převod na bit 1/0
 		}
 		
 		return $data;                                                        // Vrácení připravených dat
@@ -240,7 +199,7 @@ trait entity_manager_write {
 	 * validací neprázdnosti a unikátnosti klíčových položek a architektury "Klonování s modifikací".
 	 */
 	public function save_post_data(string $update_guid = '', string $target_status = 'A'): string { // Autonomní uložení dat
-		$this->set_save_error('');                                           // Vynulování předchozí chybové zprávy
+		$this->set_last_save_error('');                                      // Vynulování předchozí chybové zprávy
 		if (! $this->is_initialized) {                                       // Kontrola inicializace metadat
 			return $update_guid;                                             // Návrat při neinicializované třídě
 		}
@@ -269,7 +228,6 @@ trait entity_manager_write {
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role v relaci
 		$right_translate = ! empty($dbsession['right_translate']);           // Oprávnění ke globálnímu překladu
 
-		$org_uuid_sql = guidliteral($org_uuid_raw);                          // SQL literál organizace v relaci
 		$user_uuid_sql = guidliteral($user_uuid_raw);                        // SQL literál uživatelské relace
 		$user_acc_sql = guidliteral($user_acc_raw);                          // SQL literál uživatelského účtu
 		$lang_literal_sql = charliteral($sess_lang_raw);                     // SQL literál jazyka
@@ -291,7 +249,7 @@ trait entity_manager_write {
 			return '';                                                       // Zákaz INSERTu do metadat mimo roli D
 		}
 
-		$is_sysadmin_org = ($org_uuid_raw === '0x00' OR $org_uuid_raw === '00000000-0000-0000-0000-000000000000'); // Příznak systémového tenanta
+		$is_sysadmin_org = is_sys_org($org_uuid_raw);                        // Příznak systémového tenanta (0x00)
 
 		// Určení efektivního vlastníka záznamu (u tabulky organization je vlastníkem samotný original organizace)
 		$rec_owner_raw = ($is_self_owned AND $orig_guid_raw !== '') ? $orig_guid_raw : $org_uuid_raw; // Surový vlastník záznamu
@@ -446,10 +404,10 @@ trait entity_manager_write {
 					$k1_lbl = (string)($k1_meta['label'] ?? $k1_meta['caption'] ?? $k1_col); // Popisek sloupce
 					$err_empty = $this->phrase(
 						'err_key_col_empty',
-						['label' => $k1_lbl, 'col' => $k1_col],
-						'Klíčová položka „{' . chr(36) . 'label}“ ({' . chr(36) . 'col}) nesmí být prázdná.'
+						'Klíčová položka „{' . chr(36) . 'label}“ ({' . chr(36) . 'col}) nesmí být prázdná.',
+						['label' => $k1_lbl, 'col' => $k1_col]
 					);                                                       // Lokalizovaná hláška prázdného klíče
-					$this->set_save_error($err_empty);                       // Uložení chyby pro zobrazení v detailu
+					$this->set_last_save_error($err_empty);                  // Uložení chyby pro zobrazení v detailu
 					return '';                                               // Zastavení zápisu bez provedení INSERTu
 				}
 
@@ -463,10 +421,10 @@ trait entity_manager_write {
 						$k2_lbl = (string)($k2_meta['label'] ?? $k2_meta['caption'] ?? $k2_col); // Popisek sloupce
 						$err_empty2 = $this->phrase(
 							'err_key_col_empty',
-							['label' => $k2_lbl, 'col' => $k2_col],
-							'Klíčová položka „{' . chr(36) . 'label}“ ({' . chr(36) . 'col}) nesmí být prázdná.'
+							'Klíčová položka „{' . chr(36) . 'label}“ ({' . chr(36) . 'col}) nesmí být prázdná.',
+							['label' => $k2_lbl, 'col' => $k2_col]
 						);                                                   // Lokalizovaná hláška prázdného 2. klíče
-						$this->set_save_error($err_empty2);                   // Uložení chyby pro zobrazení v detailu
+						$this->set_last_save_error($err_empty2);             // Uložení chyby pro zobrazení v detailu
 						return '';                                           // Zastavení zápisu
 					}
 				}
@@ -498,17 +456,17 @@ trait entity_manager_write {
 					if (! empty($dup_row['removed'])) {                      // Kolizní záznam leží v koši (removed = 1)
 						$err_dup_trash = $this->phrase(
 							'err_duplicate_key_in_trash',
-							['keys' => $key_desc],
-							'Záznam se zadanou klíčovou položkou ({' . chr(36) . 'keys}) již existuje v koši (zrušené záznamy). Zapněte v levém panelu „Zobrazit i zrušené“ a záznam obnovte, nebo zvolte jiný unikátní kód.'
+							'Záznam se zadanou klíčovou položkou ({' . chr(36) . 'keys}) již existuje v koši (zrušené záznamy). Zapněte v levém panelu „Zobrazit i zrušené“ a záznam obnovte, nebo zvolte jiný unikátní kód.',
+							['keys' => $key_desc]
 						);                                                   // Hláška pro záznam v koši
-						$this->set_save_error($err_dup_trash);               // Uložení chyby
+						$this->set_last_save_error($err_dup_trash);          // Uložení chyby
 					} else {
 						$err_dup_active = $this->phrase(
 							'err_duplicate_key_active',
-							['keys' => $key_desc],
-							'Záznam se zadanou klíčovou položkou ({' . chr(36) . 'keys}) již v databázi existuje. Zadejte unikátní hodnotu, aby nedošlo k výpočtu duplicitního originálu.'
+							'Záznam se zadanou klíčovou položkou ({' . chr(36) . 'keys}) již v databázi existuje. Zadejte unikátní hodnotu, aby nedošlo k výpočtu duplicitního originálu.',
+							['keys' => $key_desc]
 						);                                                   // Hláška pro aktivní duplicitní záznam
-						$this->set_save_error($err_dup_active);              // Uložení chyby
+						$this->set_last_save_error($err_dup_active);         // Uložení chyby
 					}
 					return '';                                               // Zastavení zápisu před vznikem SQL chyby
 				}
@@ -525,10 +483,10 @@ trait entity_manager_write {
 					if (! empty($cls_dup)) {                                 // Kód již obsadila jiná logická třída v meta_class
 						$err_cls_col = $this->phrase(
 							'err_hierarchy_code_collides_class',
-							['code' => $k1_plain],
-							'Kód hierarchie „{' . chr(36) . 'code}“ koliduje s názvem již existující logické třídy v meta_class. Zvolte prosím jiný unikátní kód.'
+							'Kód hierarchie „{' . chr(36) . 'code}“ koliduje s názvem již existující logické třídy v meta_class. Zvolte prosím jiný unikátní kód.',
+							['code' => $k1_plain]
 						);                                                   // Chybová hláška kolize s meta_class
-						$this->set_save_error($err_cls_col);                 // Uložení chyby
+						$this->set_last_save_error($err_cls_col);            // Uložení chyby
 						return '';                                           // Zastavení zápisu
 					}
 				}
@@ -539,8 +497,8 @@ trait entity_manager_write {
 				$anc_link = (array_key_exists('ancestor_link', $src_key_data) AND $src_key_data['ancestor_link'] !== 'NULL') ? (string)$src_key_data['ancestor_link'] : '0x00'; // Předek vazby
 
 				if ($this->unquote_sql_literal($link_def) === '' OR $this->unquote_sql_literal($from_obj) === '' OR $this->unquote_sql_literal($to_obj) === '') { // Chybí složka vazby
-					$err_lnk_empty = $this->phrase('err_link_keys_empty', [], 'Klíčové položky vazby (link_def, from_object, to_object) musí být vyplněny.'); // Hláška
-					$this->set_save_error($err_lnk_empty);                   // Uložení chyby
+					$err_lnk_empty = $this->phrase('err_link_keys_empty', 'Klíčové položky vazby (link_def, from_object, to_object) musí být vyplněny.'); // Hláška
+					$this->set_last_save_error($err_lnk_empty);              // Uložení chyby
 					return '';                                               // Zastavení zápisu
 				}
 
@@ -558,8 +516,8 @@ trait entity_manager_write {
 					   OR (object_owner = {$rec_owner_sql} AND link_def = {$link_def} AND from_object = {$from_obj} AND to_object = {$to_obj} AND ancestor_link = {$anc_link} AND record_type IN ('A', 'D'))
 				");                                                          // Kontrola duplicitní vazby v tabulce link
 				if (! empty($dup_lnk)) {                                     // Vazba již existuje
-					$err_dup_lnk = $this->phrase('err_duplicate_link', [], 'Tato vazba mezi zvolenými záznamy již existuje.'); // Hláška duplicity vazby
-					$this->set_save_error($err_dup_lnk);                     // Uložení chyby
+					$err_dup_lnk = $this->phrase('err_duplicate_link', 'Tato vazba mezi zvolenými záznamy již existuje.'); // Hláška duplicity vazby
+					$this->set_last_save_error($err_dup_lnk);                // Uložení chyby
 					return '';                                               // Zastavení zápisu
 				}
 			} else {
@@ -659,10 +617,8 @@ trait entity_manager_write {
 		// 5. Zápis 'L' záznamu (tabulka link nepoužívá jazykové záznamy 'L')
 		if ($has_translated_cols AND $orig_guid_sql !== '' AND $table !== 'link') { // Pokud formulář obsahuje překládané sloupce
 			$l_owner_sql = $rec_owner_sql;                                   // Výchozím vlastníkem překladu je vlastník záznamu
-			if ($orig_owner_raw === '0x00' OR $orig_owner_raw === '00000000-0000-0000-0000-000000000000') { // Pokud je originál systémový
-				if ($right_translate) {                                      // Pokud má uživatel právo globálního překladu
-					$l_owner_sql = '0x00';                                   // Oprávněný překladatel zapisuje globálně
-				}
+			if (is_zero_guid($orig_owner_raw) AND $right_translate) {        // Oprávněný překladatel u systémového záznamu
+				$l_owner_sql = '0x00';                                       // Oprávněný překladatel zapisuje globálně
 			}
 
 			$l_exists = sqlfirstrow("SELECT TOP 1 uuid FROM {$table} WHERE original = {$orig_guid_sql} AND object_owner = {$l_owner_sql} AND record_type = 'L' AND language = {$lang_literal_sql} ORDER BY removed ASC, date_modified DESC"); // Kontrola existence L
@@ -773,14 +729,14 @@ trait entity_manager_write {
 		$sess_org_raw = (string)($dbsession['organization'] ?? '0x00');      // Surové UUID organizace schvalovatele
 		$sess_org_sql = guidliteral($sess_org_raw);                          // SQL literál organizace schvalovatele
 		$sess_lang_sql = charliteral((string)($dbsession['language'] ?? 'cs'), 2); // SQL literál jazyka schvalovatele
-		$is_sys_org = ($sess_org_raw === '0x00' OR $sess_org_raw === '00000000-0000-0000-0000-000000000000'); // Zda je schvalovatel v 0x00
+		$is_sys_org_flag = is_sys_org($sess_org_raw);                        // Zda je schvalovatel v systémové organizaci 0x00
 
 		$approver_session_sql = guidliteral((string)($dbsession['login_session_uuid'] ?? '0x00')); // Relace schvalovatele
 		$right_translate = ! empty($dbsession['right_translate']);           // Oprávnění ke globálnímu překladu
 		$table = $this->storage_table;                                       // Fyzická tabulka entity
 		$draft_uuid_sql = guidliteral($draft_uuid);                          // SQL literál primárního klíče návrhu
 
-		$owner_cond = ($table === 'organization' AND $is_sys_org)
+		$owner_cond = ($table === 'organization' AND $is_sys_org_flag)
 			? "(object_owner = {$sess_org_sql} OR object_owner = original)"
 			: "object_owner = {$sess_org_sql}";                              // Izolace schvalovaného návrhu podle tenanta
 
@@ -807,7 +763,7 @@ trait entity_manager_write {
 		$author_session_sql = guidliteral((string)$draft_row['who_modified']); // Relace autora v době postoupení návrhu
 		$author_date_sql = charliteral((string)$draft_row['date_modified']); // Datum postoupení návrhu autorem
 
-		$is_sys_owner = ($owner_raw === '0x00' OR $owner_raw === '00000000-0000-0000-0000-000000000000'); // Zda jde o systémového vlastníka
+		$is_sys_owner = is_zero_guid($owner_raw);                            // Zda jde o systémového vlastníka 0x00
 		$is_final_class = (! $is_sys_owner AND $table !== 'organization' AND ! empty($this->class_meta['is_final'])); // Zda třída zakazuje A override
 
 		// 2. Zjištění existence schváleného 'A' záznamu (včetně případného dříve zrušeného při návrhu obnovy)
@@ -873,10 +829,8 @@ trait entity_manager_write {
 		// 4. Zápis do symetrického 'L' záznamu pro jazyk návrhu (mimo tabulku link)
 		if ($table !== 'link') {                                             // Tabulka link nepoužívá jazykové mutace 'L'
 			$l_owner_sql = $owner_sql;                                       // Vlastník jazykové mutace
-			if (! empty($existing_a) AND ((string)$existing_a['object_owner'] === '0x00' OR (string)$existing_a['object_owner'] === '00000000-0000-0000-0000-000000000000')) { // Pokud je A záznam systémový
-				if ($right_translate) {                                      // Pokud má schvalovatel právo globálního překladu
-					$l_owner_sql = '0x00';                                   // Globální systémový překlad
-				}
+			if (! empty($existing_a) AND is_zero_guid($existing_a['object_owner']) AND $right_translate) { // Systémový A záznam
+				$l_owner_sql = '0x00';                                       // Globální systémový překlad
 			}
 
 			$existing_l = sqlfirstrow("SELECT TOP 1 uuid FROM {$table} WHERE original = {$orig_sql} AND object_owner = {$l_owner_sql} AND record_type = 'L' AND [language] = {$draft_lang_sql} ORDER BY removed ASC, date_modified DESC"); // Kontrola existence L
@@ -951,13 +905,13 @@ trait entity_manager_write {
 		$sess_org_raw = (string)($dbsession['organization'] ?? '0x00');      // Surové UUID organizace schvalovatele
 		$sess_org_sql = guidliteral($sess_org_raw);                          // SQL literál organizace schvalovatele
 		$sess_lang_sql = charliteral((string)($dbsession['language'] ?? 'cs'), 2); // SQL literál jazyka schvalovatele
-		$is_sys_org = ($sess_org_raw === '0x00' OR $sess_org_raw === '00000000-0000-0000-0000-000000000000'); // Zda je schvalovatel v 0x00
+		$is_sys_org_flag = is_sys_org($sess_org_raw);                        // Zda je schvalovatel v systémové organizaci 0x00
 
 		$approver_session_sql = guidliteral((string)($dbsession['login_session_uuid'] ?? '0x00')); // Relace schvalovatele
 		$table = $this->storage_table;                                       // Fyzická tabulka entity
 		$draft_uuid_sql = guidliteral($draft_uuid);                          // SQL literál UUID návrhu
 
-		$owner_cond = ($table === 'organization' AND $is_sys_org)
+		$owner_cond = ($table === 'organization' AND $is_sys_org_flag)
 			? "(object_owner = {$sess_org_sql} OR object_owner = original)"
 			: "object_owner = {$sess_org_sql}";                              // Izolace odmítaného návrhu podle tenanta
 

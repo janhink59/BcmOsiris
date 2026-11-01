@@ -1,5 +1,5 @@
 #
-# Tento soubor obsahuje vstupni data, zpracovavana programem BuildDb.php
+# Tento soubor obsahuje vstupni data, zpracovavana programem BuildRelease.php
 #
 
 F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql

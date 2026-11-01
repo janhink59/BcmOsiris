@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 11:45
+ * Verze: 2026-11-01 17:15
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – jádro třídy a metadatová vrstva (STI Architektura).
  *       Pro přehlednost a malý rozsah jednotlivých zdrojových souborů je třída
@@ -20,8 +20,11 @@
  *   funkci `translate_phrase()` (`new_functions.php`) a `OsirisLib.php`.
  *
  * Změny:
- * 2026-11-01 11:45 - Rozdělení souboru entity_manager.php (původně 910 řádků) pomocí
- *                    nových traitů entity_manager_read a entity_manager_ui.
+ * 2026-11-01 17:15 - Metoda phrase() zobecněna pomocí typu mixed (bez znaku svislítka)
+ *                    tak, aby bezpečně přijala jak pořadí ($code, $default_caption, $vars),
+ *                    tak pořadí ($code, $vars, $default_caption).
+ * 2026-11-01 11:45 - Rozdělení souboru entity_manager.php pomocí traitů
+ *                    entity_manager_read, entity_manager_ui a entity_manager_write.
  *                  - Přesun SQL dotazů v load_metadata() do uložených procedur
  *                    dbo.p_em_get_class_meta a dbo.p_em_get_columns_meta.
  * =============================================================================
@@ -68,17 +71,26 @@ class entity_manager {
 
 	/**
 	 * Pomocná metoda pro překlad interních textů třídy entity_manager.
+	 * Podporuje jak pořadí ($code, $default_caption, $vars), tak pořadí ($code, $vars, $default_caption).
 	 */
-	private function phrase(string $builtin_code, string $default_caption, array $vars = []): string { // Překlad interní fráze
+	private function phrase(string $builtin_code, mixed $default_caption = '', mixed $vars = []): string { // Překlad interní fráze
+		if (is_array($default_caption)) {                                    // Pokud bylo pole proměnných předáno jako 2. argument
+			$actual_vars = $default_caption;                                 // Pole proměnných pro interpolaci
+			$actual_default = is_string($vars) ? $vars : '';                 // Výchozí text ze 3. argumentu
+		} else {
+			$actual_default = (string)$default_caption;                      // Výchozí text z 2. argumentu
+			$actual_vars = is_array($vars) ? $vars : [];                     // Pole proměnných ze 3. argumentu
+		}
+
 		if (function_exists('translate_phrase')) {                           // Pokud je načten společný helper z new_functions.php
-			return translate_phrase($builtin_code, $default_caption, $vars, 'entity_manager'); // Překlad přes společný helper
+			return translate_phrase($builtin_code, $actual_default, $actual_vars, 'entity_manager'); // Překlad přes společný helper
 		}
 		global $phrase_manager;                                              // Záložní přístup ke globální instanci správce frází
 		if (! isset($phrase_manager) OR ! ($phrase_manager instanceof phrase_manager)) { // Kontrola existence správce frází
 			$phrase_manager = new phrase_manager();                          // Nouzová inicializace správce frází
 			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
 		}
-		return $phrase_manager->get($builtin_code, $vars, $default_caption, 'entity_manager'); // Vrácení přeložené fráze
+		return $phrase_manager->get($builtin_code, $actual_vars, $actual_default, 'entity_manager'); // Vrácení přeložené fráze
 	}
 
 	/**

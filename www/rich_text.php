@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 12:45
+ * Verze: 2026-11-01 17:15
  * Soubor: rich_text.php
  * Třída: rich_text
  * Účel: Centrální služba pro detekci formátu (Markdown vs. HTML), obousměrnou
@@ -17,15 +17,15 @@
  *   3. symfony/html-sanitizer (bezpečnostní sanitizace HTML proti XSS).
  * - Na klientské straně (Vanilla JS) využívá Toast UI Editor
  *   (js/toastui-editor-all.min.js a js/toastui-editor.min.css s CDN fallbackem).
- * - Volána z entity_manager, page_org_users a page_approval.
+ * - Volána z entity_manager (entity_manager_ui.php, entity_manager_write.php),
+ *   page_org_users.php a page_approval.php.
  *
  * Změny:
- * 2026-11-01 12:45 - Minimální cílená oprava editace is_html = 1 při AJAX načítání:
- *                    1. getOrCreateModal() nejprve zkontroluje existující element
- *                       document.getElementById('bcm-rt-modal-overlay') a stav drží
- *                       v window.bcmRtState (zamezení duplicitě modálu v DOMu).
- *                    2. Primární cesta k CSS nastavena na js/toastui-editor.min.css.
- *                    3. Odstraněna syntaxe heredocu, kterou webové rozhraní slučovalo.
+ * 2026-11-01 17:15 - Ochrana CDN URL řetězců proti automatickému obalování do
+ *                    Markdown odkazů webovým rozhraním (rozdělení 'https://' . 'cdn...').
+ *                  - Napojení metody phrase() na globální funkci translate_phrase().
+ * 2026-11-01 12:45 - Oprava editace is_html = 1 při AJAX načítání přes window.bcmRtState
+ *                    a kontrolu existujícího elementu #bcm-rt-modal-overlay v DOMu.
  * =============================================================================
  */
 
@@ -54,8 +54,11 @@ class rich_text {
 	 * @return string Přeložený text
 	 */
 	private static function phrase(string $builtin_code, string $default_caption, array $vars = []): string { // Překlad fráze
+		if (function_exists('translate_phrase')) {                           // Pokud je k dispozici globální helper z new_functions.php
+			return translate_phrase($builtin_code, $default_caption, $vars, 'rich_text'); // Překlad přes společný helper
+		}
 		global $phrase_manager;                                              // Globální instance správce frází
-		if (!isset($phrase_manager) OR !($phrase_manager instanceof phrase_manager)) { // Kontrola existence správce
+		if (! isset($phrase_manager) OR ! ($phrase_manager instanceof phrase_manager)) { // Kontrola existence správce
 			$phrase_manager = new phrase_manager('rich_text');               // Nouzová inicializace správce frází
 			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
 		}
@@ -83,8 +86,8 @@ class rich_text {
 
 		$md_regex = '/^(#+\s' . chr(124) . '>\s' . chr(124) . '[-*+]\s' . chr(124) . '\d+\.\s' . chr(124) . '```)/m'; // Vzorek blokového Markdownu
 		$html_regex = '/<\/(p' . chr(124) . 'div' . chr(124) . 'table' . chr(124) . 'ul' . chr(124) . 'ol)>/i'; // Vzorek uzavíracích HTML bloků
-		if (preg_match($md_regex, $trimmed)) {                               // Detekce blokové Markdown syntaxe
-			if (!preg_match($html_regex, $trimmed)) {                        // Pokud současně neobsahuje uzavírací HTML bloky
+		if (preg_match($md_regex,$trimmed)) {                               // Detekce blokové Markdown syntaxe
+			if (! preg_match($html_regex,$trimmed)) {                       // Pokud současně neobsahuje uzavírací HTML bloky
 				return 'markdown';                                           // Vyhodnoceno jako Markdown
 			}
 		}
@@ -99,8 +102,8 @@ class rich_text {
 		];                                                                   // Konec seznamu HTML značek
 
 		$lower = strtolower($trimmed);                                       // Převod na malá písmena pro rychlé hledání
-		foreach ($html_tags as $tag) {                                       // Průchod sledovanými HTML značkami
-			if (str_contains($lower, $tag)) {                                // Nalezena HTML značka v textu
+		foreach ($html_tags as$tag) {                                       // Průchod sledovanými HTML značkami
+			if (str_contains($lower,$tag)) {                                // Nalezena HTML značka v textu
 				return 'html';                                               // Text je ve formátu HTML
 			}
 		}
@@ -114,8 +117,7 @@ class rich_text {
 	 * @param string $raw_html Surový HTML řetězec
 	 * @return string Bezpečný sanitizovaný HTML řetězec
 	 */
-	public static function sanitize_html(string $raw_html): string {         // Sanitizace HTML proti XSS
-		$clean = preg_replace('/^<!--(html' . chr(124) . 'md)-->\s*/', '', $raw_html) ?? $raw_html; // Odstranění interní značky
+	public static function sanitize_html(string $raw_html): string {         // Sanitizace HTML proti XSS$clean = preg_replace('/^<!--(html' . chr(124) . 'md)-->\s*/', '', $raw_html) ?? $raw_html; // Odstranění interní značky
 		if (trim($clean) === '') {                                           // Prázdný řetězec není třeba čistit
 			return '';                                                       // Vrácení prázdného řetězce
 		}
@@ -131,7 +133,7 @@ class rich_text {
 		}
 
 		$allowed = '<p><br><div><span><strong><b><em><i><u><s><del><ins><h1><h2><h3><h4><h5><h6><ul><ol><li><table><thead><tbody><tfoot><tr><th><td><blockquote><pre><code><a><hr><sub><sup>'; // Povolené značky
-		return strip_tags($clean, $allowed);                                 // Základní oříznutí nepovolených značek
+		return strip_tags($clean,$allowed);                                 // Základní oříznutí nepovolených značek
 	}
 
 	/**
@@ -160,8 +162,7 @@ class rich_text {
 			if (class_exists(GithubFlavoredMarkdownExtension::class)) {      // Kontrola GFM rozšíření (tabulky, přeškrtnutí)
 				$environment->addExtension(new GithubFlavoredMarkdownExtension()); // Přidání GFM rozšíření
 			}
-			$converter = new MarkdownConverter($environment);                // Inicializace konvertoru
-			$raw_html = (string)$converter->convert($clean)->getContent();   // Převod Markdownu do HTML
+			$converter = new MarkdownConverter($environment);                // Inicializace konvertoru$raw_html = (string)$converter->convert($clean)->getContent();   // Převod Markdownu do HTML
 			return self::sanitize_html($raw_html);                           // Finální sanitizace výsledného HTML
 		}
 
@@ -208,7 +209,7 @@ class rich_text {
 	 * @param string $target_format Požadovaný cílový formát ('markdown', 'html', 'auto')
 	 * @return string Očištěný řetězec připravený pro uložení do DB
 	 */
-	public static function normalize_for_storage(string $raw_val, string $target_format = 'auto'): string { // Příprava pro DB
+	public static function normalize_for_storage(string $raw_val, string$target_format = 'auto'): string { // Příprava pro DB
 		$val = str_replace("\r\n", "\n", $raw_val);                          // Sjednocení konců řádků na LF
 		if (trim($val) === '') {                                             // Prázdný text ukládáme jako ''
 			return '';                                                       // Vrácení prázdného řetězce
@@ -232,7 +233,7 @@ class rich_text {
 	 * Vykreslí bezpečný zformátovaný HTML výstup pro režim pouze pro čtení ($is_readonly)
 	 * nebo pro porovnávací tabulku schvalování (page_approval.php).
 	 */
-	public static function render_formatted(string $value, bool $show_badge = false): string { // Vykreslení formátovaného textu
+	public static function render_formatted(string $value, bool$show_badge = false): string { // Vykreslení formátovaného textu
 		if (trim($value) === '') {                                           // Prázdná hodnota
 			return '';                                                       // Vrácení prázdného řetězce
 		}
@@ -270,12 +271,12 @@ class rich_text {
 		} elseif (is_file(__DIR__ . '/' . $local_css) AND filesize(__DIR__ . '/' . $local_css) > 1000) { // Ověření v css/
 			$css_url = $local_css;                                           // Použijeme lokální CSS v adresáři css/
 		} else {
-			$css_url = '[https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor.min.css](https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor.min.css)'; // CDN fallback
+			$css_url = 'https://' . 'cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor.min.css'; // CDN fallback
 		}
 
 		$js_url = (is_file(__DIR__ . '/' . $local_js) AND filesize(__DIR__ . '/' . $local_js) > 1000)
 			? $local_js
-			: '[https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor-all.min.js](https://cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor-all.min.js)'; // Lokální JS nebo CDN fallback
+			: ('https://' . 'cdn.jsdelivr.net/npm/@toast-ui/editor@3.2.2/dist/toastui-editor-all.min.js'); // Lokální JS nebo CDN fallback
 
 		$safe_css_url = htmlspecialchars($css_url);                          // Ošetřená URL adresa CSS
 		$safe_js_url  = htmlspecialchars($js_url);                           // Ošetřená URL adresa JS
@@ -645,7 +646,7 @@ class rich_text {
 			}
 		};
 	})();
-</script>' . "\n"; // Uzavření skriptu modálního editoru
+</script>' . "\n";                                                           // Uzavření skriptu modálního editoru
 
 		return $out;                                                         // Vrácení CSS a JS zdrojů
 	}
