@@ -880,6 +880,17 @@ BEGIN
 	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_column', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
 	DECLARE @cls_hierarchy uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy', '');
 
+	-- Specifický popisek sloupce is_leaf u třídy hierarchy (odlišení samostatné hierarchie od složky registru)
+	UPDATE meta_column
+	SET caption = 'Samostatná hierarchie / sada štítků (is_leaf)',
+		label = 'Samostatná hierarchie (is_leaf)',
+		header = 'Hierarchie',
+		helptext = 'Zaškrtněte (1) u koncové definice hierarchie nebo sady štítků, do které budete vkládat položky. Odškrtněte (0) pouze u nadřazené organizační složky v tomto registru.'
+	WHERE parent_class = @cls_hierarchy
+	  AND object_owner = 0x00
+	  AND column_name = 'is_leaf'
+	  AND who_modified = 0x00;
+
 	UPDATE meta_column
 	SET caption = 'Samostatná hierarchie / sada štítků (is_leaf)',
 		label = 'Samostatná hierarchie (is_leaf)',
