@@ -5,8 +5,6 @@
 F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
 
 system_constant.sql
-OsirisLib.sql
-changes_*.sql
 table_user_session.sql
 table_*.sql
 f_*.sql
