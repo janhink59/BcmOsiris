@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-01 18:00
+ * Verze: 2026-11-04 15:15
  * Soubor: fillup_meta_object.sql
  * Účel:   Idempotentní prvotní naplnění a registrace systémových PHP stránek
  *         a UI tříd (object_type = 'P', object_owner = 0x00) do tabulky meta_object
@@ -8,10 +8,11 @@
  *           a funkce dbo.f_generate_original (f_generate_original.sql).
  *         - Slouží jako podklad pro navigační vazby target_object v fillup_meta_menu.sql
  *           a pro kontrolu oprávnění v abstract_page::check_system_role_access().
- * Změny:  - 2026-11-01 18:00: Doplněna registrace stromových katalogových stránek
+ * Změny:  - 2026-11-04 15:15: Doplněna registrace UI komponenty svg_icon_editor
+ *           a stránek page_countermeasure, page_countermeasure_state, page_scale
+ *           a page_scale_value.
+ *         - 2026-11-01 18:00: Doplněna registrace stromových katalogových stránek
  *           CRMM: page_asset_class, page_threat, page_impact a page_scenario.
- *         - 2026-10-31 11:00: Doplněna registrace šablony abstract_page_tree
- *           a stránek page_hierarchy a page_hierarchy_item (system_role = 'U').
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -50,6 +51,7 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('abstract_button', 'Komponenta tlačítka', 'Základní třída pro vykreslování tlačítek s ikonou a tooltipem', 'U'),
 ('abstract_csv_package', 'Abstraktní CSV/TSV balíček', 'Základní třída pro export a dvoufázový import víceblokových CSV/TSV balíčků', 'U'),
 ('csv_package_metadata', 'CSV/TSV balíček systémových metadat', 'Definice a filtry pro přenos systémových metadat mezi instancemi', 'U'),
+('svg_icon_editor', 'Modální editor SVG ikon', 'Komponenta pro náhled, validaci XML syntaxe a úpravu vektorových ikon svg_icon', 'U'),
 ('user_context', 'Kontextový panel uživatele', 'Horní lišta s informacemi o přihlášeném uživateli, roli a volbou jazyka', 'U'),
 ('menu_manager', 'Správce navigace', 'Třída pro sestavení a vykreslení drobečkové navigace a menu', 'U'),
 ('entity_manager', 'Správce logických entit', 'Dynamický generátor SQL dotazů, seznamů a formulářů podle metadat', 'U'),
@@ -58,8 +60,12 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_threat', 'Katalog hrozeb (CRMM)', 'Správa hierarchického katalogu hrozeb a jejich výchozího hodnocení v modulu CRMM', 'U'),
 ('page_impact', 'Katalog dopadů (CRMM)', 'Správa hierarchického číselníku dopadů v modulu CRMM', 'U'),
 ('page_scenario', 'Rizikové scénáře (Katalog CRMM)', 'Správa hierarchického katalogu rizikových scénářů a událostí v modulu CRMM', 'U'),
-('page_hierarchy', 'Sekundární hierarchie a štítky (Tagy)', 'Správa registru sekundárních hierarchií a stromů štítků (tagů)', 'U'),
-('page_hierarchy_item', 'Položky sekundárních hierarchií', 'Správa uzlů a položek jednotlivých sekundárních hierarchií a štítků', 'U'),
+('page_countermeasure', 'Katalog protiopatření (CRMM)', 'Správa hierarchického katalogu bezpečnostních a provozních protiopatření v modulu CRMM', 'U'),
+('page_countermeasure_state', 'Stavy protiopatření (CRMM)', 'Správa číselníku stavů implementace protiopatření a jejich redukčních a rizikových faktorů', 'U'),
+('page_scale', 'Hodnotící škály (CRMM)', 'Správa definic hodnotících škál pro hrozby, zranitelnosti, dopady a rizika', 'U'),
+('page_scale_value', 'Stupně hodnotících škál (CRMM)', 'Správa jednotlivých stupňů hodnotících škál, prahových hodnot a skóre v intervalu 0 až 100 %', 'U'),
+('page_hierarchy', 'Sekundární hierarchie a štítky (Tagy)', 'Správa registru sekundárních hierarchií, číselníků a stromů štítků (tagů)', 'U'),
+('page_hierarchy_item', 'Položky sekundárních hierarchií', 'Správa uzlů a položek jednotlivých sekundárních hierarchií, číselníků a štítků', 'U'),
 ('page_meta_class', 'Logické třídy (Objekty)', 'Správa logických entit, jejich vlastností a překladů', 'U'),
 ('page_meta_column', 'Sloupce metadat', 'Správa definic sloupců, formulářových prvků a překladů', 'U'),
 ('page_meta_phrase', 'Textové fráze a překlady', 'Správa textových frází, tlačítek a jazykových mutací', 'U'),

@@ -1,12 +1,12 @@
 /* =============================================================================
- * Verze: 2026-11-04 10:30
+ * Verze: 2026-11-04 15:15
  * Soubor: changes_2026.sql
  * Účel:   Jednorázové změny struktury a dat databáze v kalendářním roce 2026.
  *         Spouští se samostatně PŘED hlavním slepeným skriptem BcmOsirisDb.sql.
  *
  * Pravidla pro údržbu a přidávání změn:
  * - Verze databáze (system_constant.database_version) má formát 'RR.MM.DD.N'
- *   (např. '26.11.04.0', kde poslední číslice N je intradenní pořadí změny).
+ *   (např. '26.11.04.1', kde poslední číslice N je intradenní pořadí změny).
  * - Všechny změnové bloky běží v transakci zahájené příkazem BEGIN TRAN.
  * - Příkaz COMMIT musí být uveden VÝHRADNĚ na konci posledního odladěného bloku
  *   (předchozí příkazy COMMIT při přidání nového bloku odstraň).
@@ -22,15 +22,13 @@
  *   databází neprovede žádné změny a nezpůsobí žádnou škodu.
  *
  * Změny:
+ * - 2026-11-04 15:15 (26.11.04.1): Doplnění sloupce is_default do hierarchy_item,
+ *   sjednocení povinnosti builtin_code (s automatickým odvozením z názvu v UI)
+ *   a zpřístupnění sloupce svg_icon pro modální editor ikon.
  * - 2026-11-04 10:30 (26.11.04.0): Odstranění umělého kořenového záznamu 0x00 (ROOT)
- *   z tabulky asset_class (sjednocení s ostatními stromovými tabulkami CRMM).
+ *   z tabulky asset_class.
  * - 2026-11-01 18:00 (26.11.01.0): Oprava vazby referenced_class u sloupce
- *   ancestor v sys_global_columns, zrušení globální povinnosti is_mandatory = 1
- *   u sloupce builtin_code pro běžné věcné tabulky a doplnění sloupců
- *   builtin_code, svg_icon, is_final, is_protected do tabulky asset_class.
- * - 2026-10-29 22:00 (26.10.29.0): Reorganizace sloupců mezi organization_licence
- *   a organization a přesun organizačně závislých sloupců z user_account do
- *   user_organization_access.
+ *   ancestor v sys_global_columns a doplnění sloupců do asset_class.
  * ============================================================================= */
 
 SET XACT_ABORT ON;
@@ -193,8 +191,7 @@ END
 GO
 
 -- -----------------------------------------------------------------------------
--- Verze 26.11.01.0: Oprava referenced_class u sloupce ancestor, úprava povinnosti
---                   builtin_code a rozšíření asset_class pro Krok C CRMM
+-- Verze 26.11.01.0: Oprava referenced_class u sloupce ancestor a rozšíření asset_class
 -- -----------------------------------------------------------------------------
 IF EXISTS (
 	SELECT 1
@@ -202,9 +199,8 @@ IF EXISTS (
 	WHERE database_version < '26.11.01.0'
 )
 BEGIN
-	PRINT '01.11.2026 (26.11.01.0): Oprava referenced_class u ancestor, odemčení builtin_code pro věcné tabulky a rozšíření asset_class';
+	PRINT '01.11.2026 (26.11.01.0): Oprava referenced_class u ancestor a rozšíření asset_class';
 
-	-- 1. Doplnění chybějících sloupců do tabulky asset_class
 	IF OBJECT_ID('asset_class', 'U') IS NOT NULL
 	BEGIN
 		EXEC p_create_missing_column 'asset_class', 'builtin_code', 'varchar(80) NOT NULL DEFAULT ''''';
@@ -213,14 +209,12 @@ BEGIN
 		EXEC p_create_missing_column 'asset_class', 'is_protected', 'bit NOT NULL DEFAULT 0';
 	END
 
-	-- 2. Oprava nesprávného hashe referenced_class u sloupce ancestor a úprava povinnosti builtin_code v meta_column
 	IF OBJECT_ID('meta_column', 'U') IS NOT NULL AND OBJECT_ID('meta_class', 'U') IS NOT NULL AND OBJECT_ID('f_generate_original', 'FN') IS NOT NULL
 	BEGIN
 		DECLARE @sys_own uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 		DECLARE @cls_glob uuid = dbo.f_generate_original('meta_class', CAST(@sys_own AS varchar(36)), 'sys_global_columns', '');
 		DECLARE @cls_mcol uuid = dbo.f_generate_original('meta_class', CAST(@sys_own AS varchar(36)), 'meta_column', '');
 
-		-- Oprava referenced_class u sloupce ancestor v globálním slovníku
 		UPDATE meta_column
 		SET referenced_class = @cls_mcol
 		WHERE parent_class = @cls_glob
@@ -228,31 +222,8 @@ BEGIN
 		  AND record_type = 'A'
 		  AND column_name = 'ancestor'
 		  AND ISNULL(referenced_class, 0x00) <> @cls_mcol;
-
-		-- V globálním slovníku není builtin_code bezpodmínečně povinný (povinnost se řídí kontextem 0x00 / šablony / metadat)
-		UPDATE meta_column
-		SET is_mandatory = 0
-		WHERE parent_class = @cls_glob
-		  AND object_owner = 0x00
-		  AND column_name = 'builtin_code'
-		  AND who_modified = 0x00
-		  AND is_mandatory = 1;
-
-		-- U lokálních sloupců builtin_code mimo metadatové tabulky a mimo tabulku hierarchy vrátíme is_mandatory na NULL (dědí z globálního slovníku)
-		UPDATE mc
-		SET mc.is_mandatory = NULL
-		FROM meta_column mc
-		JOIN meta_class mcl ON mcl.original = mc.parent_class AND mcl.object_owner = 0x00 AND mcl.record_type = 'A'
-		WHERE mc.parent_class <> @cls_glob
-		  AND mc.object_owner = 0x00
-		  AND mc.column_name = 'builtin_code'
-		  AND mc.who_modified = 0x00
-		  AND mc.is_mandatory = 1
-		  AND mcl.class_name NOT LIKE 'meta_%'
-		  AND mcl.class_name <> 'hierarchy';
 	END
 
-	-- 3. Povýšení verze databáze v system_constant a zápis do service_logbook
 	EXEC sp_drop_default 'system_constant', 'database_version';
 
 	ALTER TABLE system_constant
@@ -266,7 +237,7 @@ BEGIN
 	VALUES (
 		'changes_2026.sql',
 		'26.11.01.0',
-		'Oprava referenced_class u sloupce ancestor, úprava podmíněné povinnosti builtin_code a doplnění sloupců do asset_class'
+		'Oprava referenced_class u sloupce ancestor a doplnění sloupců do asset_class'
 	);
 END
 GO
@@ -307,6 +278,61 @@ BEGIN
 		'26.11.04.0',
 		'Odstranění umělého kořenového záznamu 0x00 (ROOT) z tabulky asset_class'
 	);
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Verze 26.11.04.1: Doplnění is_default do hierarchy_item, sjednocení povinnosti
+--                   builtin_code a odemčení svg_icon pro modální editor ikon
+-- -----------------------------------------------------------------------------
+IF EXISTS (
+	SELECT 1
+	FROM system_constant
+	WHERE database_version < '26.11.04.1'
+)
+BEGIN
+	PRINT '04.11.2026 (26.11.04.1): Doplnění is_default do hierarchy_item, sjednocení povinnosti builtin_code a zpřístupnění svg_icon';
+
+	IF OBJECT_ID('hierarchy_item', 'U') IS NOT NULL
+	BEGIN
+		EXEC p_create_missing_column 'hierarchy_item', 'is_default', 'bit NOT NULL DEFAULT 0';
+	END
+
+	IF OBJECT_ID('meta_column', 'U') IS NOT NULL AND OBJECT_ID('f_generate_original', 'FN') IS NOT NULL
+	BEGIN
+		DECLARE @sys_own2 uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+		DECLARE @cls_glob2 uuid = dbo.f_generate_original('meta_class', CAST(@sys_own2 AS varchar(36)), 'sys_global_columns', '');
+
+		UPDATE meta_column
+		SET is_mandatory = 1
+		WHERE parent_class = @cls_glob2
+		  AND object_owner = 0x00
+		  AND column_name = 'builtin_code'
+		  AND who_modified = 0x00;
+
+		UPDATE meta_column
+		SET is_protected = 0
+		WHERE parent_class = @cls_glob2
+		  AND object_owner = 0x00
+		  AND column_name = 'svg_icon'
+		  AND who_modified = 0x00;
+	END
+
+	EXEC sp_drop_default 'system_constant', 'database_version';
+
+	ALTER TABLE system_constant
+		ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.11.04.1' FOR database_version;
+
+	UPDATE system_constant
+	SET database_version = '26.11.04.1',
+		date_modified = GETDATE();
+
+	INSERT INTO service_logbook ([name], [version], content)
+	VALUES (
+		'changes_2026.sql',
+		'26.11.04.1',
+		'Doplnění sloupce is_default do hierarchy_item, sjednocení povinnosti builtin_code a zpřístupnění svg_icon pro modální editor'
+	);
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
 	COMMIT;
@@ -326,7 +352,7 @@ GO
 -- =============================================================================
 IF @@TRANCOUNT > 0 ROLLBACK;
 
-DECLARE @expected_version varchar(20) = '26.11.04.0';                          -- Požadovaná cílová verze tohoto skriptu
+DECLARE @expected_version varchar(20) = '26.11.04.1';                          -- Požadovaná cílová verze tohoto skriptu
 DECLARE @current_version varchar(20) = '';                                     -- Skutečná verze zjištěná v system_constant
 DECLARE @msg varchar(800) = '';                                                -- Text výsledné zprávy pro operátora
 DECLARE @severity int = 16;                                                    -- Závažnost (1 = OK/Info, 16 = Červená chyba)

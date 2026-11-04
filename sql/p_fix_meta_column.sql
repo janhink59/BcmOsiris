@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-04 10:30
+ * Verze: 2026-11-04 15:15
  * Soubor: p_fix_meta_column.sql
  * Procedury: dbo.p_sync_hierarchy_to_meta_class, dbo.p_fix_meta_column
  * Účel: 1. dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
@@ -14,19 +14,15 @@
  * - Volána na konci sestavovací dávky databáze (final_scripts.sql) a z triggeru
  *   trg_hierarchy_sync_meta_class (table_hierarchy.sql).
  * - Čte systémový pohled v_syscolumns (z HinkMSSQLLibrary.sql) a synchronizuje
- *   záznamy v tabulkách meta_object, meta_class a meta_column.
+ *   záznamy v tabulkách meta_object, meta_class, meta_column a meta_codetable.
  * - Využívá deterministickou hashovací funkci dbo.f_generate_original.
  *
  * Změny:
- * - 2026-11-04 10:30: U sloupce ancestor změněna podmínka na
- *   AND ISNULL(referenced_class, 0x00) <> @cls_meta_column AND who_modified = 0x00.
- *   Doplněno napojení referenced_class pro sloupce threat_uuid a asset_class_uuid.
- *   Sjednocena podmíněná povinnost sloupce builtin_code (is_mandatory = 1 pouze u
- *   metadatových tříd meta_* a třídy hierarchy; u věcných tabulek CRMM se řídí
- *   kontextem 0x00 / šablony).
- * - 2026-11-01 17:15: Opraven první parametr při výpočtu @cls_meta_column
- *   na 'meta_class' (místo 'meta_column') a odstraněn zdvojený UPDATE pro is_leaf
- *   u třídy hierarchy.
+ * - 2026-11-04 15:15: Doplněno idempotentní naplnění systémového číselníku
+ *   scale_type v meta_codetable, nastavení referenced_codetable = 'scale_type'
+ *   pro sloupec scale_type, napojení referenced_class pro sloupec scale,
+ *   odemčení svg_icon (is_protected = 0) pro modální editor SVG ikon a sjednocení
+ *   povinnosti builtin_code (is_mandatory = 1 s automatickým odvozením z názvu).
  * ============================================================================= */
 
 EXECUTE dropni 'p_fix_meta_column', 'P';
@@ -35,10 +31,6 @@ GO
 
 /* =============================================================================
  * Procedura: dbo.p_sync_hierarchy_to_meta_class
- * Účel: Promítne koncové hierarchie (is_leaf = 1) z tabulky hierarchy do tabulky
- *       meta_class (jako STI třídy nad úložnou tabulkou hierarchy_item) včetně
- *       symetrických jazykových 'L' záznamů. Složky (is_leaf = 0) a smazané
- *       hierarchie v meta_class zneplatní (removed = 1).
  * ============================================================================= */
 CREATE PROCEDURE dbo.p_sync_hierarchy_to_meta_class
 	@fix_childless_folders bit = 0                                             -- 1 = Při buildu opraví bezdětné hierarchie s is_leaf = 0 na 1
@@ -752,25 +744,17 @@ BEGIN
 		'caption_forward', 'caption_backward', 'note'
 	  );
 
-	-- Bezpodmínečně povinné sloupce v globálním slovníku (mimo builtin_code, jehož povinnost závisí na třídě a kontextu)
+	-- Klíčové sloupce jsou vždy povinné (builtin_code se u nových záznamů automaticky předvyplňuje z názvu)
 	UPDATE meta_column
 	SET is_mandatory = 1
 	WHERE parent_class = @c_class
 	  AND object_owner = 0x00
 	  AND column_name IN (
-		'class_name', 'column_name', 'source_code',
-		'codetable_name', 'value_code', 'link_code', 'hierarchy',
+		'builtin_code', 'class_name', 'column_name', 'source_code',
+		'codetable_name', 'value_code', 'link_code', 'hierarchy', 'scale',
 		'caption', 'login_name', 'link_def', 'from_object', 'to_object'
 	  )
 	  AND ISNULL(is_mandatory, 0) = 0;
-
-	UPDATE meta_column
-	SET is_mandatory = 0
-	WHERE parent_class = @c_class
-	  AND object_owner = 0x00
-	  AND column_name = 'builtin_code'
-	  AND who_modified = 0x00
-	  AND is_mandatory = 1;
 
 	IF OBJECT_ID('meta_original_keys') IS NOT NULL
 	BEGIN
@@ -792,16 +776,10 @@ BEGIN
 			AND (mok.key1_column = mc.column_name OR mok.key2_column = mc.column_name)
 		WHERE mc.object_owner = 0x00
 		  AND mc.record_type = 'A'
-		  AND ISNULL(mc.is_mandatory, 0) = 0
-		  AND (
-			mc.column_name <> 'builtin_code'
-			OR mcl.class_name LIKE 'meta_%'
-			OR mcl.class_name = 'hierarchy'
-		  );
+		  AND ISNULL(mc.is_mandatory, 0) = 0;
 	END
 
 	-- Vynucení podpory formátovaného textu (Markdown / HTML: is_html = 1)
-	-- pro 5 víceřádkových popisných sloupců v globálním slovníku (i pokud byly přepsány starším importem na 0)
 	UPDATE meta_column
 	SET is_html = 1
 	WHERE parent_class = @c_class
@@ -809,7 +787,6 @@ BEGIN
 	  AND column_name IN ('description', 'description_text', 'helptext', 'help_text', 'note')
 	  AND ISNULL(is_html, 0) = 0;
 
-	-- U lokálních sloupců těchto 5 názvů vyčistíme is_html = 0 na NULL, aby dědily is_html = 1 z globálního slovníku
 	UPDATE meta_column
 	SET is_html = NULL
 	WHERE parent_class <> @c_class
@@ -869,6 +846,107 @@ BEGIN
 	  AND (who_modified = 0x00 OR caption = 'hierarchy');
 
 	UPDATE meta_column
+	SET caption = 'Hodnotící škála (scale)',
+		label = 'Hodnotící škála',
+		header = 'Škála',
+		helptext = 'Odkaz na definici hodnotící škály v tabulce scale.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'scale'
+	  AND (who_modified = 0x00 OR caption = 'scale');
+
+	UPDATE meta_column
+	SET caption = 'Druh škály (scale_type)',
+		label = 'Druh měřené veličiny',
+		header = 'Druh škály',
+		helptext = 'Určuje veličinu hodnocenou touto škálou (Hrozba, Zranitelnost, Dopad, Výsledné riziko).',
+		referenced_codetable = 'scale_type'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'scale_type'
+	  AND (who_modified = 0x00 OR caption = 'scale_type' OR referenced_codetable = '');
+
+	UPDATE meta_column
+	SET caption = 'Priorita škály (priority)',
+		label = 'Priorita škály (0 = primární)',
+		header = 'Priorita',
+		helptext = '0 = primární škála pro zadávání a výchozí zobrazení; > 0 = sekundární škála pro zpětný přepočet v reportech.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'priority'
+	  AND (who_modified = 0x00 OR caption = 'priority');
+
+	UPDATE meta_column
+	SET caption = 'Počet stupňů při založení (initial_levels)',
+		label = 'Počet stupňů (pro vygenerování)',
+		header = 'Počet stupňů',
+		helptext = 'Počet rovnoměrných stupňů (2 až 20), které se automaticky vygenerují v intervalu 0 až 100 % při prvním uložení nové škály.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'initial_levels'
+	  AND (who_modified = 0x00 OR caption = 'initial_levels');
+
+	UPDATE meta_column
+	SET caption = 'Dolní práh intervalu v % (threshold_value)',
+		label = 'Dolní práh intervalu (0–100 %)',
+		header = 'Práh (%)',
+		helptext = 'Dolní mez intervalu stupně v procentech (0 až 100 %). Určuje pořadí stupňů ve škále (nejnižší stupeň začíná na 0).'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'threshold_value'
+	  AND (who_modified = 0x00 OR caption = 'threshold_value');
+
+	UPDATE meta_column
+	SET caption = 'Hodnota skóre v % (score_value)',
+		label = 'Hodnota skóre (0–100 %)',
+		header = 'Skóre (%)',
+		helptext = 'Výpočtové skóre stupně v procentech (0 až 100 %). Musí ležet uvnitř intervalu daného stupně a tvořit rostoucí řadu.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'score_value'
+	  AND (who_modified = 0x00 OR caption = 'score_value');
+
+	UPDATE meta_column
+	SET caption = 'Redukční faktor v % (reduction_factor)',
+		label = 'Redukční faktor (0–100 %)',
+		header = 'Redukce (%)',
+		helptext = 'Udává míru snížení zbytkového rizika scénáře při aplikaci opatření (resp. váhu stavu opatření).'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'reduction_factor'
+	  AND (who_modified = 0x00 OR caption = 'reduction_factor');
+
+	UPDATE meta_column
+	SET caption = 'Rizikový faktor / práh v % (risk_factor)',
+		label = 'Rizikový faktor / práh (0–100 %)',
+		header = 'Rizikový práh (%)',
+		helptext = 'Udává výsledné skóre rizika, pod které nesmí riziko scénáře klesnout, pokud opatření není implementováno.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'risk_factor'
+	  AND (who_modified = 0x00 OR caption = 'risk_factor');
+
+	UPDATE meta_column
+	SET caption = 'Výchozí položka (is_default)',
+		label = 'Výchozí hodnota (is_default)',
+		header = 'Výchozí',
+		helptext = 'Zaškrtněte u položky, která má být automaticky předvybrána při zakládání nového záznamu.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'is_default'
+	  AND (who_modified = 0x00 OR caption = 'is_default');
+
+	UPDATE meta_column
+	SET caption = 'Externí kód (external_code)',
+		label = 'Externí kód (pro párování)',
+		header = 'Ext. kód',
+		helptext = 'Volitelný identifikátor pro párování záznamu s externími systémy nebo normami.'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'external_code'
+	  AND (who_modified = 0x00 OR caption = 'external_code');
+
+	UPDATE meta_column
 	SET hidden = 1
 	WHERE parent_class = @c_class
 	  AND object_owner = 0x00
@@ -881,16 +959,22 @@ BEGIN
 		'ancestor_link', 'is_derived'
 	  );
 
+	-- Sloupec svg_icon je viditelný a editovatelný přes modální editor SVG ikon
 	UPDATE meta_column
 	SET hidden = 0,
-		is_protected = 1
+		is_protected = 0,
+		caption = 'Vektorová ikona (svg_icon)',
+		label = 'Vektorová ikona (SVG)',
+		header = 'Ikona',
+		helptext = 'Vektorová ikona ve formátu SVG. Dvojklikem nebo tlačítkem Upravit ikonu otevřete modální editor s kontrolou syntaxe.'
 	WHERE parent_class = @c_class
 	  AND object_owner = 0x00
 	  AND record_type = 'A'
-	  AND column_name = 'svg_icon';
+	  AND column_name = 'svg_icon'
+	  AND who_modified = 0x00;
 
 	-- -------------------------------------------------------------------------
-	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class V GLOBÁLNÍM SLOVNÍKU A STROMECH
+	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class A ČÍSELNÍKŮ
 	-- -------------------------------------------------------------------------
 	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
 	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');
@@ -898,8 +982,8 @@ BEGIN
 	DECLARE @cls_hierarchy uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy', '');
 	DECLARE @cls_asset_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_class', '');
 	DECLARE @cls_threat uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'threat', '');
+	DECLARE @cls_scale uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'scale', '');
 
-	-- Specifický popisek sloupce is_leaf u třídy hierarchy (odlišení samostatné hierarchie od složky registru)
 	UPDATE meta_column
 	SET caption = 'Samostatná hierarchie / sada štítků (is_leaf)',
 		label = 'Samostatná hierarchie (is_leaf)',
@@ -946,6 +1030,17 @@ BEGIN
 		  AND referenced_class IS NULL;
 	END
 
+	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_scale AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
+	BEGIN
+		UPDATE meta_column
+		SET referenced_class = @cls_scale
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'scale'
+		  AND referenced_class IS NULL;
+	END
+
 	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_asset_class AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
 	BEGIN
 		UPDATE meta_column
@@ -975,6 +1070,64 @@ BEGIN
 	  AND record_type = 'A'
 	  AND column_name = 'parent_uuid'
 	  AND referenced_class IS NULL;
+
+	-- Naplnění systémového číselníku scale_type v tabulce meta_codetable (A + symetrické L)
+	IF OBJECT_ID('meta_codetable', 'U') IS NOT NULL
+	BEGIN
+		DECLARE @st_items TABLE (
+			value_code varchar(80),
+			sort_code varchar(20),
+			caption_cs varchar(200),
+			caption_en varchar(200)
+		);
+		INSERT INTO @st_items VALUES
+			('THREAT',        '010', 'Hrozba / Pravděpodobnost',          'Threat / Probability'),
+			('VULNERABILITY', '020', 'Zranitelnost',                      'Vulnerability'),
+			('IMPACT',        '030', 'Dopad / Kritičnost aktiv',          'Impact / Asset Criticality'),
+			('RISK',          '040', 'Výsledné riziko / Míra ohrožení',   'Resulting Risk / Threat Level');
+
+		INSERT INTO meta_codetable (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			codetable_name, value_code, caption, sort_code, is_final, is_protected
+		)
+		SELECT
+			x.orig, 0x00, x.orig, 'A', 'A', 'cs',
+			'scale_type', s.value_code, s.caption_cs, s.sort_code, 1, 1
+		FROM @st_items s
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, 'scale_type', s.value_code) AS orig) x
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_codetable mc
+			WHERE mc.original = x.orig AND mc.object_owner = 0x00 AND mc.record_type = 'A'
+		);
+
+		INSERT INTO meta_codetable (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			codetable_name, value_code, caption, sort_code, is_final, is_protected
+		)
+		SELECT
+			NEWID(), 0x00, x.orig, 'L', 'A', 'cs',
+			'scale_type', s.value_code, s.caption_cs, s.sort_code, 1, 1
+		FROM @st_items s
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, 'scale_type', s.value_code) AS orig) x
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_codetable mc
+			WHERE mc.original = x.orig AND mc.object_owner = 0x00 AND mc.record_type = 'L' AND mc.[language] = 'cs'
+		);
+
+		INSERT INTO meta_codetable (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			codetable_name, value_code, caption, sort_code, is_final, is_protected
+		)
+		SELECT
+			NEWID(), 0x00, x.orig, 'L', 'A', 'en',
+			'scale_type', s.value_code, s.caption_en, s.sort_code, 1, 1
+		FROM @st_items s
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, 'scale_type', s.value_code) AS orig) x
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_codetable mc
+			WHERE mc.original = x.orig AND mc.object_owner = 0x00 AND mc.record_type = 'L' AND mc.[language] = 'en'
+		);
+	END
 
 	-- -------------------------------------------------------------------------
 	-- 6. OPRAVA HISTORICKÝCH DAT: Doplnění chybějícího caption u existujících tříd

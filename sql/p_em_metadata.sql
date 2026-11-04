@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-01 11:45
+ * Verze: 2026-11-04 15:15
  * Soubor: p_em_metadata.sql
  * Procedury: dbo.p_em_get_class_meta, dbo.p_em_get_columns_meta,
  *            dbo.p_em_get_select_options
@@ -13,9 +13,9 @@
  *            roletky v UI (source_code, meta_codetable, referenced_class a
  *            rekurzivní stromové vazby parent_uuid s vyloučením vlastního podstromu).
  * Vazby:  - Voláno z PHP třídy entity_manager (entity_manager.php, entity_manager_ui.php),
- *           page_hierarchy_item.php a page_approval.php.
- *         - Využívá dbsession, dbo.f_language_list, meta_object, meta_class,
- *           meta_column a meta_codetable.
+ *           page_hierarchy_item.php, page_scale_value.php a page_approval.php.
+ * Změny:  - 2026-11-04 15:15: V p_em_get_select_options (@mode = 'ref_class')
+ *           doplněna podpora řazení podle threshold_value u tabulky scale_value.
  * ============================================================================= */
 
 EXECUTE dropni 'p_em_get_class_meta', 'P';
@@ -76,7 +76,6 @@ BEGIN
 	IF @cls_orig IS NULL
 		RETURN;
 
-	-- Pokud odvozená STI třída nemá vlastní sloupce v meta_column, dědí sloupce ze svého ancestor_class
 	SET @col_parent_cls = @cls_orig;
 	IF @anc_cls IS NOT NULL AND NOT EXISTS (
 		SELECT 1 FROM meta_column WHERE parent_class = @cls_orig AND record_type = 'A' AND removed = 0
@@ -231,12 +230,6 @@ GO
 
 /* =============================================================================
  * Procedura: dbo.p_em_get_select_options
- * Režimy (@mode):
- * - 'source_code' : Položky meta_object (object_type = 'P') pro meta_phrase.source_code
- * - 'codetable'   : Položky z meta_codetable podle @param_code = codetable_name
- * - 'ref_class'   : Položky odkazované třídy @ref_class_uuid (pro sloupec @param_code)
- * - 'parent_tree' : Nadřízené uzly stromové tabulky @storage_table s vyloučením
- *                   podstromu @curr_guid a filtrem na složky (is_leaf = 0)
  * ============================================================================= */
 CREATE PROCEDURE dbo.p_em_get_select_options
 	@mode varchar(30),
@@ -477,11 +470,16 @@ BEGIN
 			RETURN;
 		END
 
-		-- Obecná cílová tabulka (např. hierarchy, organization, asset_class...)
+		-- Obecná cílová tabulka (např. hierarchy, scale, scale_value, organization, asset_class...)
 		DECLARE @ref_has_code bit = CASE WHEN COL_LENGTH(@ref_table, 'builtin_code') IS NOT NULL THEN 1 ELSE 0 END;
 		DECLARE @ref_has_sort bit = CASE WHEN COL_LENGTH(@ref_table, 'sort_code') IS NOT NULL THEN 1 ELSE 0 END;
+		DECLARE @ref_has_thresh bit = CASE WHEN COL_LENGTH(@ref_table, 'threshold_value') IS NOT NULL THEN 1 ELSE 0 END;
 		DECLARE @ref_code_sql nvarchar(100) = CASE WHEN @ref_has_code = 1 THEN N'a.builtin_code' ELSE N'''''' END;
-		DECLARE @ref_sort_sql nvarchar(100) = CASE WHEN @ref_has_sort = 1 THEN N'a.sort_code' ELSE N'''''' END;
+		DECLARE @ref_sort_sql nvarchar(200) = CASE
+			WHEN @ref_has_sort = 1 THEN N'a.sort_code'
+			WHEN @ref_has_thresh = 1 THEN N'RIGHT(''0000000000'' + CAST(CAST(a.threshold_value * 10000 AS bigint) AS varchar(20)), 10)'
+			ELSE N''''''
+		END;
 		DECLARE @extra_ref_cond nvarchar(200) = CASE
 			WHEN @ref_table = 'hierarchy' AND @param_code = 'hierarchy' THEN N'AND (a.is_leaf = 1 OR a.original = @p_cur_val)'
 			ELSE N''

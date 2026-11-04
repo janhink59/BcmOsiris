@@ -1,10 +1,10 @@
 /* =============================================================================
- * Verze: 2026-10-30 23:35
+ * Verze: 2026-11-04 15:15
  * Soubor: table_hierarchy_item.sql
- * Tabulka: hierarchy_item (Uzly a položky sekundárních hierarchií a tagů)
+ * Tabulka: hierarchy_item (Uzly a položky sekundárních hierarchií, číselníků a tagů)
  * Popis:   Uchovává veškeré uzly (vnitřní složky is_leaf = 0 i koncové listy
- *          is_leaf = 1) všech sekundárních hierarchií a stromů štítků (tagů)
- *          definovaných v tabulce hierarchy.
+ *          is_leaf = 1) všech sekundárních hierarchií, prostých číselníků
+ *          a stromů štítků (tagů) definovaných v tabulce hierarchy.
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
  * Vazby:   - Sloupec hierarchy ukazuje na hierarchy.original.
  *          - Sloupec parent_uuid ukazuje na nadřízený uzel hierarchy_item.original
@@ -12,6 +12,7 @@
  *          - Vazby mezi položkami hierarchy_item a cílovými entitami CRMM se
  *            ukládají do univerzální tabulky link (včetně materializace dědění
  *            přes ancestor_link).
+ * Změny:   - 2026-11-04 15:15: Doplněn sloupec is_default bit NOT NULL DEFAULT 0.
  * ============================================================================= */
 
 IF OBJECT_ID('hierarchy_item') IS NULL
@@ -51,6 +52,7 @@ BEGIN
 		parent_uuid uuid NULL,                             -- Nadřízený uzel v téže hierarchii (hierarchy_item.original)
 		sort_code varchar(200) NOT NULL DEFAULT '',        -- Pořadí v rámci sourozenců
 		is_leaf bit NOT NULL DEFAULT 1,                    -- 1 = Koncový uzel, 0 = Vnitřní uzel (složka)
+		is_default bit NOT NULL DEFAULT 0,                 -- 1 = Výchozí položka při zakládání nového záznamu
 
 		-- ---------------------------------------------------------------------
 		-- Prezentační a identifikační vlastnosti uzlu
@@ -58,7 +60,7 @@ BEGIN
 		builtin_code varchar(80) NOT NULL DEFAULT '',      -- Kód uzlu v rámci dané hierarchie
 		caption varchar(200) NOT NULL DEFAULT '',          -- Zobrazovaný název uzlu (lokalizovatelný)
 		shortname varchar(40) NOT NULL DEFAULT '',
-		external_code varchar(200) NOT NULL DEFAULT '',
+		external_code varchar(40) NOT NULL DEFAULT '',
 		description_text varchar(max) NOT NULL DEFAULT '',
 		help_text varchar(max) NOT NULL DEFAULT '',
 		svg_icon varchar(max) NOT NULL DEFAULT '',
@@ -78,6 +80,7 @@ EXEC p_create_missing_column 'hierarchy_item', 'approval_note', 'varchar(max) NO
 EXEC p_create_missing_column 'hierarchy_item', 'import_origin', 'varchar(255) NULL';
 EXEC p_create_missing_column 'hierarchy_item', 'svg_icon', 'varchar(max) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'hierarchy_item', 'color_code', 'varchar(20) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'hierarchy_item', 'is_default', 'bit NOT NULL DEFAULT 0';
 GO
 
 -- -----------------------------------------------------------------------------

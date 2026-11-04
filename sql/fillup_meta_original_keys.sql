@@ -1,16 +1,16 @@
 /* =============================================================================
- * Verze: 2026-10-30 23:35
+ * Verze: 2026-11-04 15:15
  * Soubor: fillup_meta_original_keys.sql
  * Účel: Hromadné znovunaplnění definic pro generování sloupce "original".
  * Vazby: Slouží jako podklad pro proceduru generate_trgo, která dynamicky 
  *        skládá a zakládá triggery nad všemi definovanými tabulkami.
  *        Čte systémový pohled v_syscolumns a zapisuje do tabulky meta_original_keys.
  * Změny:
+ * - 2026-11-04 15:15: Přidána definice složeného klíče (scale, builtin_code)
+ *   pro tabulku scale_value (tabulky scale, countermeasure_state a countermeasure
+ *   se zařadí automaticky přes sloupec builtin_code).
  * - 2026-10-30 23:35: Přidána definice klíčů pro tabulky hierarchy (builtin_code)
  *   a hierarchy_item (hierarchy, builtin_code).
- * - 2026-10-15: Přidána definice složeného klíče (source_code, builtin_code)
- *   pro tabulku meta_phrase a doplněna ochrana proti zařazení dočasných
- *   staging tabulek z Excelu (tabname NOT LIKE '%$').
  * ============================================================================= */
 SET NOCOUNT ON;
 GO
@@ -29,7 +29,8 @@ VALUES
 	('meta_codetable', 'codetable_name', 'value_code'), -- Číselník je unikátní názvem a hodnotou
 	('meta_phrase', 'source_code', 'builtin_code'),     -- Fráze je unikátní zdrojovou třídou a kódem
 	('hierarchy', 'builtin_code', NULL),                -- Hierarchie je unikátní svým kódem
-	('hierarchy_item', 'hierarchy', 'builtin_code');    -- Uzel hierarchie je unikátní v rámci dané hierarchie
+	('hierarchy_item', 'hierarchy', 'builtin_code'),    -- Uzel hierarchie je unikátní v rámci dané hierarchie
+	('scale_value', 'scale', 'builtin_code');           -- Stupeň škály je unikátní v rámci dané škály
 
 -- VYSVĚTLENÍ VÝJIMKY PRO TABULKU LINK:
 -- Tabulka link vyžaduje pro výpočet originálu 4 složky (link_def, from_object, to_object, ancestor_link).
