@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 18:00
+ * Verze: 2026-11-04 10:30
  * Soubor: page_asset_class.php
  * Třída: page_asset_class
  * Účel: Správa hierarchického katalogu tříd aktiv (tabulka asset_class) v CRMM.
@@ -16,6 +16,9 @@
  *   jakmile jsou na třídě aktiv (nebo jejích potomcích) platné vazby v `link` nebo
  *   scénáře v `scenario`, je uzamčeno přepodřizování (`parent_uuid`), změna `is_leaf`
  *   z 1 na 0 a mazání.
+ *
+ * Změny:
+ * 2026-11-04 10:30 - Odstraněn umělý chráněný kořen 'ROOT' ($protected_root_codes).
  * =============================================================================
  */
 
@@ -29,7 +32,6 @@ class page_asset_class extends abstract_page_tree {
 		$this->class_name = 'asset_class';                                   // Logická třída pro entity_manager
 		$this->can_edit_structure = ! $this->is_readonly;                    // Povolení úpravy stromu a D&D v editačním režimu
 		$this->allow_insert = ! $this->is_readonly;                          // Povolení zakládání nových tříd aktiv
-		$this->protected_root_codes = ['ROOT'];                              // Kořenový uzel 0x00 (ROOT) je chráněn proti přesunu
 		$this->storage_key_prefix = 'bcm_tree_asset_class';                  // Klíč v sessionStorage pro sbalené větve
 
 		$this->page_title = $this->phrase('page_title', [], 'Třídy aktiv (Katalog CRMM)'); // Lokalizovaný titulek stránky

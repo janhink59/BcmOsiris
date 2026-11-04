@@ -1,12 +1,12 @@
 /* =============================================================================
- * Verze: 2026-11-01 18:00
+ * Verze: 2026-11-04 10:30
  * Soubor: changes_2026.sql
  * Účel:   Jednorázové změny struktury a dat databáze v kalendářním roce 2026.
  *         Spouští se samostatně PŘED hlavním slepeným skriptem BcmOsirisDb.sql.
  *
  * Pravidla pro údržbu a přidávání změn:
  * - Verze databáze (system_constant.database_version) má formát 'RR.MM.DD.N'
- *   (např. '26.11.01.0', kde poslední číslice N je intradenní pořadí změny).
+ *   (např. '26.11.04.0', kde poslední číslice N je intradenní pořadí změny).
  * - Všechny změnové bloky běží v transakci zahájené příkazem BEGIN TRAN.
  * - Příkaz COMMIT musí být uveden VÝHRADNĚ na konci posledního odladěného bloku
  *   (předchozí příkazy COMMIT při přidání nového bloku odstraň).
@@ -22,6 +22,8 @@
  *   databází neprovede žádné změny a nezpůsobí žádnou škodu.
  *
  * Změny:
+ * - 2026-11-04 10:30 (26.11.04.0): Odstranění umělého kořenového záznamu 0x00 (ROOT)
+ *   z tabulky asset_class (sjednocení s ostatními stromovými tabulkami CRMM).
  * - 2026-11-01 18:00 (26.11.01.0): Oprava vazby referenced_class u sloupce
  *   ancestor v sys_global_columns, zrušení globální povinnosti is_mandatory = 1
  *   u sloupce builtin_code pro běžné věcné tabulky a doplnění sloupců
@@ -209,7 +211,6 @@ BEGIN
 		EXEC p_create_missing_column 'asset_class', 'svg_icon', 'varchar(max) NOT NULL DEFAULT ''''';
 		EXEC p_create_missing_column 'asset_class', 'is_final', 'bit NOT NULL DEFAULT 0';
 		EXEC p_create_missing_column 'asset_class', 'is_protected', 'bit NOT NULL DEFAULT 0';
-		EXEC('UPDATE asset_class SET builtin_code = ''ROOT'' WHERE uuid = 0x00 AND builtin_code = ''''');
 	END
 
 	-- 2. Oprava nesprávného hashe referenced_class u sloupce ancestor a úprava povinnosti builtin_code v meta_column
@@ -267,6 +268,45 @@ BEGIN
 		'26.11.01.0',
 		'Oprava referenced_class u sloupce ancestor, úprava podmíněné povinnosti builtin_code a doplnění sloupců do asset_class'
 	);
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Verze 26.11.04.0: Odstranění umělého kořenového záznamu 0x00 (ROOT) z tabulky asset_class
+-- -----------------------------------------------------------------------------
+IF EXISTS (
+	SELECT 1
+	FROM system_constant
+	WHERE database_version < '26.11.04.0'
+)
+BEGIN
+	PRINT '04.11.2026 (26.11.04.0): Odstranění umělého kořenového záznamu 0x00 (ROOT) z tabulky asset_class';
+
+	IF OBJECT_ID('asset_class', 'U') IS NOT NULL
+	BEGIN
+		UPDATE asset_class
+		SET parent_uuid = NULL
+		WHERE parent_uuid = 0x00;
+
+		DELETE FROM asset_class
+		WHERE uuid = 0x00 OR original = 0x00;
+	END
+
+	EXEC sp_drop_default 'system_constant', 'database_version';
+
+	ALTER TABLE system_constant
+		ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.11.04.0' FOR database_version;
+
+	UPDATE system_constant
+	SET database_version = '26.11.04.0',
+		date_modified = GETDATE();
+
+	INSERT INTO service_logbook ([name], [version], content)
+	VALUES (
+		'changes_2026.sql',
+		'26.11.04.0',
+		'Odstranění umělého kořenového záznamu 0x00 (ROOT) z tabulky asset_class'
+	);
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
 	COMMIT;
@@ -286,7 +326,7 @@ GO
 -- =============================================================================
 IF @@TRANCOUNT > 0 ROLLBACK;
 
-DECLARE @expected_version varchar(20) = '26.11.01.0';                          -- Požadovaná cílová verze tohoto skriptu
+DECLARE @expected_version varchar(20) = '26.11.04.0';                          -- Požadovaná cílová verze tohoto skriptu
 DECLARE @current_version varchar(20) = '';                                     -- Skutečná verze zjištěná v system_constant
 DECLARE @msg varchar(800) = '';                                                -- Text výsledné zprávy pro operátora
 DECLARE @severity int = 16;                                                    -- Závažnost (1 = OK/Info, 16 = Červená chyba)

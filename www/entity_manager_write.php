@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 17:15
+ * Verze: 2026-11-04 10:30
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  * Účel: Zápisová, validační, klonovací a schvalovací (SSC) část třídy entity_manager.
@@ -12,19 +12,19 @@
  * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
  * - Využívá vlastnosti třídy `entity_manager` (`storage_table`, `physical_cols`,
  *   `col_types`, `col_nulls`, `columns_meta`, `class_meta`, `is_initialized`)
- *   a její metody `phrase()`, `is_metadata_entity()`, `get_original_key_columns()`,
- *   `set_last_save_error()`, `is_hierarchy_node_locked()` a `evaluate_remove_permission()`.
+ *   a její metody `phrase()`, `is_metadata_entity()`, `is_key_column_mandatory()`,
+ *   `get_original_key_columns()`, `set_last_save_error()`, `is_hierarchy_node_locked()`
+ *   a `evaluate_remove_permission()`.
  * - Využívá třídu `rich_text` (`rich_text.php`) pro normalizaci, konverzi (Markdown ⇄ HTML)
  *   a bezpečnostní sanitizaci formátovaných sloupců (`is_html = 1`) při ukládání z POSTu.
  * - Využívá funkce `is_zero_guid()` a `is_sys_org()` z `new_functions.php`.
  * - Volán z `abstract_page_master_detail::process_save()` a `page_approval::process_save()`.
  *
  * Změny:
- * 2026-11-01 17:15 - Oprava chyby TypeError u 7 validačních volání $this->phrase()
- *                    (sjednoceno pořadí argumentů na $builtin_code, $default_caption, $vars).
- *                  - Napojení na set_last_save_error(), is_zero_guid() a is_sys_org().
- * 2026-10-31 16:15 - Doplněno ořezávání (trim) klíčových sloupců a databázový test
- *                    unikátnosti klíčových údajů / original před provedením INSERTu.
+ * 2026-11-04 10:30 - Sjednocení validace klíčového sloupce builtin_code s generate_trgo.sql:
+ *                    pokud není v daném kontextu povinný ($this->is_key_column_mandatory)
+ *                    a uživatel jej ponechá prázdný, vygeneruje se náhodné NEWID().
+ * 2026-11-01 17:15 - Oprava chyby TypeError u 7 validačních volání $this->phrase().
  * =============================================================================
  */
 
@@ -399,7 +399,9 @@ trait entity_manager_write {
 
 				$k1_val = array_key_exists($k1_col, $src_key_data) ? (string)$src_key_data[$k1_col] : "''"; // SQL literál 1. klíče
 				$k1_plain = $this->unquote_sql_literal($k1_val);             // Čistá textová hodnota 1. klíče
-				if ($k1_plain === '') {                                      // První klíčový sloupec nesmí být nikdy prázdný
+				$k1_mand = $this->is_key_column_mandatory($k1_col) OR ! empty($src_key_data['is_template']); // Zda je 1. klíč v tomto kontextu povinný
+
+				if ($k1_plain === '' AND $k1_mand) {                         // Povinný 1. klíčový sloupec je prázdný
 					$k1_meta = $this->columns_meta[$k1_col] ?? [];           // Metadata 1. klíčového sloupce
 					$k1_lbl = (string)($k1_meta['label'] ?? $k1_meta['caption'] ?? $k1_col); // Popisek sloupce
 					$err_empty = $this->phrase(
@@ -416,7 +418,9 @@ trait entity_manager_write {
 				if ($k2_col !== '') {                                        // Pokud má tabulka definovaný i 2. klíčový sloupec
 					$k2_val = array_key_exists($k2_col, $src_key_data) ? (string)$src_key_data[$k2_col] : "''"; // SQL literál 2. klíče
 					$k2_plain = $this->unquote_sql_literal($k2_val);         // Čistá textová hodnota 2. klíče
-					if ($k2_plain === '') {                                  // Druhý klíčový sloupec rovněž nesmí být prázdný
+					$k2_mand = $this->is_key_column_mandatory($k2_col) OR ! empty($src_key_data['is_template']); // Zda je 2. klíč povinný
+
+					if ($k2_plain === '' AND $k2_mand) {                     // Povinný 2. klíčový sloupec je prázdný
 						$k2_meta = $this->columns_meta[$k2_col] ?? [];       // Metadata 2. klíčového sloupce
 						$k2_lbl = (string)($k2_meta['label'] ?? $k2_meta['caption'] ?? $k2_col); // Popisek sloupce
 						$err_empty2 = $this->phrase(
@@ -429,65 +433,75 @@ trait entity_manager_write {
 					}
 				}
 
-				// Výpočet deterministického originálu přes dbo.f_generate_original
-				$orig_row = sqlfirstrow("SELECT dbo.f_generate_original(" . charliteral($table) . ", {$rec_owner_sql}, CAST({$k1_val} AS VARCHAR(MAX)), CAST({$k2_val} AS VARCHAR(MAX))) AS orig_guid"); // Výpočet hashe
-				if (! empty($orig_row)) {                                    // Načtení vypočteného originálu
-					$orig_guid_raw = (string)$orig_row['orig_guid'];         // Surové UUID originálu
-					$orig_guid_sql = guidliteral($orig_guid_raw);            // Deterministické UUID originálu
-				}
+				$has_all_keys = ($k1_plain !== '' AND ($k2_col === '' OR $k2_plain !== '')); // Zda jsou klíčové sloupce vyplněny
 
-				// Test unikátnosti klíčových položek a výsledného originálu v cílové tabulce (včetně koše removed = 1 a systémových 0x00 záznamů)
-				$k1_cond_sql = "LOWER(LTRIM(RTRIM(CAST([{$k1_col}] AS VARCHAR(MAX))))) = LOWER(LTRIM(RTRIM(CAST({$k1_val} AS VARCHAR(MAX)))))"; // Podmínka shody 1. klíče
-				$k2_cond_sql = ($k2_col !== '')
-					? " AND LOWER(LTRIM(RTRIM(CAST([{$k2_col}] AS VARCHAR(MAX))))) = LOWER(LTRIM(RTRIM(CAST({$k2_val} AS VARCHAR(MAX)))))"
-					: "";                                                    // Podmínka shody 2. klíče
-
-				$dup_row = sqlfirstrow("
-					SELECT TOP 1 uuid, original, record_type, removed, object_owner
-					FROM [{$table}]
-					WHERE uuid = {$orig_guid_sql}
-					   OR (original = {$orig_guid_sql} AND object_owner IN (0x00, {$rec_owner_sql}) AND record_type IN ('A', 'D'))
-					   OR (record_type IN ('A', 'D') AND object_owner IN (0x00, {$rec_owner_sql}) AND {$k1_cond_sql}{$k2_cond_sql})
-					ORDER BY removed ASC, CASE WHEN record_type = 'A' THEN 0 ELSE 1 END ASC
-				");                                                          // Kontrola duplicitního záznamu v tabulce
-
-				if (! empty($dup_row)) {                                     // Nalezen kolizní záznam se shodným klíčem / originálem
-					$key_desc = ($k2_col !== '') ? "{$k1_col}='{$k1_plain}', {$k2_col}='{$k2_plain}'" : "{$k1_col}='{$k1_plain}'"; // Popis klíče
-					if (! empty($dup_row['removed'])) {                      // Kolizní záznam leží v koši (removed = 1)
-						$err_dup_trash = $this->phrase(
-							'err_duplicate_key_in_trash',
-							'Záznam se zadanou klíčovou položkou ({' . chr(36) . 'keys}) již existuje v koši (zrušené záznamy). Zapněte v levém panelu „Zobrazit i zrušené“ a záznam obnovte, nebo zvolte jiný unikátní kód.',
-							['keys' => $key_desc]
-						);                                                   // Hláška pro záznam v koši
-						$this->set_last_save_error($err_dup_trash);          // Uložení chyby
-					} else {
-						$err_dup_active = $this->phrase(
-							'err_duplicate_key_active',
-							'Záznam se zadanou klíčovou položkou ({' . chr(36) . 'keys}) již v databázi existuje. Zadejte unikátní hodnotu, aby nedošlo k výpočtu duplicitního originálu.',
-							['keys' => $key_desc]
-						);                                                   // Hláška pro aktivní duplicitní záznam
-						$this->set_last_save_error($err_dup_active);         // Uložení chyby
+				if ($has_all_keys) {                                         // Klíče jsou vyplněny -> spočítáme deterministický originál a ověříme unikátnost
+					$orig_row = sqlfirstrow("SELECT dbo.f_generate_original(" . charliteral($table) . ", {$rec_owner_sql}, CAST({$k1_val} AS VARCHAR(MAX)), CAST({$k2_val} AS VARCHAR(MAX))) AS orig_guid"); // Výpočet hashe
+					if (! empty($orig_row)) {                                // Načtení vypočteného originálu
+						$orig_guid_raw = (string)$orig_row['orig_guid'];     // Surové UUID originálu
+						$orig_guid_sql = guidliteral($orig_guid_raw);        // Deterministické UUID originálu
 					}
-					return '';                                               // Zastavení zápisu před vznikem SQL chyby
-				}
 
-				// Speciální kontrola pro tabulku hierarchy: builtin_code se propisuje jako class_name do meta_class
-				if ($table === 'hierarchy') {                                // Kontrola kolize kódu hierarchie s tabulkou meta_class
-					$cls_dup = sqlfirstrow("
-						SELECT TOP 1 class_name
-						FROM meta_class
-						WHERE LOWER(LTRIM(RTRIM(class_name))) = LOWER(LTRIM(RTRIM(CAST({$k1_val} AS VARCHAR(80)))))
-						  AND object_owner IN (0x00, {$rec_owner_sql})
-						  AND record_type = 'A'
-					");                                                      // Dotaz na existenci třídy v meta_class
-					if (! empty($cls_dup)) {                                 // Kód již obsadila jiná logická třída v meta_class
-						$err_cls_col = $this->phrase(
-							'err_hierarchy_code_collides_class',
-							'Kód hierarchie „{' . chr(36) . 'code}“ koliduje s názvem již existující logické třídy v meta_class. Zvolte prosím jiný unikátní kód.',
-							['code' => $k1_plain]
-						);                                                   // Chybová hláška kolize s meta_class
-						$this->set_last_save_error($err_cls_col);            // Uložení chyby
-						return '';                                           // Zastavení zápisu
+					// Test unikátnosti klíčových položek a výsledného originálu v cílové tabulce (včetně koše removed = 1 a systémových 0x00 záznamů)
+					$k1_cond_sql = "LOWER(LTRIM(RTRIM(CAST([{$k1_col}] AS VARCHAR(MAX))))) = LOWER(LTRIM(RTRIM(CAST({$k1_val} AS VARCHAR(MAX)))))"; // Podmínka shody 1. klíče
+					$k2_cond_sql = ($k2_col !== '')
+						? " AND LOWER(LTRIM(RTRIM(CAST([{$k2_col}] AS VARCHAR(MAX))))) = LOWER(LTRIM(RTRIM(CAST({$k2_val} AS VARCHAR(MAX)))))"
+						: "";                                                // Podmínka shody 2. klíče
+
+					$dup_row = sqlfirstrow("
+						SELECT TOP 1 uuid, original, record_type, removed, object_owner
+						FROM [{$table}]
+						WHERE uuid = {$orig_guid_sql}
+						   OR (original = {$orig_guid_sql} AND object_owner IN (0x00, {$rec_owner_sql}) AND record_type IN ('A', 'D'))
+						   OR (record_type IN ('A', 'D') AND object_owner IN (0x00, {$rec_owner_sql}) AND {$k1_cond_sql}{$k2_cond_sql})
+						ORDER BY removed ASC, CASE WHEN record_type = 'A' THEN 0 ELSE 1 END ASC
+					");                                                      // Kontrola duplicitního záznamu v tabulce
+
+					if (! empty($dup_row)) {                                 // Nalezen kolizní záznam se shodným klíčem / originálem
+						$key_desc = ($k2_col !== '') ? "{$k1_col}='{$k1_plain}', {$k2_col}='{$k2_plain}'" : "{$k1_col}='{$k1_plain}'"; // Popis klíče
+						if (! empty($dup_row['removed'])) {                  // Kolizní záznam leží v koši (removed = 1)
+							$err_dup_trash = $this->phrase(
+								'err_duplicate_key_in_trash',
+								'Záznam se zadanou klíčovou položkou ({' . chr(36) . 'keys}) již existuje v koši (zrušené záznamy). Zapněte v levém panelu „Zobrazit i zrušené“ a záznam obnovte, nebo zvolte jiný unikátní kód.',
+								['keys' => $key_desc]
+							);                                               // Hláška pro záznam v koši
+							$this->set_last_save_error($err_dup_trash);      // Uložení chyby
+						} else {
+							$err_dup_active = $this->phrase(
+								'err_duplicate_key_active',
+								'Záznam se zadanou klíčovou položkou ({' . chr(36) . 'keys}) již v databázi existuje. Zadejte unikátní hodnotu, aby nedošlo k výpočtu duplicitního originálu.',
+								['keys' => $key_desc]
+							);                                               // Hláška pro aktivní duplicitní záznam
+							$this->set_last_save_error($err_dup_active);     // Uložení chyby
+						}
+						return '';                                           // Zastavení zápisu před vznikem SQL chyby
+					}
+
+					// Speciální kontrola pro tabulku hierarchy: builtin_code se propisuje jako class_name do meta_class
+					if ($table === 'hierarchy') {                            // Kontrola kolize kódu hierarchie s tabulkou meta_class
+						$cls_dup = sqlfirstrow("
+							SELECT TOP 1 class_name
+							FROM meta_class
+							WHERE LOWER(LTRIM(RTRIM(class_name))) = LOWER(LTRIM(RTRIM(CAST({$k1_val} AS VARCHAR(80)))))
+							  AND object_owner IN (0x00, {$rec_owner_sql})
+							  AND record_type = 'A'
+						");                                                  // Dotaz na existenci třídy v meta_class
+						if (! empty($cls_dup)) {                             // Kód již obsadila jiná logická třída v meta_class
+							$err_cls_col = $this->phrase(
+								'err_hierarchy_code_collides_class',
+								'Kód hierarchie „{' . chr(36) . 'code}“ koliduje s názvem již existující logické třídy v meta_class. Zvolte prosím jiný unikátní kód.',
+								['code' => $k1_plain]
+							);                                               // Chybová hláška kolize s meta_class
+							$this->set_last_save_error($err_cls_col);        // Uložení chyby
+							return '';                                       // Zastavení zápisu
+						}
+					}
+				} else {
+					// Nepovinný builtin_code zůstal u běžného tenanta prázdný -> vygenerujeme náhodné NEWID() (v souladu s generate_trgo.sql)
+					$orig_row = sqlfirstrow("SELECT NEWID() AS orig_guid");  // Náhodný identifikátor při prázdném builtin_code
+					if (! empty($orig_row)) {                                // Načtení vygenerovaného UUID
+						$orig_guid_raw = (string)$orig_row['orig_guid'];     // Surové náhodné UUID
+						$orig_guid_sql = guidliteral($orig_guid_raw);        // SQL literál náhodného UUID
 					}
 				}
 			} elseif ($table === 'link') {                                   // Speciální 4složkový výpočet a validace pro tabulku link

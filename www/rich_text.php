@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 17:15
+ * Verze: 2026-11-04 10:30
  * Soubor: rich_text.php
  * Třída: rich_text
  * Účel: Centrální služba pro detekci formátu (Markdown vs. HTML), obousměrnou
@@ -21,11 +21,10 @@
  *   page_org_users.php a page_approval.php.
  *
  * Změny:
+ * 2026-11-04 10:30 - Oprava sloučených řádků za komentáři v sanitize_html() ($clean)
+ *                    a to_html() ($raw_html) a doplnění mezer před znakem $ (Anti-LaTeX).
  * 2026-11-01 17:15 - Ochrana CDN URL řetězců proti automatickému obalování do
  *                    Markdown odkazů webovým rozhraním (rozdělení 'https://' . 'cdn...').
- *                  - Napojení metody phrase() na globální funkci translate_phrase().
- * 2026-11-01 12:45 - Oprava editace is_html = 1 při AJAX načítání přes window.bcmRtState
- *                    a kontrolu existujícího elementu #bcm-rt-modal-overlay v DOMu.
  * =============================================================================
  */
 
@@ -86,8 +85,8 @@ class rich_text {
 
 		$md_regex = '/^(#+\s' . chr(124) . '>\s' . chr(124) . '[-*+]\s' . chr(124) . '\d+\.\s' . chr(124) . '```)/m'; // Vzorek blokového Markdownu
 		$html_regex = '/<\/(p' . chr(124) . 'div' . chr(124) . 'table' . chr(124) . 'ul' . chr(124) . 'ol)>/i'; // Vzorek uzavíracích HTML bloků
-		if (preg_match($md_regex,$trimmed)) {                               // Detekce blokové Markdown syntaxe
-			if (! preg_match($html_regex,$trimmed)) {                       // Pokud současně neobsahuje uzavírací HTML bloky
+		if (preg_match($md_regex, $trimmed)) {                               // Detekce blokové Markdown syntaxe
+			if (! preg_match($html_regex, $trimmed)) {                       // Pokud současně neobsahuje uzavírací HTML bloky
 				return 'markdown';                                           // Vyhodnoceno jako Markdown
 			}
 		}
@@ -102,8 +101,8 @@ class rich_text {
 		];                                                                   // Konec seznamu HTML značek
 
 		$lower = strtolower($trimmed);                                       // Převod na malá písmena pro rychlé hledání
-		foreach ($html_tags as$tag) {                                       // Průchod sledovanými HTML značkami
-			if (str_contains($lower,$tag)) {                                // Nalezena HTML značka v textu
+		foreach ($html_tags as $tag) {                                       // Průchod sledovanými HTML značkami
+			if (str_contains($lower, $tag)) {                                // Nalezena HTML značka v textu
 				return 'html';                                               // Text je ve formátu HTML
 			}
 		}
@@ -117,7 +116,8 @@ class rich_text {
 	 * @param string $raw_html Surový HTML řetězec
 	 * @return string Bezpečný sanitizovaný HTML řetězec
 	 */
-	public static function sanitize_html(string $raw_html): string {         // Sanitizace HTML proti XSS$clean = preg_replace('/^<!--(html' . chr(124) . 'md)-->\s*/', '', $raw_html) ?? $raw_html; // Odstranění interní značky
+	public static function sanitize_html(string $raw_html): string {         // Sanitizace HTML proti XSS
+		$clean = preg_replace('/^<!--(html' . chr(124) . 'md)-->\s*/', '', $raw_html) ?? $raw_html; // Odstranění interní značky
 		if (trim($clean) === '') {                                           // Prázdný řetězec není třeba čistit
 			return '';                                                       // Vrácení prázdného řetězce
 		}
@@ -133,7 +133,7 @@ class rich_text {
 		}
 
 		$allowed = '<p><br><div><span><strong><b><em><i><u><s><del><ins><h1><h2><h3><h4><h5><h6><ul><ol><li><table><thead><tbody><tfoot><tr><th><td><blockquote><pre><code><a><hr><sub><sup>'; // Povolené značky
-		return strip_tags($clean,$allowed);                                 // Základní oříznutí nepovolených značek
+		return strip_tags($clean, $allowed);                                 // Základní oříznutí nepovolených značek
 	}
 
 	/**
@@ -162,7 +162,8 @@ class rich_text {
 			if (class_exists(GithubFlavoredMarkdownExtension::class)) {      // Kontrola GFM rozšíření (tabulky, přeškrtnutí)
 				$environment->addExtension(new GithubFlavoredMarkdownExtension()); // Přidání GFM rozšíření
 			}
-			$converter = new MarkdownConverter($environment);                // Inicializace konvertoru$raw_html = (string)$converter->convert($clean)->getContent();   // Převod Markdownu do HTML
+			$converter = new MarkdownConverter($environment);                // Inicializace konvertoru
+			$raw_html = (string)$converter->convert($clean)->getContent();   // Převod Markdownu do HTML
 			return self::sanitize_html($raw_html);                           // Finální sanitizace výsledného HTML
 		}
 
@@ -209,7 +210,7 @@ class rich_text {
 	 * @param string $target_format Požadovaný cílový formát ('markdown', 'html', 'auto')
 	 * @return string Očištěný řetězec připravený pro uložení do DB
 	 */
-	public static function normalize_for_storage(string $raw_val, string$target_format = 'auto'): string { // Příprava pro DB
+	public static function normalize_for_storage(string $raw_val, string $target_format = 'auto'): string { // Příprava pro DB
 		$val = str_replace("\r\n", "\n", $raw_val);                          // Sjednocení konců řádků na LF
 		if (trim($val) === '') {                                             // Prázdný text ukládáme jako ''
 			return '';                                                       // Vrácení prázdného řetězce
@@ -233,7 +234,7 @@ class rich_text {
 	 * Vykreslí bezpečný zformátovaný HTML výstup pro režim pouze pro čtení ($is_readonly)
 	 * nebo pro porovnávací tabulku schvalování (page_approval.php).
 	 */
-	public static function render_formatted(string $value, bool$show_badge = false): string { // Vykreslení formátovaného textu
+	public static function render_formatted(string $value, bool $show_badge = false): string { // Vykreslení formátovaného textu
 		if (trim($value) === '') {                                           // Prázdná hodnota
 			return '';                                                       // Vrácení prázdného řetězce
 		}

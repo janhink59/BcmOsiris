@@ -4,9 +4,9 @@
 
 F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
 
-system_constant.sql
-OsirisLib.sql
 changes_*.sql
+
+system_constant.sql
 table_user_session.sql
 table_*.sql
 f_*.sql
@@ -24,7 +24,7 @@ final_scripts.sql
 # Doplnek kontextu pro AI
 output=BcmOsirisConcat.txt
 BuildListDb.txt
-BuildDb.php
+../BuildRelease.php
 
 # Slepenec pro spusteni vcelku
 limit=0

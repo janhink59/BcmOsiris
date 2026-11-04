@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 17:15
+ * Verze: 2026-11-04 10:30
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – jádro třídy a metadatová vrstva (STI Architektura).
  *       Pro přehlednost a malý rozsah jednotlivých zdrojových souborů je třída
@@ -20,13 +20,10 @@
  *   funkci `translate_phrase()` (`new_functions.php`) a `OsirisLib.php`.
  *
  * Změny:
- * 2026-11-01 17:15 - Metoda phrase() zobecněna pomocí typu mixed (bez znaku svislítka)
- *                    tak, aby bezpečně přijala jak pořadí ($code, $default_caption, $vars),
- *                    tak pořadí ($code, $vars, $default_caption).
- * 2026-11-01 11:45 - Rozdělení souboru entity_manager.php pomocí traitů
- *                    entity_manager_read, entity_manager_ui a entity_manager_write.
- *                  - Přesun SQL dotazů v load_metadata() do uložených procedur
- *                    dbo.p_em_get_class_meta a dbo.p_em_get_columns_meta.
+ * 2026-11-04 10:30 - Doplněna metoda is_key_column_mandatory() sjednocující podmíněnou
+ *                    povinnost sloupce builtin_code (povinný v 0x00, u meta_* a hierarchy,
+ *                    volitelný u běžného tenanta ve věcných tabulkách CRMM).
+ * 2026-11-01 17:15 - Metoda phrase() zobecněna pomocí typu mixed (bez znaku svislítka).
  * =============================================================================
  */
 
@@ -98,6 +95,21 @@ class entity_manager {
 	 */
 	private function is_metadata_entity(): bool {
 		return str_starts_with($this->storage_table, 'meta_');               // Detekce prefixu meta_ u fyzické tabulky
+	}
+
+	/**
+	 * Určí, zda je daný klíčový sloupec z meta_original_keys v aktuálním kontextu povinný.
+	 * Sloupec builtin_code je povinný v 0x00, u metadatových tabulek (meta_*) a u tabulky hierarchy;
+	 * u běžného tenanta ve věcných tabulkách může zůstat prázdný (záznam pak dostane NEWID()).
+	 */
+	public function is_key_column_mandatory(string $column_name): bool {     // Kontrola povinnosti klíčového sloupce
+		if (! in_array($column_name, $this->original_key_cols, true) OR $column_name === 'ancestor_link') { // Mimo klíčové sloupce
+			return false;                                                    // Nejde o povinný klíčový sloupec
+		}
+		if ($column_name === 'builtin_code') {                               // Podmíněná povinnost sloupce builtin_code
+			return ($this->is_metadata_entity() OR $this->storage_table === 'hierarchy' OR is_sys_org()); // Povinný v 0x00, meta_* a hierarchy
+		}
+		return true;                                                         // Ostatní klíčové sloupce (class_name, hierarchy atd.) jsou vždy povinné
 	}
 
 	/**
@@ -225,7 +237,7 @@ class entity_manager {
 			}
 
 			$c_name = (string)$col['column_name'];                           // Technický název sloupce
-			if (in_array($c_name, $this->original_key_cols, true) AND $c_name !== 'ancestor_link') { // Klíčový sloupec originálu
+			if ($this->is_key_column_mandatory($c_name)) {                   // Kontrola podmíněné povinnosti klíčového sloupce
 				$col['is_mandatory'] = 1;                                    // Vynucení příznaku povinného sloupce
 			}
 

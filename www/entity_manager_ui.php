@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 11:45
+ * Verze: 2026-11-04 10:30
  * Soubor: entity_manager_ui.php
  * Trait: entity_manager_ui
  * Účel: Prezentační a UI vrstva třídy entity_manager.
@@ -16,6 +16,10 @@
  * - Volá databázovou funkci `dbo.f_is_hierarchy_node_locked` (`p_sync_derived_links.sql`)
  *   a uloženou proceduru `dbo.p_em_get_select_options` (`p_em_metadata.sql`).
  * - Využívá třídu `rich_text` (`rich_text.php`) pro sloupce s `is_html = 1`.
+ *
+ * Změny:
+ * 2026-11-04 10:30 - V render_dynamic_input() napojena kontrola povinnosti klíčového
+ *                    sloupce na metodu $this->is_key_column_mandatory($column_name).
  * =============================================================================
  */
 
@@ -33,7 +37,7 @@ trait entity_manager_ui {
 		if ($clean_orig === '' OR $clean_orig === 'new' OR is_zero_guid($clean_orig)) { // Kořen nebo nový záznam
 			return false;                                                    // Nový nebo kořenový uzel není uzamčen vazbou
 		}
-		if (! $this->has_physical_column('parent_uuid') OR $this->storage_table === 'meta_menu') { // Mimo věcné hierarchie CRMM
+		if (! $this->has_physical_column('parent_uuid') OR$this->storage_table === 'meta_menu') { // Mimo věcné hierarchie CRMM
 			return false;                                                    // Navigace menu se neuzamyká tabulkou link
 		}
 		if (isset($this->hierarchy_lock_cache[$clean_orig])) {               // Kontrola v lokální keši requestu
@@ -51,7 +55,7 @@ trait entity_manager_ui {
 
 		$row = sqlfirstrow("SELECT dbo.f_is_hierarchy_node_locked({$safe_tab}, {$orig_sql}, {$org_sql}) AS is_locked"); // Volání DB funkce
 		$is_locked = ! empty($row['is_locked']);                             // Výsledek kontroly uzamčení
-		$this->hierarchy_lock_cache[$clean_orig] = $is_locked;               // Uložení do keše pro aktuální request
+		$this->hierarchy_lock_cache[$clean_orig] =$is_locked;               // Uložení do keše pro aktuální request
 		return $is_locked;                                                   // Vrácení stavu uzamčení větve
 	}
 
@@ -68,58 +72,58 @@ trait entity_manager_ui {
 
 		$is_sysadmin_org = is_zero_guid($org_uuid_raw);                      // Zda uživatel pracuje v systémové organizaci 0x00
 		$rec_lang = (string)($datarow['native_language'] ?? $datarow['language'] ?? 'cs'); // Mateřský jazyk 'A' záznamu
-		$is_native_lang = ($rec_lang === $sess_lang_raw);                    // Zda uživatel pracuje v mateřském jazyce záznamu
+		$is_native_lang = ($rec_lang ===$sess_lang_raw);                    // Zda uživatel pracuje v mateřském jazyce záznamu
 
 		// 1. Práce v sekundárním jazyce (jazyková mutace 'L')
 		if (! $is_native_lang) {                                             // Pokud jde o sekundární jazyk
-			if ($is_sysadmin_org OR $right_translate OR $is_mine) {          // Oprávněný překladatel nebo vlastník
+			if ($is_sysadmin_org OR $right_translate OR$is_mine) {          // Oprávněný překladatel nebo vlastník
 				$note_l = $this->phrase('msg_remove_lang_mutation_only', 'Ruší pouze jazykovou mutaci ({' . chr(36) . 'lang})', ['lang' => $sess_lang_raw]); // Poznámka k rušení L
 				return ['allowed' => true, 'is_lang_only' => true, 'reason' => $note_l]; // Povoleno zrušení překladu L
 			}
-			$deny_l = $this->phrase('msg_remove_lang_denied', 'Nemáte oprávnění rušit systémové překlady tohoto jazyka'); // Důvod zákazu
+			$deny_l =$this->phrase('msg_remove_lang_denied', 'Nemáte oprávnění rušit systémové překlady tohoto jazyka'); // Důvod zákazu
 			return ['allowed' => false, 'is_lang_only' => true, 'reason' => $deny_l]; // Zákaz rušení cizího překladu
 		}
 
 		// 1b. Kontrola pro všechny hierarchické tabulky (zákaz zrušení uzlu 0x00, uzlu s aktivními potomky nebo uzamčené větve)
 		$orig_val_raw = (string)($datarow['original'] ?? '');                // Surové UUID originálu záznamu
 		$orig_sql = guidliteral($orig_val_raw);                              // SQL literál originálu záznamu
-		if (is_zero_guid($orig_val_raw) AND $orig_val_raw !== '') {          // Kořenový záznam 0x00
-			$deny_root = $this->phrase('msg_remove_root_0x00_denied', 'Systémový kořenový záznam (0x00) nelze zrušit'); // Důvod zákazu
+		if (is_zero_guid($orig_val_raw) AND$orig_val_raw !== '') {          // Kořenový záznam 0x00
+			$deny_root =$this->phrase('msg_remove_root_0x00_denied', 'Systémový kořenový záznam (0x00) nelze zrušit'); // Důvod zákazu
 			return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_root]; // Uzamčeno
 		}
 
-		if ($this->has_physical_column('parent_uuid') AND empty($datarow['removed']) AND $orig_sql !== 'NULL') { // Platný uzel hierarchie
-			$tab = $this->storage_table;                                     // Fyzická tabulka hierarchie
+		if ($this->has_physical_column('parent_uuid') AND empty($datarow['removed']) AND$orig_sql !== 'NULL') { // Platný uzel hierarchie
+			$tab =$this->storage_table;                                     // Fyzická tabulka hierarchie
 			$ch_row = sqlfirstrow("SELECT TOP 1 1 AS has_ch FROM [{$tab}] WHERE parent_uuid = {$orig_sql} AND record_type = 'A' AND removed = 0"); // Kontrola aktivních potomků
 			if (! empty($ch_row)) {                                          // Uzel má aktivní podřízené položky
-				$deny_ch = $this->phrase('msg_remove_node_has_children', 'Uzel hierarchie nelze zrušit, dokud obsahuje aktivní podřízené položky'); // Důvod
+				$deny_ch =$this->phrase('msg_remove_node_has_children', 'Uzel hierarchie nelze zrušit, dokud obsahuje aktivní podřízené položky'); // Důvod
 				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_ch]; // Uzamčeno
 			}
 			if ($this->is_hierarchy_node_locked($orig_val_raw)) {            // Kontrola aktivních vazeb na uzlu nebo podstromu
-				$deny_lk = $this->phrase('msg_remove_node_locked_by_links', 'Uzel hierarchie nelze zrušit, protože jsou na něj navázány platné záznamy'); // Důvod
+				$deny_lk =$this->phrase('msg_remove_node_locked_by_links', 'Uzel hierarchie nelze zrušit, protože jsou na něj navázány platné záznamy'); // Důvod
 				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_lk]; // Uzamčeno
 			}
 		}
 
 		// 2. Práce v primárním jazyce u systémové organizace (0x00)
 		if ($is_sysadmin_org) {                                              // Systémová organizace 0x00
-			if ($this->is_metadata_entity() AND $active_role !== 'D') {      // Metadata smí rušit jen Developer ('D')
-				$deny_d = $this->phrase('msg_remove_meta_only_dev', 'Systémová metadata smí rušit pouze vývojář (Developer)'); // Důvod pro roli
+			if ($this->is_metadata_entity() AND$active_role !== 'D') {      // Metadata smí rušit jen Developer ('D')
+				$deny_d =$this->phrase('msg_remove_meta_only_dev', 'Systémová metadata smí rušit pouze vývojář (Developer)'); // Důvod pro roli
 				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_d]; // Uzamčeno mimo roli D
 			}
 
 			if ($this->storage_table === 'meta_object') {                    // Kontrola tabulky meta_object
 				$obj_type = (string)($datarow['object_type'] ?? '');         // Typ objektu (T, V, F, P, C, M)
 				$b_code = (string)($datarow['builtin_code'] ?? '');          // Kód objektu
-				if ($obj_type !== 'P' OR $b_code === 'global_phrase') {      // Fyzické objekty a global_phrase nelze rušit
-					$deny_mo = $this->phrase('msg_remove_phys_object_denied', 'Fyzický databázový objekt ani kontejner global_phrase nelze v metadatech zrušit'); // Důvod
+				if ($obj_type !== 'P' OR$b_code === 'global_phrase') {      // Fyzické objekty a global_phrase nelze rušit
+					$deny_mo =$this->phrase('msg_remove_phys_object_denied', 'Fyzický databázový objekt ani kontejner global_phrase nelze v metadatech zrušit'); // Důvod
 					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_mo]; // Uzamčeno
 				}
 			} elseif ($this->storage_table === 'meta_class') {               // Kontrola tabulky meta_class
 				$cls_name = (string)($datarow['class_name'] ?? '');          // Název logické třídy
 				$stg_orig = guidliteral((string)($datarow['storage_object'] ?? '')); // UUID úložného objektu
 				if ($cls_name === 'sys_global_columns') {                    // Kořenový slovník sloupců nelze zrušit
-					$deny_gc = $this->phrase('msg_remove_global_cls_denied', 'Systémový kontejner sys_global_columns nelze zrušit'); // Důvod
+					$deny_gc =$this->phrase('msg_remove_global_cls_denied', 'Systémový kontejner sys_global_columns nelze zrušit'); // Důvod
 					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_gc]; // Uzamčeno
 				}
 				if ($stg_orig !== 'NULL') {                                  // Ověření, zda nejde o primitivní třídu žijící tabulky
@@ -129,15 +133,15 @@ trait entity_manager_ui {
 						JOIN v_syscolumns vc ON vc.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
 						WHERE mo.original = {$stg_orig} AND mo.object_owner = 0x00 AND mo.record_type = 'A' AND mo.removed = 0
 					");                                                      // Kontrola existence fyzické tabulky ve v_syscolumns
-					if (! empty($stg_row) AND (string)$stg_row['builtin_code'] === $cls_name) { // Primitivní třída existující tabulky
-						$deny_pc = $this->phrase('msg_remove_prim_class_denied', 'Primitivní třídu svázanou s existující fyzickou tabulkou nelze zrušit'); // Důvod
+					if (! empty($stg_row) AND (string)$stg_row['builtin_code'] ===$cls_name) { // Primitivní třída existující tabulky
+						$deny_pc =$this->phrase('msg_remove_prim_class_denied', 'Primitivní třídu svázanou s existující fyzickou tabulkou nelze zrušit'); // Důvod
 						return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_pc]; // Uzamčeno
 					}
 				}
 			} elseif ($this->storage_table === 'meta_column') {              // Kontrola tabulky meta_column
 				$col_name = (string)($datarow['column_name'] ?? '');         // Název sloupce
 				$par_cls = guidliteral((string)($datarow['parent_class'] ?? '')); // UUID nadřízené třídy
-				if ($par_cls !== 'NULL' AND $col_name !== '') {              // Ověření fyzické existence sloupce v DB
+				if ($par_cls !== 'NULL' AND$col_name !== '') {              // Ověření fyzické existence sloupce v DB
 					$safe_col = charliteral($col_name, 80);                  // SQL literál názvu sloupce
 					$phys_row = sqlfirstrow("
 						SELECT 1 AS is_phys
@@ -148,14 +152,14 @@ trait entity_manager_ui {
 						  AND mc.class_name = mo.builtin_code
 					");                                                      // Kontrola existence sloupce v primitivní třídě
 					if (! empty($phys_row)) {                                // Sloupec fyzicky existuje v databázi
-						$deny_col = $this->phrase('msg_remove_phys_col_denied', 'Fyzicky existující sloupec databázové tabulky nelze v metadatech zrušit'); // Důvod
+						$deny_col =$this->phrase('msg_remove_phys_col_denied', 'Fyzicky existující sloupec databázové tabulky nelze v metadatech zrušit'); // Důvod
 						return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_col]; // Uzamčeno
 					}
 				}
 			} elseif ($this->storage_table === 'meta_menu') {                // Kontrola tabulky meta_menu
 				$b_code = (string)($datarow['builtin_code'] ?? '');          // Kód položky menu
 				if ($b_code === 'home') {                                    // Kořenovou položku Domů nelze zrušit
-					$deny_hm = $this->phrase('msg_remove_menu_home_denied', 'Kořenovou položku menu (home) nelze zrušit'); // Důvod
+					$deny_hm =$this->phrase('msg_remove_menu_home_denied', 'Kořenovou položku menu (home) nelze zrušit'); // Důvod
 					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_hm]; // Uzamčeno
 				}
 			}
@@ -168,7 +172,7 @@ trait entity_manager_ui {
 			return ['allowed' => true, 'is_lang_only' => false, 'reason' => '']; // Tenant smí zrušit svůj vlastní záznam
 		}
 
-		$deny_sys = $this->phrase('msg_remove_system_record_denied', 'Systémový záznam nelze v organizaci smazat (použijte příznak Neaktivní)'); // Vysvětlení pro tenanta
+		$deny_sys =$this->phrase('msg_remove_system_record_denied', 'Systémový záznam nelze v organizaci smazat (použijte příznak Neaktivní)'); // Vysvětlení pro tenanta
 		return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_sys]; // Systémový záznam tenant nemůže smazat
 	}
 
@@ -271,8 +275,8 @@ HTML;
 			$attrs[] = "maxlength=\"{$meta['max_length']}\"";                // Atribut maxlength
 		}
 
-		$is_key_col = (in_array($column_name, $this->original_key_cols, true) AND $column_name !== 'ancestor_link'); // Povinný klíčový sloupec
-		if (! empty($meta['is_mandatory']) OR $is_key_col) {                 // Pokud je sloupec povinný v metadatech nebo je klíčem originálu
+		$is_key_col = $this->is_key_column_mandatory($column_name);          // Kontrola podmíněné povinnosti klíčového sloupce
+		if (! empty($meta['is_mandatory']) OR $is_key_col) {                 // Pokud je sloupec povinný v metadatech nebo v daném kontextu
 			$attrs[] = "required";                                           // HTML5 atribut required
 		}
 

@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-01 17:15
+ * Verze: 2026-11-04 10:30
  * Soubor: p_fix_meta_column.sql
  * Procedury: dbo.p_sync_hierarchy_to_meta_class, dbo.p_fix_meta_column
  * Účel: 1. dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
@@ -18,11 +18,15 @@
  * - Využívá deterministickou hashovací funkci dbo.f_generate_original.
  *
  * Změny:
+ * - 2026-11-04 10:30: U sloupce ancestor změněna podmínka na
+ *   AND ISNULL(referenced_class, 0x00) <> @cls_meta_column AND who_modified = 0x00.
+ *   Doplněno napojení referenced_class pro sloupce threat_uuid a asset_class_uuid.
+ *   Sjednocena podmíněná povinnost sloupce builtin_code (is_mandatory = 1 pouze u
+ *   metadatových tříd meta_* a třídy hierarchy; u věcných tabulek CRMM se řídí
+ *   kontextem 0x00 / šablony).
  * - 2026-11-01 17:15: Opraven první parametr při výpočtu @cls_meta_column
  *   na 'meta_class' (místo 'meta_column') a odstraněn zdvojený UPDATE pro is_leaf
  *   u třídy hierarchy.
- * - 2026-11-01 11:45: Vyčleněna sdílená procedura dbo.p_sync_hierarchy_to_meta_class.
- *   Opraveno vynucení is_html = 1 pro 5 popisných sloupců v sys_global_columns.
  * ============================================================================= */
 
 EXECUTE dropni 'p_fix_meta_column', 'P';
@@ -748,16 +752,25 @@ BEGIN
 		'caption_forward', 'caption_backward', 'note'
 	  );
 
+	-- Bezpodmínečně povinné sloupce v globálním slovníku (mimo builtin_code, jehož povinnost závisí na třídě a kontextu)
 	UPDATE meta_column
 	SET is_mandatory = 1
 	WHERE parent_class = @c_class
 	  AND object_owner = 0x00
 	  AND column_name IN (
-		'builtin_code', 'class_name', 'column_name', 'source_code',
+		'class_name', 'column_name', 'source_code',
 		'codetable_name', 'value_code', 'link_code', 'hierarchy',
 		'caption', 'login_name', 'link_def', 'from_object', 'to_object'
 	  )
 	  AND ISNULL(is_mandatory, 0) = 0;
+
+	UPDATE meta_column
+	SET is_mandatory = 0
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND column_name = 'builtin_code'
+	  AND who_modified = 0x00
+	  AND is_mandatory = 1;
 
 	IF OBJECT_ID('meta_original_keys') IS NOT NULL
 	BEGIN
@@ -779,7 +792,12 @@ BEGIN
 			AND (mok.key1_column = mc.column_name OR mok.key2_column = mc.column_name)
 		WHERE mc.object_owner = 0x00
 		  AND mc.record_type = 'A'
-		  AND ISNULL(mc.is_mandatory, 0) = 0;
+		  AND ISNULL(mc.is_mandatory, 0) = 0
+		  AND (
+			mc.column_name <> 'builtin_code'
+			OR mcl.class_name LIKE 'meta_%'
+			OR mcl.class_name = 'hierarchy'
+		  );
 	END
 
 	-- Vynucení podpory formátovaného textu (Markdown / HTML: is_html = 1)
@@ -878,6 +896,8 @@ BEGIN
 	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');
 	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
 	DECLARE @cls_hierarchy uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy', '');
+	DECLARE @cls_asset_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_class', '');
+	DECLARE @cls_threat uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'threat', '');
 
 	-- Specifický popisek sloupce is_leaf u třídy hierarchy (odlišení samostatné hierarchie od složky registru)
 	UPDATE meta_column
@@ -912,7 +932,8 @@ BEGIN
 	  AND object_owner = 0x00
 	  AND record_type = 'A'
 	  AND column_name = 'ancestor'
-	  AND referenced_class IS NULL;
+	  AND ISNULL(referenced_class, 0x00) <> @cls_meta_column
+	  AND who_modified = 0x00;
 
 	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_hierarchy AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
 	BEGIN
@@ -922,6 +943,28 @@ BEGIN
 		  AND object_owner = 0x00
 		  AND record_type = 'A'
 		  AND column_name = 'hierarchy'
+		  AND referenced_class IS NULL;
+	END
+
+	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_asset_class AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
+	BEGIN
+		UPDATE meta_column
+		SET referenced_class = @cls_asset_class
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name IN ('asset_class_uuid', 'primary_asset_class')
+		  AND referenced_class IS NULL;
+	END
+
+	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_threat AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
+	BEGIN
+		UPDATE meta_column
+		SET referenced_class = @cls_threat
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'threat_uuid'
 		  AND referenced_class IS NULL;
 	END
 

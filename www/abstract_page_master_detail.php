@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-31 16:15
+ * Verze: 2026-11-04 10:30
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -19,54 +19,30 @@
  *   a lokalizaci textů zajišťuje `$this->phrase()` přes `phrase_manager`.
  *
  * KLÍČOVÉ KONCEPTY A ARCHITEKTURA (PRO BUDOUCÍ VÝVOJ):
- *
  * 1. Plně datově řízená architektura (STI - Single Table Inheritance):
  *    - Potomek pouze definuje chráněnou proměnnou `$this->class_name`.
  *    - Pomocí objektu `entity_manager` je z databáze automaticky zjištěno, 
  *      jaké sloupce se mají zobrazit, jak se validují a jak se ukládají.
- *
  * 2. Asynchronní načítání detailního panelu (`ajax_panel=detail`) a perzistence filtru:
  *    - Kliknutí na řádek v levém panelu (nebo na tlačítka "+ Nový" a "Zahodit změny")
  *      volá klientskou funkci `loadDetailPanel()`, která přes `fetch()` načte pouze
  *      HTML pravého panelu `.md-detail`, vykoná případné vnořené `<script>` tagy
- *      a upraví URL přes `history.pushState()`. Levý panel se vůbec nepřekresluje
- *      a jeho scroll ani filtr se nepohnou.
+ *      a upraví URL přes `history.pushState()`.
  *    - Pokud byl v levém stromu proveden neuložený přesun Drag & Drop (`window.isTreeDomDirty`),
- *      při zahození změn se automaticky zavolá `refreshMasterPanel()`, který vrátí strom
- *      do uloženého databázového stavu.
- *    - Text filtru `#master-filter` se automaticky ukládá do `sessionStorage`
- *      a obnovuje i po plném uložení formuláře (POST -> PRG redirect).
- *
+ *      při zahození změn se automaticky zavolá `refreshMasterPanel()`.
+ *    - Text filtru `#master-filter` se automaticky ukládá do `sessionStorage`.
  * 3. PRG Vzor (Post-Redirect-Get) a ošetření validačních chyb zápisu:
- *    - Každé odeslání formuláře (`POST` s tlačítkem `btn_save`) je zachyceno
- *      v `abstract_page::render()` a předáno do `process_save()`.
  *    - Metoda `process_save()` zavolá autonomní RAC zápis. Pokud `entity_manager`
- *      vrátí validační chybu (`get_last_save_error()`, např. prázdný klíč nebo
- *      duplicitní originál), neprovede se přesměrování, ale v detailu se vykreslí
- *      červený chybový box `.msg-err` a zachovají se zadané hodnoty z `$_POST`.
- *    - Při úspěšném uložení provede striktní přesměrování (`autoredirect()`),
- *      čímž zabrání dvojitému uložení při stisku F5.
- *
- * 4. Automatizované skupiny ve formuláři ($form_groups), Readonly ($is_readonly) a vkládání ($allow_insert):
- *    - Potomek může v konstruktoru definovat pole `$this->form_groups`,
- *      čímž se formulář dynamicky rozdělí do vizuálních sekcí s vlastními nadpisy.
- *    - Vlastnost `$this->is_readonly` umožňuje přepnout celý detailní panel do režimu
- *      pouze pro čtení (příprava na budoucí vyčlenění `abstract_detail_panel`).
- *    - Vlastnost `$this->allow_insert` určuje, zda je na stránce povoleno zakládání
- *      nových záznamů (`update_guid=NEW`).
- *
- * 5. Hook metody pro customizaci (Rozšiřitelnost bez přepisování jádra):
- *    - `render_master_top()`: Pro vložení tlačítek a HTML nad vyhledávací pole vlevo.
- *    - `get_detail_header()`: Pro dynamickou změnu velkého nadpisu vpravo.
- *    - `render_detail_header_buttons()`: Pro vložení doplňkových tlačítek do hlavičky detailu.
- *    - `render_detail_top()`: Pro vložení upozornění/notifikací nad editační formulář.
+ *      vrátí validační chybu (`get_last_save_error()`), neprovede se přesměrování,
+ *      ale v detailu se vykreslí červený chybový box `.msg-err` a zachovají se hodnoty z `$_POST`.
+ * 4. Skupiny ve formuláři ($form_groups), Readonly ($is_readonly), vkládání ($allow_insert) a Hook metody:
+ *    - Hooky: `render_master_top()`, `get_detail_header()`, `render_detail_header_buttons()`, `render_detail_top()`.
  *
  * Změny:
- * 2026-10-31 16:15 - Do `process_save()` a `render_detail()` doplněno zachycení
- *                    validační chyby z `$this->em->get_last_save_error()`, vykreslení
- *                    červeného boxu `.msg-err` v detailu a zachování hodnot z `$_POST`
- *                    ve formuláři při neúspěšném uložení.
- * 2026-10-31 11:30 - Do kontextových parametrů doplněn parametr `hierarchy`.
+ * 2026-11-04 10:30 - V render_detail() sjednocena indikace povinného klíčového pole (*)
+ *                    přes metodu $this->em->is_key_column_mandatory($colname).
+ * 2026-10-31 16:15 - Do process_save() a render_detail() doplněno zachycení
+ *                    validační chyby z $this->em->get_last_save_error() se zachováním $_POST.
  * =============================================================================
  */
 
@@ -74,8 +50,6 @@ declare(strict_types=1);
 
 abstract class abstract_page_master_detail extends abstract_page {
 
-	// --- Konfigurace pro data-driven vrstvu (nastavují potomci v konstruktoru) ---
-	
 	/** Identifikátor logické třídy z DB (např. 'meta_object', 'asset_class') */
 	protected string $class_name = '';                                       // Název logické třídy
 	
@@ -114,9 +88,6 @@ abstract class abstract_page_master_detail extends abstract_page {
 
 	/**
 	 * Centralizované získání URL parametrů pro udržení kontextu (např. vazba na předka nebo hierarchii).
-	 * Zabraňuje duplicitě kódu při generování odkazů a přesměrování.
-	 * 
-	 * @return string Řetězec parametrů pro URL (např. '&parent_class=123')
 	 */
 	protected function get_context_url_suffix(): string {
 		$url_suffix = '';                                                    // Výchozí prázdný přívažek URL
@@ -881,7 +852,6 @@ HTML;
 		$lbl_tr_badge  = htmlspecialchars($this->phrase('lbl_supports_translation', [], '(Podporuje překlad)')); // Štítek podpory překladu
 
 		$removed_rendered = false;                                           // Evidence, zda již byl sloupec removed vykreslen ve skupině
-		$orig_keys = $this->em->get_original_key_columns();                  // Klíčové sloupce tabulky
 
 		foreach ($groups as $group_title => $columns) {                      // Vykreslení jednotlivých skupin formuláře
 			if ($group_title !== '') {                                       // Vykreslení nadpisu neprázdné skupiny
@@ -907,7 +877,7 @@ HTML;
 				$helptext = (string)($meta['helptext'] ?? '');               // Text nápovědy k poli
 				$title_attr = $helptext !== '' ? " title=\"" . htmlspecialchars($helptext) . "\"" : ""; // Tooltip buňky
 				
-				$is_mand = (! empty($meta['is_mandatory']) OR in_array($colname, $orig_keys, true)); // Povinné pole nebo klíč
+				$is_mand = (! empty($meta['is_mandatory']) OR $this->em->is_key_column_mandatory($colname)); // Povinné pole nebo klíč
 				$req_html = $is_mand ? "<span style=\"color: #b91c1c; margin-left: 3px;\" title=\"{$lbl_req_title}\">*</span>" : ''; // Hvězdička povinnosti
 				$trans_html = ! empty($meta['translate']) ? "<br><small style=\"color: #2563eb; font-size: 10px;\" title=\"{$lbl_tr_title}\">{$lbl_tr_badge}</small>" : ''; // Štítek překladu
 				

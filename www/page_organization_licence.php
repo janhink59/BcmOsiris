@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-29 16:40
+ * Verze: 2026-11-04 10:30
  * Soubor: page_organization_licence.php
  * Stránka: page_organization_licence.php
  * Účel: Master-Detail rozhraní pro evidenci žádostí a licencí organizací.
@@ -25,11 +25,10 @@
  * - Volá proceduru p_process_organization_licence při schválení licence.
  *
  * Změny:
+ * 2026-11-04 10:30 - Doplnění chybějících mezer před znakem $ dle Anti-LaTeX pravidla.
  * 2026-10-29 16:40 - Doplněna podpora pro organizace s licencí Enterprise (40)
  *                    a Developer (255), roletka pro preferred_language, příznak
- *                    login_disabled a uzamčení klíčového sloupce builtin_code
- *                    (readonly) u již existujících záznamů.
- * 2026-10-27 19:55 - Napojení řádků a tlačítek na asynchronní loadDetailPanel().
+ *                    login_disabled a uzamčení klíčového sloupce builtin_code.
  * =============================================================================
  */
 
@@ -49,14 +48,14 @@ class page_organization_licence extends abstract_page_master_detail {
 		parent::__construct();                                               // Inicializace frází a kontroly role v předkovi
 
 		global $dbsession;                                                   // Globální kontext relace
-		$this->page_title =$this->phrase('page_title', [], 'Správa licencí organizací'); // Lokalizovaný titulek stránky
+		$this->page_title = $this->phrase('page_title', [], 'Správa licencí organizací'); // Lokalizovaný titulek stránky
 
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role v relaci
 		$this->session_licence_level = intval($dbsession['licence_level'] ?? 0); // Úroveň licence organizace v relaci
 		$this->is_sys_user = in_array($active_role, ['S', 'D'], true);       // Globální správce nebo vývojář
 		$can_enterprise = ($active_role === 'A' AND in_array($this->session_licence_level, [40, 255], true)); // Enterprise/Developer tenant
 
-		if ($this->access_denied OR (!$this->is_sys_user AND !$can_enterprise)) { // Kontrola oprávnění ke správě licencí
+		if ($this->access_denied OR (! $this->is_sys_user AND ! $can_enterprise)) { // Kontrola oprávnění ke správě licencí
 			$this->access_denied = true;                                     // Zamezení přístupu pro nižší role a licence
 			return;                                                          // Ukončení inicializace při zamítnutí
 		}
@@ -65,7 +64,7 @@ class page_organization_licence extends abstract_page_master_detail {
 		$this->current_org_sql = guidliteral($org_raw);                      // SQL literál aktivní organizace
 
 		$raw_guid = trim((string)getinput('update_guid', 'raw'));            // Načtení identifikátoru záznamu
-		$this->update_guid = ($raw_guid !== '') ?$raw_guid : null;          // Uložení vybraného identifikátoru
+		$this->update_guid = ($raw_guid !== '') ? $raw_guid : null;          // Uložení vybraného identifikátoru
 
 		$this->states_opt = [                                                // Stavy životního cyklu licence
 			'DRAFT'     => $this->phrase('state_draft', [], 'Koncept'),      // Rozpracovaná licence
@@ -74,7 +73,7 @@ class page_organization_licence extends abstract_page_master_detail {
 			'REJECTED'  => $this->phrase('state_rejected', [], 'Zamítnuto')  // Zamítnutá žádost o licenci
 		];                                                                   // Konec definice stavů licence
 
-		$max_allowed_lvl = ($this->is_sys_user OR$this->session_licence_level === 255) ? 255 : 40; // Maximální povolená úroveň
+		$max_allowed_lvl = ($this->is_sys_user OR $this->session_licence_level === 255) ? 255 : 40; // Maximální povolená úroveň
 		$this->levels_opt = sqlarray("SELECT licence_level, name FROM licence_level WHERE licence_level <= {$max_allowed_lvl} ORDER BY licence_level"); // Načtení úrovní
 		$this->langs_opt = sqlarray("SELECT [language], caption FROM [language] ORDER BY sort_code"); // Načtení jazyků
 	}
@@ -93,7 +92,7 @@ class page_organization_licence extends abstract_page_master_detail {
 	 * Zpracování uložení formuláře (PRG vzor volaný z abstract_page::render při POST).
 	 */
 	protected function process_save(): void {
-		if (!isset($_POST['button_save']) AND !isset($_POST['btn_save'])) {  // Kontrola odeslání formuláře
+		if (! isset($_POST['button_save']) AND ! isset($_POST['btn_save'])) { // Kontrola odeslání formuláře
 			return;                                                          // Bez odeslání formuláře neukládáme
 		}
 
@@ -105,14 +104,14 @@ class page_organization_licence extends abstract_page_master_detail {
 			$raw_code = substr($raw_caption, 0, 80);                         // Odvození kódu z názvu organizace
 		}
 
-		$max_allowed_lvl = ($this->is_sys_user OR$this->session_licence_level === 255) ? 255 : 40; // Limit úrovně licence
+		$max_allowed_lvl = ($this->is_sys_user OR $this->session_licence_level === 255) ? 255 : 40; // Limit úrovně licence
 		$req_level = intval($_POST['licence_level'] ?? 10);                  // Požadovaná číselná úroveň licence
-		if ($req_level >$max_allowed_lvl) {                                 // Ochrana proti eskalaci úrovně licence v POSTu
-			$req_level =$max_allowed_lvl;                                   // Omezení na nejvyšší povolenou úroveň
+		if ($req_level > $max_allowed_lvl) {                                 // Ochrana proti eskalaci úrovně licence v POSTu
+			$req_level = $max_allowed_lvl;                                   // Omezení na nejvyšší povolenou úroveň
 		}
 
 		$raw_pref_lang = trim((string)($_POST['preferred_language'] ?? 'cs')); // Zvolený preferovaný jazyk organizace
-		if (!isset($this->langs_opt[$raw_pref_lang])) {                      // Validace kódu jazyka proti číselníku
+		if (! isset($this->langs_opt[$raw_pref_lang])) {                     // Validace kódu jazyka proti číselníku
 			$raw_pref_lang = 'cs';                                           // Výchozí jazyk čeština
 		}
 
@@ -120,8 +119,8 @@ class page_organization_licence extends abstract_page_master_detail {
 		$caption            = charliteral($raw_caption, 200);                // SQL literál názvu organizace
 		$login_domain       = charliteral(trim((string)($_POST['login_domain'] ?? '')), 200);   // SQL literál SSO domény
 		$preferred_language = charliteral($raw_pref_lang, 2);                // SQL literál preferovaného jazyka
-		$licence_level      =$req_level;                                    // Číselná úroveň licence
-		$login_disabled     = (!empty($_POST['login_disabled'])) ? 1 : 0;    // Příznak zablokování přihlašování organizace
+		$licence_level      = $req_level;                                    // Číselná úroveň licence
+		$login_disabled     = (! empty($_POST['login_disabled'])) ? 1 : 0;   // Příznak zablokování přihlašování organizace
 		$raw_state          = trim((string)($_POST['licence_state'] ?? 'DRAFT')); // Surový stav licence
 		$licence_state      = charliteral($raw_state, 20);                   // SQL literál stavu licence
 		$admin_login        = charliteral(trim((string)($_POST['admin_login'] ?? '')), 100);    // SQL literál loginu admina
@@ -149,12 +148,12 @@ class page_organization_licence extends abstract_page_master_detail {
 				{$safe_access}, {$safe_access}
 			)";                                                              // Sestavení příkazu INSERT
 			sqlrun($sql);                                                    // Vložení nové licence do DB
-			$safe_uuid =$safe_new_uuid;                                     // Nastavení UUID pro případnou aktivaci
-			$redirect_guid =$new_uuid;                                      // Cílové UUID pro přesměrování
+			$safe_uuid = $safe_new_uuid;                                     // Nastavení UUID pro případnou aktivaci
+			$redirect_guid = $new_uuid;                                      // Cílové UUID pro přesměrování
 		} else {
 			$safe_uuid = guidliteral((string)$this->update_guid);            // SQL literál upravované licence
 			$redirect_guid = (string)$this->update_guid;                     // Cílové UUID pro přesměrování
-			$owner_cond =$this->get_owner_where_sql();                      // Ochrana vlastnictví při UPDATE
+			$owner_cond = $this->get_owner_where_sql();                      // Ochrana vlastnictví při UPDATE
 
 			// Klíčový sloupec builtin_code se u existujícího záznamu NEMĚNÍ (ochrana deterministického originálu)
 			$sql = "UPDATE organization_licence SET 
@@ -196,7 +195,7 @@ class page_organization_licence extends abstract_page_master_detail {
 		$btn_new = new abstract_button('btn_new_licence', '+ Nová licence', 'page_organization_licence'); // Tlačítko nové licence
 		$btn_new->set_href($new_url)                                         // Nastavení cílové URL
 			->set_onclick("if(window.loadDetailPanel){loadDetailPanel('{$new_url}');return false;}"); // Asynchronní otevření bez refreshe levého panelu
-		$btn_new_html =$btn_new->render();                                  // Vykreslení HTML tlačítka
+		$btn_new_html = $btn_new->render();                                  // Vykreslení HTML tlačítka
 
 		echo <<<HTML
 		<div class="md-master-header">
@@ -220,7 +219,7 @@ class page_organization_licence extends abstract_page_master_detail {
 				<tbody id="master-list">
 HTML;
 
-		$owner_cond =$this->get_owner_where_sql();                          // Podmínka viditelnosti licencí
+		$owner_cond = $this->get_owner_where_sql();                          // Podmínka viditelnosti licencí
 		$rows = sqlarray_simple("
 			SELECT original, caption, licence_level, login_disabled, admin_login, licence_state 
 			FROM organization_licence 
@@ -229,13 +228,13 @@ HTML;
 		");                                                                  // Načtení seznamu licencí do pole v paměti
 		
 		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
-			foreach ($rows as$row) {                                        // Průchod načtenými licencemi
+			foreach ($rows as $row) {                                        // Průchod načtenými licencemi
 				$uuid = (string)$row['original'];                            // Originální UUID licence
 				$safe_uuid = htmlspecialchars($uuid);                        // Ošetřené UUID pro atribut data-uuid
-				$is_active = ($this->update_guid !== null AND strcasecmp($uuid,$this->update_guid) === 0); // Aktivní záznam
-				$is_dis = !empty($row['login_disabled']);                    // Zda je přihlašování zablokováno
+				$is_active = ($this->update_guid !== null AND strcasecmp($uuid, $this->update_guid) === 0); // Aktivní záznam
+				$is_dis = ! empty($row['login_disabled']);                   // Zda je přihlašování zablokováno
 				$row_class = $is_active ? 'md-row-active' : ($is_dis ? 'md-row-inactive' : ''); // CSS třída řádku
-				$id_attr =$is_active ? 'id="active-row"' : '';              // HTML id aktivního řádku
+				$id_attr = $is_active ? 'id="active-row"' : '';              // HTML id aktivního řádku
 				$row_url = htmlspecialchars("index.php?page=page_organization_licence&update_guid=" . urlencode($uuid)); // URL řádku
 				$safe_cap = htmlspecialchars((string)$row['caption']);       // Ošetřený název organizace
 				$lvl_key = (int)$row['licence_level'];                       // Číselný kód úrovně licence
@@ -323,7 +322,6 @@ HTML;
 		$discard_html = $btn_discard->render();                              // Vykreslení tlačítka Zahodit
 		$save_html = $btn_save->render();                                    // Vykreslení tlačítka Uložit
 
-		// Lokalizované popisky polí
 		$lbl_code   = htmlspecialchars($this->phrase('lbl_builtin_code', [], 'Kód licence (zkratka)'));       // Popisek kódu
 		$lbl_cap    = htmlspecialchars($this->phrase('lbl_caption', [], 'Název organizace'));                 // Popisek názvu
 		$lbl_dom    = htmlspecialchars($this->phrase('lbl_login_domain', [], 'Login doména'));                // Popisek domény
@@ -336,20 +334,19 @@ HTML;
 		$lbl_alname = htmlspecialchars($this->phrase('lbl_admin_last_name', [], 'Příjmení admina'));          // Popisek příjmení admina
 		$lbl_aemail = htmlspecialchars($this->phrase('lbl_admin_email', [], 'E-mail admina'));                // Popisek e-mailu admina
 
-		// Hodnoty pro formulářová pole
 		$v_code   = htmlspecialchars((string)($datarow['builtin_code'] ?? ''));        // Hodnota builtin_code
 		$v_cap    = htmlspecialchars((string)($datarow['caption'] ?? ''));             // Hodnota caption
 		$v_dom    = htmlspecialchars((string)($datarow['login_domain'] ?? ''));        // Hodnota login_domain
 		$v_plang  = (string)($datarow['preferred_language'] ?? 'cs');                  // Hodnota preferred_language
 		$v_lvl    = (string)($datarow['licence_level'] ?? '10');                       // Hodnota licence_level
 		$v_state  = (string)($datarow['licence_state'] ?? 'DRAFT');                    // Hodnota licence_state
-		$chk_dis  = (!empty($datarow['login_disabled'])) ? 'checked' : '';             // Stav zaškrtnutí login_disabled
+		$chk_dis  = (! empty($datarow['login_disabled'])) ? 'checked' : '';            // Stav zaškrtnutí login_disabled
 		$v_alogin = htmlspecialchars((string)($datarow['admin_login'] ?? ''));         // Hodnota admin_login
 		$v_afname = htmlspecialchars((string)($datarow['admin_first_name'] ?? ''));    // Hodnota admin_first_name
 		$v_alname = htmlspecialchars((string)($datarow['admin_last_name'] ?? ''));     // Hodnota admin_last_name
 		$v_aemail = htmlspecialchars((string)($datarow['admin_email'] ?? ''));         // Hodnota admin_email
 
-		$code_ro_attr = (!$is_new)
+		$code_ro_attr = (! $is_new)
 			? 'readonly style="width: 220px; padding: 6px; box-sizing: border-box; background-color: #f4f4f4;"'
 			: 'style="width: 220px; padding: 6px; box-sizing: border-box;"'; // Uzamčení builtin_code u existující licence
 

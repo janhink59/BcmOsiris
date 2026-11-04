@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 17:15
+ * Verze: 2026-11-04 10:30
  * Soubor: new_functions.php
  * Účel: Nové a sjednocené globální pomocné funkce pro BCM Osiris.
  *       Vyčleněno do samostatného souboru mimo OsirisLib.php (pro pozdější
@@ -15,8 +15,10 @@
  *   inicializačního kódu phrase_manageru napříč třídami.
  *
  * Změny:
+ * 2026-11-04 10:30 - Union typy se svislítkem u translate_phrase() nahrazeny
+ *                    typem mixed dle Anti-LaTeX pravidla.
  * 2026-11-01 17:15 - Ve funkci translate_phrase() doplněna obousměrná detekce
- *                    pořadí parametrů ($default_caption vs. $vars).
+ *                    pořadí parametrů ($default_caption vs.$vars).
  * =============================================================================
  */
 
@@ -87,20 +89,20 @@ function has_role_access(string $required_role, ?string $active_role = null): bo
 
 /**
  * Sjednocený globální helper pro překlad a interpolaci frází přes $GLOBALS['phrase_manager'].
- * Podporuje obě konvence volání: ($code, $default_caption, $vars) i ($code, $vars, $default_caption).
+ * Podporuje obě konvence volání: ($code,$default_caption, $vars) i ($code, $vars,$default_caption).
  *
- * @param string               $builtin_code    Kód fráze v meta_phrase
- * @param string|array         $default_caption Výchozí český text (nebo pole proměnných)
- * @param array|string         $vars            Proměnné pro interpolaci {$var} (nebo výchozí text)
- * @param string               $source_code     Zdrojová třída (prázdné = prohledá lookup_chain)
+ * @param string $builtin_code    Kód fráze v meta_phrase
+ * @param mixed  $default_caption Výchozí český text (nebo pole proměnných)
+ * @param mixed  $vars            Proměnné pro interpolaci {$var} (nebo výchozí text)
+ * @param string $source_code     Zdrojová třída (prázdné = prohledá lookup_chain)
  * @return string Přeložený a interpolovaný text fráze
  */
-function translate_phrase(string $builtin_code, string|array $default_caption = '', array|string $vars = [], string $source_code = ''): string { // Překlad fráze
+function translate_phrase(string $builtin_code, mixed $default_caption = '', mixed $vars = [], string $source_code = ''): string { // Překlad fráze
 	if (is_array($default_caption)) {                                        // Pokud bylo voláno s konvencí ($code, $vars, $default)
 		$actual_vars = $default_caption;                                     // Pole proměnných z 2. parametru
 		$actual_default = is_string($vars) ? $vars : '';                     // Výchozí text ze 3. parametru
 	} else {
-		$actual_default = $default_caption;                                  // Výchozí text z 2. parametru
+		$actual_default = (string)$default_caption;                          // Výchozí text z 2. parametru
 		$actual_vars = is_array($vars) ? $vars : [];                         // Pole proměnných ze 3. parametru
 	}
 	global $phrase_manager;                                                  // Globální instance správce frází
