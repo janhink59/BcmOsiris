@@ -1,13 +1,13 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-04 10:30
+ * Verze: 2026-11-05 10:15
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
  *       Slouží jako pevný základ pro veškeré administrační obrazovky BCM systému.
  *
- * EXTERNÍ ZÁVISLOSTI PRO AI KONTEXT (Pokud chybí referenční soubory):
+ * EXTERNÍ ZÁVISLOSTI PRO AI KONTEXT:
  * - Třída dědí z `abstract_page`, která definuje základní HTML kostru, globální
  *   CSS styly a instancuje horní pruh (`user_context`).
  * - Zpracování POST dat a PRG vzor (Post-Redirect-Get) volá globální funkci 
@@ -18,31 +18,12 @@
  * - Vykreslování akčních tlačítek využívá komponentu `abstract_button`
  *   a lokalizaci textů zajišťuje `$this->phrase()` přes `phrase_manager`.
  *
- * KLÍČOVÉ KONCEPTY A ARCHITEKTURA (PRO BUDOUCÍ VÝVOJ):
- * 1. Plně datově řízená architektura (STI - Single Table Inheritance):
- *    - Potomek pouze definuje chráněnou proměnnou `$this->class_name`.
- *    - Pomocí objektu `entity_manager` je z databáze automaticky zjištěno, 
- *      jaké sloupce se mají zobrazit, jak se validují a jak se ukládají.
- * 2. Asynchronní načítání detailního panelu (`ajax_panel=detail`) a perzistence filtru:
- *    - Kliknutí na řádek v levém panelu (nebo na tlačítka "+ Nový" a "Zahodit změny")
- *      volá klientskou funkci `loadDetailPanel()`, která přes `fetch()` načte pouze
- *      HTML pravého panelu `.md-detail`, vykoná případné vnořené `<script>` tagy
- *      a upraví URL přes `history.pushState()`.
- *    - Pokud byl v levém stromu proveden neuložený přesun Drag & Drop (`window.isTreeDomDirty`),
- *      při zahození změn se automaticky zavolá `refreshMasterPanel()`.
- *    - Text filtru `#master-filter` se automaticky ukládá do `sessionStorage`.
- * 3. PRG Vzor (Post-Redirect-Get) a ošetření validačních chyb zápisu:
- *    - Metoda `process_save()` zavolá autonomní RAC zápis. Pokud `entity_manager`
- *      vrátí validační chybu (`get_last_save_error()`), neprovede se přesměrování,
- *      ale v detailu se vykreslí červený chybový box `.msg-err` a zachovají se hodnoty z `$_POST`.
- * 4. Skupiny ve formuláři ($form_groups), Readonly ($is_readonly), vkládání ($allow_insert) a Hook metody:
- *    - Hooky: `render_master_top()`, `get_detail_header()`, `render_detail_header_buttons()`, `render_detail_top()`.
- *
  * Změny:
+ * 2026-11-05 10:15 - Do přenosu kontextových parametrů (get_context_url_suffix,
+ *                    get_context_hidden_inputs a getMasterFilterStorageKey) doplněn
+ *                    parametr 'scale' pro podřízenou stránku page_scale_value.php.
  * 2026-11-04 10:30 - V render_detail() sjednocena indikace povinného klíčového pole (*)
  *                    přes metodu $this->em->is_key_column_mandatory($colname).
- * 2026-10-31 16:15 - Do process_save() a render_detail() doplněno zachycení
- *                    validační chyby z $this->em->get_last_save_error() se zachováním $_POST.
  * =============================================================================
  */
 
@@ -75,7 +56,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 * Vrátí kanonický název aktuální stránky (např. 'page_meta_class').
 	 */
 	protected function get_current_page_name(): string {
-		$page = trim((string)getinput('page'));                              // Načtení parametru page z požadavku
+		$page = trim((string) getinput('page'));                             // Načtení parametru page z požadavku
 		if ($page === '') {                                                  // Kontrola prázdného názvu stránky
 			return get_class($this);                                         // Fallback na název třídy stránky
 		}
@@ -87,12 +68,12 @@ abstract class abstract_page_master_detail extends abstract_page {
 	}
 
 	/**
-	 * Centralizované získání URL parametrů pro udržení kontextu (např. vazba na předka nebo hierarchii).
+	 * Centralizované získání URL parametrů pro udržení kontextu (např. vazba na předka, hierarchii nebo škálu).
 	 */
 	protected function get_context_url_suffix(): string {
 		$url_suffix = '';                                                    // Výchozí prázdný přívažek URL
-		foreach (['parent_object', 'parent_class', 'hierarchy', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
-			$val = (string)getinput($ctx_param);                             // Hodnota kontextového parametru
+		foreach (['parent_object', 'parent_class', 'hierarchy', 'scale', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
+			$val = (string) getinput($ctx_param);                            // Hodnota kontextového parametru
 			if ($val !== '') {                                               // Připojení neprázdného parametru
 				$url_suffix .= "&{$ctx_param}=" . urlencode($val);           // Připojení kódovaného parametru
 			}
@@ -105,8 +86,8 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 */
 	protected function get_context_hidden_inputs(): string {
 		$hidden_inputs = '';                                                 // Výchozí prázdný řetězec inputů
-		foreach (['parent_object', 'parent_class', 'hierarchy', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
-			$val = (string)getinput($ctx_param);                             // Hodnota kontextového parametru
+		foreach (['parent_object', 'parent_class', 'hierarchy', 'scale', 'menu_code', 'show_removed'] as $ctx_param) { // Průchod kontextovými parametry
+			$val = (string) getinput($ctx_param);                            // Hodnota kontextového parametru
 			if ($val !== '') {                                               // Vytvoření skrytého pole pro parametr
 				$hidden_inputs .= "\n\t\t\t<input type=\"hidden\" name=\"{$ctx_param}\" value=\"" . htmlspecialchars($val) . "\">"; // Skryté pole
 			}
@@ -132,7 +113,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 		}
 
 		if (isset($_GET['ajax_panel'])) {                                    // Detekce asynchronního požadavku na jeden z panelů
-			$ajax_target = (string)$_GET['ajax_panel'];                      // Cílový panel ('master' nebo 'detail')
+			$ajax_target = (string) $_GET['ajax_panel'];                     // Cílový panel ('master' nebo 'detail')
 			if ($ajax_target === 'master') {                                 // Požadavek na překreslení levého panelu
 				$this->render_master();                                      // Vykreslení pouze levého panelu
 				exit;                                                        // Okamžité ukončení skriptu
@@ -155,7 +136,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 			return;                                                          // V readonly režimu nebo bez správce neukládáme
 		}
 
-		$update_guid = trim((string)getinput('update_guid'));                // Identifikátor upravovaného záznamu
+		$update_guid = trim((string) getinput('update_guid'));               // Identifikátor upravovaného záznamu
 		if ($update_guid === '') {                                           // Kontrola prázdného identifikátoru
 			return;                                                          // Bez vybraného záznamu ani NEW neukládáme
 		}
@@ -189,19 +170,19 @@ abstract class abstract_page_master_detail extends abstract_page {
 		}
 
 		$save_guid = ($update_guid === 'NEW') ? '' : $update_guid;           // Pro nový záznam předáme prázdný řetězec
-		$was_marked_removed = (isset($_POST['removed']) AND (string)$_POST['removed'] === '1'); // Zda uživatel zaškrtl zrušení
+		$was_marked_removed = (isset($_POST['removed']) AND (string) $_POST['removed'] === '1'); // Zda uživatel zaškrtl zrušení
 		
 		$saved_orig = $this->em->save_post_data($save_guid, $target_status); // Autonomní uložení dat s cílovým stavem SSC
 
 		if (method_exists($this->em, 'get_last_save_error')) {               // Kontrola, zda při ukládání nevznikla validační chyba
 			$err_txt = $this->em->get_last_save_error();                     // Načtení textu případné chyby
-			if ($err_txt !== '') {                                           // Pokud validace (prázdný klíč / duplicita) selhala
+			if ($err_txt !== '') {                                           // Pokud validace (prázdný klíč / duplicita / monotonie) selhala
 				$this->save_error_message = $err_txt;                        // Uložení chyby pro zobrazení v render_detail()
 				return;                                                      // Neprovádíme redirect, zachováme rozepsaný formulář
 			}
 		}
 		
-		$show_rem_active = ((string)getinput('show_removed') === '1');       // Zda je zapnuto zobrazování zrušených záznamů
+		$show_rem_active = ((string) getinput('show_removed') === '1');      // Zda je zapnuto zobrazování zrušených záznamů
 		if ($was_marked_removed AND ! $show_rem_active AND $target_status === 'A') { // Pokud byl záznam zrušen a zrušené se nezobrazují
 			autoredirect("index.php?page={$page_param}{$url_suffix}");       // Přesměrování na čistý seznam bez detailu
 		} elseif ($saved_orig !== '' AND $saved_orig !== 'NEW') {            // Pokud máme platný originál uloženého záznamu
@@ -271,8 +252,9 @@ HTML;
 				const pCls = u.searchParams.get('parent_class') || '';
 				const pObj = u.searchParams.get('parent_object') || '';
 				const hier = u.searchParams.get('hierarchy') || '';
+				const scl  = u.searchParams.get('scale') || '';
 				const fCls = u.searchParams.get('filter_class') || '';
-				return 'bcm_mf_' + page + '_' + pCls + '_' + pObj + '_' + hier + '_' + fCls;
+				return 'bcm_mf_' + page + '_' + pCls + '_' + pObj + '_' + hier + '_' + scl + '_' + fCls;
 			}
 
 			// Aplikuje text filtru #master-filter na řádky v #master-list
@@ -540,11 +522,11 @@ HTML;
 			return;                                                          // Ukončení vykreslování seznamu
 		}
 
-		$update_guid = (string)getinput('update_guid');                      // Aktuálně vybraný záznam
-		$show_removed = ((string)getinput('show_removed') === '1');          // Příznak zobrazení zrušených záznamů
+		$update_guid = (string) getinput('update_guid');                     // Aktuálně vybraný záznam
+		$show_removed = ((string) getinput('show_removed') === '1');         // Příznak zobrazení zrušených záznamů
 		
 		$class_meta = $this->em->get_class_meta();                           // Metadata aktuální třídy
-		$caption_plural = (string)($class_meta['caption_plural'] ?? '');     // Množné číslo názvu třídy
+		$caption_plural = (string) ($class_meta['caption_plural'] ?? '');    // Množné číslo názvu třídy
 		
 		if ($caption_plural === '') {                                        // Kontrola prázdného nadpisu seznamu
 			$caption_plural = $this->phrase('default_list_heading', [], 'Seznam záznamů'); // Výchozí lokalizovaný nadpis seznamu
@@ -599,7 +581,7 @@ HTML;
 
 		if (is_array($rows)) {                                               // Kontrola platného pole výsledků
 			foreach ($rows as $row) {                                        // Průchod jednotlivými řádky seznamu
-				$uuid = (string)$row['original'];                            // Originální UUID řádku
+				$uuid = (string) $row['original'];                           // Originální UUID řádku
 				$safe_uuid = htmlspecialchars($uuid);                        // Ošetřené UUID pro atribut data-uuid
 				$is_rem = (! empty($row['removed']) OR ! empty($row['l_removed'])); // Zda je zrušen hlavní záznam nebo překlad
 				$is_act = (strcasecmp($uuid, $update_guid) === 0);           // Zda jde o právě vybraný řádek
@@ -614,8 +596,8 @@ HTML;
 				}
 				$rowIdAttr = $is_act ? 'id="active-row"' : '';               // Atribut id pro aktivní řádek
 
-				$rec_type = (string)($row['record_type'] ?? 'A');            // Typ záznamu ('A' nebo 'D')
-				$app_status = (string)($row['approval_status'] ?? 'A');      // Stav schválení ('A', 'D', 'F', 'R')
+				$rec_type = (string) ($row['record_type'] ?? 'A');           // Typ záznamu ('A' nebo 'D')
+				$app_status = (string) ($row['approval_status'] ?? 'A');     // Stav schválení ('A', 'D', 'F', 'R')
 				$ssc_badge = '';                                             // Vizuální štítek pro koncepty a zrušené v seznamu
 				if ($is_rem) {                                               // Pokud je záznam označen jako zrušený
 					$ssc_badge .= "<span class=\"ssc-badge ssc-badge-rem\">{$badge_txt_rem}</span>"; // Červený štítek Zrušeno
@@ -635,7 +617,7 @@ HTML;
 				
 				$first_col = true;                                           // Příznak prvního sloupce pro vložení štítku
 				foreach ($list_columns as $col => $header) {                 // Výpis hodnot buněk aktuálního řádku
-					$val = htmlspecialchars((string)($row[$col] ?? ''));     // Hodnota buňky v seznamu
+					$val = htmlspecialchars((string) ($row[$col] ?? ''));    // Hodnota buňky v seznamu
 					$badge_out = $first_col ? $ssc_badge : '';               // Štítek připojíme k první buňce řádku
 					$first_col = false;                                      // Další sloupce již štítek nedostanou
 					echo "\t\t\t\t\t\t\t<td>{$val}{$badge_out}</td>\n";      // Vykreslení buňky tabulky
@@ -678,13 +660,13 @@ HTML;
 	 */
 	protected function render_ssc_status_banner(): void {
 		global $datarow;                                                     // Aktuálně načtený řádek detailu
-		$rec_type = (string)($datarow['record_type'] ?? 'A');                // Typ záznamu ('A' nebo 'D')
+		$rec_type = (string) ($datarow['record_type'] ?? 'A');               // Typ záznamu ('A' nebo 'D')
 		if ($rec_type !== 'D') {                                             // Pokud jde o běžný schválený záznam
 			return;                                                          // Pruh nevykreslujeme
 		}
 
-		$app_status = (string)($datarow['approval_status'] ?? 'D');          // Stav konceptu ('D', 'F', 'R')
-		$app_note = trim((string)($datarow['approval_note'] ?? ''));         // Poznámka schvalovatele
+		$app_status = (string) ($datarow['approval_status'] ?? 'D');         // Stav konceptu ('D', 'F', 'R')
+		$app_note = trim((string) ($datarow['approval_note'] ?? ''));        // Poznámka schvalovatele
 
 		if ($app_status === 'R') {                                           // Vrácený / odmítnutý návrh
 			$msg_rej = htmlspecialchars($this->phrase('msg_ssc_status_rejected', [], 'Tento návrh byl vrácen / odmítnut schvalovatelem. Můžete jej upravit a znovu postoupit, nebo smazat.')); // Hláška vrácení
@@ -714,7 +696,7 @@ HTML;
 			return;                                                          // Ukončení vykreslování detailu
 		}
 
-		$update_guid = (string)getinput('update_guid');                      // Získání ID vybraného záznamu
+		$update_guid = (string) getinput('update_guid');                     // Získání ID vybraného záznamu
 		if ($update_guid === '') {                                           // Kontrola prázdného výběru
 			$msg_sel = htmlspecialchars($this->phrase('msg_select_from_left', [], 'Vyberte záznam z levého panelu.')); // Výzva k výběru
 			echo "<div class='msg-info'>{$msg_sel}</div>";                   // Výpis informační výzvy
@@ -750,14 +732,14 @@ HTML;
 				return;                                                      // Ukončení při nenalezení záznamu
 			}
 			
-			$is_mine = (bool)$datarow['object_is_mine'];                     // Zda záznam vlastní aktuální tenant
+			$is_mine = (bool) $datarow['object_is_mine'];                    // Zda záznam vlastní aktuální tenant
 		}
 
 		// Pokud došlo k validační chybě při ukládání (POST), zachováme ve formuláři zadané hodnoty z $_POST
 		if ($this->save_error_message !== '' AND ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') { // Obnova hodnot po chybě
 			foreach ($this->em->get_columns() as $colname => $meta) {        // Průchod sloupci logické třídy
 				if (isset($_POST[$colname])) {                               // Pokud byla hodnota v POSTu odeslána
-					$datarow[$colname] = (string)$_POST[$colname];           // Přepsání hodnoty v $datarow odeslaným vstupem
+					$datarow[$colname] = (string) $_POST[$colname];          // Přepsání hodnoty v $datarow odeslaným vstupem
 				}
 			}
 		}
@@ -784,7 +766,7 @@ HTML;
 				$btn_parts[] = $extra_buttons;                               // Zařazení doplňkových tlačítek potomka
 			}
 
-			$is_draft_row = ($update_guid !== 'NEW' AND ((string)($datarow['record_type'] ?? 'A') === 'D')); // Zda jde o uložený koncept
+			$is_draft_row = ($update_guid !== 'NEW' AND ((string) ($datarow['record_type'] ?? 'A') === 'D')); // Zda jde o uložený koncept
 			if ($is_draft_row) {                                             // Pokud má uživatel uložený koncept
 				$confirm_del = $this->phrase('confirm_delete_draft', [], 'Opravdu chcete tento koncept bez náhrady odstranit?'); // Dotaz před smazáním
 				$btn_del_draft = new abstract_button('btn_delete_draft', 'Smazat koncept', 'abstract_button', '', 'btn-danger'); // Tlačítko smazání konceptu
@@ -873,15 +855,15 @@ HTML;
 					continue;                                                // Pokračování na další sloupec
 				}
 				
-				$label = htmlspecialchars((string)($meta['label'] ?: $meta['caption'] ?: $colname)); // Popisek pole
-				$helptext = (string)($meta['helptext'] ?? '');               // Text nápovědy k poli
+				$label = htmlspecialchars((string) ($meta['label'] ?: $meta['caption'] ?: $colname)); // Popisek pole
+				$helptext = (string) ($meta['helptext'] ?? '');              // Text nápovědy k poli
 				$title_attr = $helptext !== '' ? " title=\"" . htmlspecialchars($helptext) . "\"" : ""; // Tooltip buňky
 				
 				$is_mand = (! empty($meta['is_mandatory']) OR $this->em->is_key_column_mandatory($colname)); // Povinné pole nebo klíč
 				$req_html = $is_mand ? "<span style=\"color: #b91c1c; margin-left: 3px;\" title=\"{$lbl_req_title}\">*</span>" : ''; // Hvězdička povinnosti
 				$trans_html = ! empty($meta['translate']) ? "<br><small style=\"color: #2563eb; font-size: 10px;\" title=\"{$lbl_tr_title}\">{$lbl_tr_badge}</small>" : ''; // Štítek překladu
 				
-				$input_html = $this->em->render_dynamic_input($colname, (string)($datarow[$colname] ?? ''), $is_mine, $this->is_readonly); // HTML vstupního prvku
+				$input_html = $this->em->render_dynamic_input($colname, (string) ($datarow[$colname] ?? ''), $is_mine, $this->is_readonly); // HTML vstupního prvku
 				
 				echo <<<HTML
 					<tr>
@@ -921,13 +903,13 @@ HTML;
 		if (! empty($datarow['date_created'])) {                             // Výpis informace o vytvoření záznamu
 			$date_c = date_format4($datarow['date_created'], 16);            // Zformátované datum vytvoření
 			$who_c_name = ! empty($datarow['who_created_info']) ? $datarow['who_created_info'] : $unknown_user; // Autor vytvoření
-			$html .= "<div>{$lbl_created} {$date_c} " . htmlspecialchars((string)$who_c_name) . "</div>"; // Řádek vytvoření
+			$html .= "<div>{$lbl_created} {$date_c} " . htmlspecialchars((string) $who_c_name) . "</div>"; // Řádek vytvoření
 		}
 
 		if (! empty($datarow['date_modified'])) {                            // Výpis informace o poslední úpravě záznamu
 			$date_m = date_format4($datarow['date_modified'], 16);           // Zformátované datum úpravy
 			$who_m_name = ! empty($datarow['who_modified_info']) ? $datarow['who_modified_info'] : $unknown_user; // Autor úpravy
-			$html .= "<div>{$lbl_modified} &nbsp;&nbsp;{$date_m} " . htmlspecialchars((string)$who_m_name) . "</div>"; // Řádek úpravy
+			$html .= "<div>{$lbl_modified} &nbsp;&nbsp;{$date_m} " . htmlspecialchars((string) $who_m_name) . "</div>"; // Řádek úpravy
 		}
 
 		if ($html !== '') {                                                  // Vykreslení neprázdného bloku auditní stopy

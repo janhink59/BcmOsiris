@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-16 08:25
+ * Verze: 2026-11-05 16:55
  * Soubor: page_main.php
  * Stránka: page_main.php
  * Účel: Hlavní rozcestník dynamicky generovaný z databáze metadat (Průzkumník).
@@ -11,6 +11,8 @@
  * - Využívá globální $menu_manager pro načtení aktivní složky a jejích potomků.
  * 
  * Změny:
+ * 2026-11-05 16:55 - Kompaktní zobrazení: zkrácení všech hodnot padding, margin a gap
+ *                    na polovinu a sjednocení CSS chování barev SVG ikon v dlaždicích.
  * 2026-10-16 08:25 - Doplněno volání parent::__construct() a lokalizace všech
  *                    výchozích textů přes $this->phrase().
  * 2026-10-13 - Aplikace moderního CSS Grid layoutu (dlaždice/karty) místo 
@@ -56,8 +58,16 @@ class page_main extends abstract_page {
 		}
 
 		echo <<<HTML
+		<style>
+			.page-panel { padding: 10px; margin: 8px auto; }
+			h1.page-heading { padding-bottom: 5px; margin-bottom: 6px; }
+			.bcm-tile-icon { width: 32px; height: 32px; color: #004488; margin-bottom: 8px; }
+			.bcm-tile-icon svg { width: 100%; height: 100%; display: block; }
+			.bcm-tile-icon svg:not([fill]) { fill: currentColor; }
+			.bcm-tile-placeholder { width: 32px; height: 32px; background: #e2e8f0; border-radius: 4px; margin-bottom: 8px; }
+		</style>
 		<h1 class="page-heading">{$title}</h1>
-		<p style="margin-bottom: 25px; color: #475569;">{$desc}</p>
+		<p style="margin: 0 0 12px 0; color: #475569;">{$desc}</p>
 HTML;
 
 		// Načtení potomků aktuálního uzlu (obsah složky)
@@ -69,8 +79,8 @@ HTML;
 			return;                                                          // Ukončení vykreslování prázdné složky
 		}
 
-		// Responzivní CSS Grid pro dlaždice (karty)
-		echo "<div style=\"display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px;\">\n";
+		// Responzivní CSS Grid pro dlaždice (karty) se zpolovičněnou mezerou (gap: 10px)
+		echo "<div style=\"display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px;\">\n";
 
 		foreach ($children as $child) {
 			// Skryté položky (bez přístupu) nevykreslujeme
@@ -80,15 +90,17 @@ HTML;
 
 			$caption = htmlspecialchars((string)($child['caption'] ?? ''));  // Ošetřený název dlaždice
 			$helptext = htmlspecialchars((string)($child['helptext'] ?? '')); // Ošetřený popis dlaždice
-			$icon = !empty($child['svg_icon']) ? '<div style="width: 32px; height: 32px; color: #004488; margin-bottom: 15px;">' . $child['svg_icon'] . '</div>' : '<div style="width: 32px; height: 32px; background: #e2e8f0; border-radius: 4px; margin-bottom: 15px;"></div>'; // Ikona dlaždice
+			$icon = !empty($child['svg_icon'])
+				? '<div class="bcm-tile-icon">' . $child['svg_icon'] . '</div>'
+				: '<div class="bcm-tile-placeholder"></div>';                // Ikona dlaždice nebo zástupný čtverec
 			
 			$link = $menu_manager->build_link($child);                       // Cílová URL adresa dlaždice
 			$target = !empty($child['target_window']) ? ' target="' . htmlspecialchars((string)$child['target_window']) . '"' : ''; // Cílové okno odkazu
 
 			echo <<<HTML
-			<a href="{$link}"{$target} style="display: block; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 20px; text-decoration: none; color: #334155; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05);" onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'; this.style.borderColor='#94a3b8';" onmouseout="this.style.boxShadow='0 1px 3px rgba(0,0,0,0.05)'; this.style.borderColor='#cbd5e1';">
+			<a href="{$link}"{$target} style="display: block; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px; text-decoration: none; color: #334155; transition: all 0.2s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.05);" onmouseover="this.style.boxShadow='0 4px 12px rgba(0,0,0,0.1)'; this.style.borderColor='#94a3b8';" onmouseout="this.style.boxShadow='0 1px 3px rgba(0,0,0,0.05)'; this.style.borderColor='#cbd5e1';">
 				{$icon}
-				<h3 style="margin: 0 0 8px 0; font-size: 16px; color: #0f172a;">{$caption}</h3>
+				<h3 style="margin: 0 0 4px 0; font-size: 16px; color: #0f172a;">{$caption}</h3>
 				<div style="font-size: 13px; color: #64748b; line-height: 1.4;">{$helptext}</div>
 			</a>
 HTML;

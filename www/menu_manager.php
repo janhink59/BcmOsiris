@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-21 15:00
+ * Verze: 2026-11-05 16:45
  * Soubor: menu_manager.php
  * Třída: menu_manager
  * Účel: Globální správce uživatelského menu. 
@@ -15,6 +15,7 @@
  * - Pro překlad nouzového odkazu využívá globální $phrase_manager.
  * 
  * Změny:
+ * 2026-11-05 16:45 - Sjednocení CSS pravidel pro SVG ikony v menu (.bcm-menu-icon svg:not([fill])).
  * 2026-10-21 15:00 - Čtení procedury p_get_menu_hierarchy převedeno ze sqlrun/fetch
  *                    na sqlarray_simple() (ochrana globálního $dbquery).
  *                  - Všechny operátory && nahrazeny za AND (Anti-LaTeX pravidlo).
@@ -47,18 +48,18 @@ class menu_manager {
 			return;                                                          // Ukončení při prázdném výsledku
 		}
 
-		foreach ($rows as $row) {                                            // Průchod načtenými položkami menu
+		foreach ($rows as$row) {                                            // Průchod načtenými položkami menu
 			$uuid = (string)$row['original'];                                // Originální UUID položky menu
-			$this->items[$uuid] = $row;                                      // Uložení dat položky
-			$this->by_code[(string)$row['builtin_code']] = $uuid;            // Indexace podle textového kódu
+			$this->items[$uuid] =$row;                                      // Uložení dat položky
+			$this->by_code[(string)$row['builtin_code']] =$uuid;            // Indexace podle textového kódu
 			
 			$page = (string)$row['target_page'];                             // Cílová stránka (např. page_meta_class)
 			if ($page !== '') {                                              // Pokud položka směřuje na stránku
-				$this->by_page[$page][] = $uuid;                             // Indexace podle cílové stránky
+				$this->by_page[$page][] =$uuid;                             // Indexace podle cílové stránky
 			}
 			
 			$parent = (string)$row['parent_uuid'];                           // UUID nadřízené položky menu
-			$this->children_map[$parent][] = $uuid;                          // Zařazení do seznamu potomků rodiče
+			$this->children_map[$parent][] =$uuid;                          // Zařazení do seznamu potomků rodiče
 		}
 	}
 
@@ -82,40 +83,39 @@ class menu_manager {
 		} else {
 			$req_page = basename($req_page, '.php');                         // Očištění od cesty a přípony
 			if (!str_starts_with($req_page, 'page_')) {                      // Kontrola přítomnosti předpony page_
-				$req_page = 'page_' . $req_page;                             // Doplnění prefixu page_ pro kompatibilitu
+				$req_page = 'page_' .$req_page;                             // Doplnění prefixu page_ pro kompatibilitu
 			}
 		}
 
 		// 2. Fallback na vyhledání podle target_page s heuristikou pro best-match
 		if ($req_page !== '' AND isset($this->by_page[$req_page])) {         // Hledání položky podle cílové stránky
 			$candidates = $this->by_page[$req_page];                         // Seznam položek mířících na tuto stránku
-			$best_match = $candidates[0];                                    // Výchozí první shoda
+			$best_match =$candidates[0];                                    // Výchozí první shoda
 
-			foreach ($candidates as $uuid) {                                 // Průchod kandidátními položkami
+			foreach ($candidates as$uuid) {                                 // Průchod kandidátními položkami
 				$params_str = (string)$this->items[$uuid]['url_parameters']; // Dodatečné parametry URL u položky
 				if ($params_str !== '') {                                    // Pokud má položka definované parametry
-					parse_str(ltrim($params_str, '&?'), $parsed_params);     // Rozparsování parametrů z DB
+					parse_str(ltrim($params_str, '&?'),$parsed_params);     // Rozparsování parametrů z DB
 					$match = true;                                           // Příznak shody všech parametrů
-					foreach ($parsed_params as $k => $v) {                   // Porovnání parametrů s aktuálním URL
-						if ((string)getinput($k) !== (string)$v) {           // Kontrola shody hodnoty parametru
-							$match = false;                                  // Parametr v URL neodpovídá položce
+					foreach ($parsed_params as $k =>$v) {                   // Porovnání parametrů s aktuálním URL
+						if ((string)getinput($k) !== (string)$v) {           // Kontrola shody hodnoty parametru$match = false;                                  // Parametr v URL neodpovídá položce
 							break;                                           // Ukončení kontroly této položky
 						}
 					}
 					if ($match) {                                            // Pokud všechny parametry sedí
-						$best_match = $uuid;                                 // Nalezena přesná shoda parametrů
+						$best_match =$uuid;                                 // Nalezena přesná shoda parametrů
 						break;                                               // Ukončení hledání kandidátů
 					}
 				}
 			}
 			
-			$this->active_uuid = $best_match;                                // Nastavení nejlepší nalezené položky
+			$this->active_uuid =$best_match;                                // Nastavení nejlepší nalezené položky
 			return;                                                          // Ukončení vyhledávání
 		}
 
 		// 3. Totální fallback na domovskou stránku
 		if (isset($this->by_code['home'])) {                                 // Kontrola existence kořene Domů
-			$this->active_uuid = $this->by_code['home'];                     // Nouzové nastavení na kořen Domů
+			$this->active_uuid =$this->by_code['home'];                     // Nouzové nastavení na kořen Domů
 		}
 	}
 
@@ -131,7 +131,7 @@ class menu_manager {
 		if ((string)$item['target_page'] !== '') {                           // Pokud má položka cílovou stránku
 			$url = "index.php?page=" . urlencode((string)$item['target_page']) . "&menu_code=" . urlencode((string)$item['builtin_code']); // Základní URL
 			if ((string)$item['url_parameters'] !== '') {                    // Pokud jsou zadány další parametry
-				$url .= $item['url_parameters'];                             // Připojení dodatečných GET parametrů
+				$url .=$item['url_parameters'];                             // Připojení dodatečných GET parametrů
 			}
 			return htmlspecialchars($url);                                   // Vrácení ošetřené interní URL
 		}
@@ -169,7 +169,7 @@ class menu_manager {
 		$children = [];                                                      // Výsledné pole potomků
 		
 		if (isset($this->children_map[$uuid])) {                             // Pokud má uzel evidované potomky
-			foreach ($this->children_map[$uuid] as $child_uuid) {            // Průchod potomky uzlu
+			foreach ($this->children_map[$uuid] as$child_uuid) {            // Průchod potomky uzlu
 				$children[] = $this->items[$child_uuid];                     // Přidání potomka do výsledku
 			}
 		}
@@ -182,11 +182,11 @@ class menu_manager {
 	 */
 	public function get_active_path(): array {
 		$path = [];                                                          // Pole pro sestavení cesty od kořene
-		$curr = $this->active_uuid;                                          // Začínáme od aktivního uzlu
+		$curr =$this->active_uuid;                                          // Začínáme od aktivního uzlu
 		$visited = [];                                                       // Ochrana proti zacyklení v hierarchii
 		
 		while ($curr !== null AND isset($this->items[$curr]) AND !isset($visited[$curr])) { // Průchod k rodičům
-			array_unshift($path, $curr);                                     // Vložení uzlu na začátek cesty
+			array_unshift($path,$curr);                                     // Vložení uzlu na začátek cesty
 			$visited[$curr] = true;                                          // Označení uzlu jako navštíveného
 			$curr = (string)$this->items[$curr]['parent_uuid'] !== '' ? (string)$this->items[$curr]['parent_uuid'] : null; // Posun na rodiče
 		}
@@ -213,7 +213,9 @@ class menu_manager {
 	.bcm-breadcrumb-link:hover, .bcm-breadcrumb-item:hover > .bcm-breadcrumb-link { background-color: #e2e8f0; color: #0f172a; }
 	.bcm-breadcrumb-link.active { font-weight: bold; color: #004488; }
 	.bcm-breadcrumb-separator { color: #94a3b8; font-size: 16px; margin: 0 4px; user-select: none; }
-	.bcm-menu-icon svg { width: 16px; height: 16px; display: block; }
+	.bcm-menu-icon { display: inline-flex; align-items: center; }
+	.bcm-menu-icon svg { width: 16px; height: 16px; display: block; flex-shrink: 0; }
+	.bcm-menu-icon svg:not([fill]) { fill: currentColor; }
 	.bcm-menu-dropdown { display: none; position: absolute; top: 100%; left: 0; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.15); border: 1px solid #cbd5e1; border-radius: 4px; min-width: 240px; z-index: 1000; margin: 0; padding: 4px 0; list-style: none; }
 	.bcm-breadcrumb-item:hover .bcm-menu-dropdown { display: block; }
 	.bcm-menu-link { display: flex; align-items: center; gap: 8px; padding: 8px 16px; text-decoration: none; color: #334155; font-size: 13px; transition: background 0.2s; }

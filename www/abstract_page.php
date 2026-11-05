@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 12:15
+ * Verze: 2026-11-05 16:45
  * Soubor: abstract_page.php
  * Třída: abstract_page
  * Účel: Základní abstraktní třída pro objektově orientované stránky.
@@ -14,6 +14,8 @@
  *   a volá `has_role_access()` z `new_functions.php` a `$menu_manager->render_breadcrumbs()`.
  * 
  * Změny:
+ * 2026-11-05 16:45 - Sjednocení chování barev SVG ikon v tlačítkách (.btn svg:not([fill]))
+ *                    pro zachování vlastních barev ikon i podpory currentColor.
  * 2026-11-01 12:15 - V check_system_role_access() využita sdílená funkce
  *                    has_role_access() z new_functions.php.
  * =============================================================================
@@ -39,7 +41,7 @@ abstract class abstract_page {
 	protected function init_phrases(): void {
 		if ($this->phrases === null) {
 			$this->phrases = new phrase_manager($this);                      // Dávkové načtení frází přes reflexi
-			$GLOBALS['phrase_manager'] = $this->phrases;                     // Zpřístupnění pro tlačítka a komponenty
+			$GLOBALS['phrase_manager'] =$this->phrases;                     // Zpřístupnění pro tlačítka a komponenty
 		}
 	}
 
@@ -54,7 +56,7 @@ abstract class abstract_page {
 		}
 
 		$active_role = (string)$dbsession['active_role'];                    // Aktuální role uživatele (U, A, S, D)
-		if ($active_role === 'S' OR $active_role === 'D') {
+		if ($active_role === 'S' OR$active_role === 'D') {
 			return;                                                          // Sysadmin a Developer mají přístup vždy
 		}
 
@@ -73,7 +75,7 @@ abstract class abstract_page {
 
 		if (! empty($row) AND isset($row['system_role'])) {                  // Pokud je stránka v meta_object registrována
 			$req_role = (string)$row['system_role'];                         // Minimální vyžadovaná role (U, A, S, D)
-			if (! has_role_access($req_role, $active_role)) {                // Vyhodnocení přes sdílenou funkci has_role_access
+			if (! has_role_access($req_role,$active_role)) {                // Vyhodnocení přes sdílenou funkci has_role_access
 				$this->access_denied = true;                                 // Odepření přístupu při nedostatečné roli
 			}
 		}
@@ -87,9 +89,8 @@ abstract class abstract_page {
 	 * @param string               $default_caption Výchozí text při neexistenci v DB
 	 * @return string Přeložený text fráze
 	 */
-	public function phrase(string $builtin_code, array $vars = [], string $default_caption = ''): string {
-		$this->init_phrases();                                               // Pojistka inicializace správce frází
-		return $this->phrases->get($builtin_code, $vars, $default_caption);  // Vrácení přeložené a interpolované fráze
+	public function phrase(string $builtin_code, array$vars = [], string $default_caption = ''): string {$this->init_phrases();                                               // Pojistka inicializace správce frází
+		return $this->phrases->get($builtin_code, $vars,$default_caption);  // Vrácení přeložené a interpolované fráze
 	}
 
 	/**
@@ -106,22 +107,21 @@ abstract class abstract_page {
 		$this->init_phrases();                                               // Pojistka inicializace frází
 		$this->check_system_role_access();                                   // Pojistka kontroly oprávnění
 
-		if (! $this->access_denied AND ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
-			$this->process_save();                                           // Spuštění ukládací logiky potomka pouze při POST
+		if (! $this->access_denied AND ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {$this->process_save();                                           // Spuštění ukládací logiky potomka pouze při POST
 		}
 
 		$user_context = new user_context();                                  // Horní lišta s kontextem uživatele
 
-		global $menu_manager, $dbsession;                                    // Přístup k navigaci a relaci
+		global $menu_manager,$dbsession;                                    // Přístup k navigaci a relaci
 		$breadcrumbs_html = '';                                              // HTML kód drobečkové navigace
 		if (isset($menu_manager) AND is_object($menu_manager)) {
-			$breadcrumbs_html = $menu_manager->render_breadcrumbs();         // Vykreslení drobečkové navigace
+			$breadcrumbs_html =$menu_manager->render_breadcrumbs();         // Vykreslení drobečkové navigace
 		}
 
 		$lang_code = htmlspecialchars((string)($dbsession['language'] ?? 'cs')); // Kód jazyka do atributu html
 		$safe_title = htmlspecialchars($this->page_title);                   // Bezpečný titulek stránky
 		$unsaved_msg = addslashes($this->phrase('msg_unsaved_changes', [], 'Máte neuložené změny. Opravdu chcete stránku opustit?')); // Text varování
-		$panel_cls = $this->full_width ? 'page-panel page-panel-full' : 'page-panel'; // Volba šířky hlavního panelu
+		$panel_cls =$this->full_width ? 'page-panel page-panel-full' : 'page-panel'; // Volba šířky hlavního panelu
 
 		echo <<<HTML
 <!DOCTYPE html>
@@ -190,7 +190,8 @@ abstract class abstract_page {
 		.btn:hover { background-color: #003366; }
 		.btn:disabled, .btn.disabled { opacity: 0.6; cursor: not-allowed; pointer-events: none; }
 		.btn-icon { display: inline-flex; align-items: center; }
-		.btn-icon svg, .btn svg { width: 16px; height: 16px; fill: currentColor; flex-shrink: 0; }
+		.btn-icon svg, .btn svg { width: 16px; height: 16px; display: block; flex-shrink: 0; }
+		.btn-icon svg:not([fill]), .btn svg:not([fill]) { fill: currentColor; }
 		.btn-danger { background-color: #b71c1c; }
 		.btn-danger:hover { background-color: #8e1515; }
 		.btn-success { background-color: #4CAF50; }

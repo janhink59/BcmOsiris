@@ -1,11 +1,12 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 12:15
+ * Verze: 2026-11-04 15:15
  * Soubor: page_hierarchy_item.php
  * Třída: page_hierarchy_item
  * Účel: Správa uzlů (vnitřních složek is_leaf = 0 i koncových listů is_leaf = 1)
- *       konkrétní sekundární hierarchie nebo stromu štítků (tabulka hierarchy_item).
+ *       konkrétní sekundární hierarchie, výčtového číselníku nebo stromu štítků
+ *       (tabulka hierarchy_item).
  *
  * ARCHITEKTONICKÉ VAZBY:
  * - Instancována dynamicky z routeru `index.php` při `?page=page_hierarchy_item`.
@@ -13,10 +14,9 @@
  *   a pracuje s logickou třídou `'hierarchy_item'`.
  *
  * Změny:
+ * 2026-11-04 15:15 - Do sekce stromového zařazení a přehledu doplněn sloupec is_default.
  * 2026-11-01 12:15 - V konstruktoru a render_master_top() nahrazeny přímé T-SQL
- *                    dotazy nad tabulkou hierarchy jediným voláním
- *                    $this->em_hierarchy->fetch_rows(), čímž odpadlo 35 řádků
- *                    duplicitního SQL kódu.
+ *                    dotazy nad tabulkou hierarchy voláním $this->em_hierarchy->fetch_rows().
  * =============================================================================
  */
 
@@ -40,18 +40,26 @@ class page_hierarchy_item extends abstract_page_tree {
 		$this->new_button_code = 'btn_new_hierarchy_item';                   // Kód fráze tlačítka pro nový uzel
 		$this->new_button_default_caption = '+ Nová položka hierarchie';     // Výchozí popisek tlačítka
 
+		$this->tree_extra_columns = [                                        // Doplňkový sloupec výchozí položky ve stromu
+			'is_default' => [
+				'header' => $this->phrase('th_is_default', [], 'Výchozí'),   // Záhlaví sloupce
+				'width'  => '55px',                                          // Šířka sloupce
+				'align'  => 'center'                                         // Zarovnání na střed
+			]
+		];                                                                   // Konec definice doplňkových sloupců
+
 		if ($this->access_denied) {                                          // Pokud předek zamítl přístup ke stránce
 			return;                                                          // Neprovádíme dotazy do databáze
 		}
 
 		$this->em_hierarchy = new entity_manager('hierarchy');               // Inicializace správce pro nadřazenou třídu hierarchy
-		$this->parent_hierarchy = trim((string)getinput('hierarchy'));       // Načtení vybrané hierarchie z URL nebo POSTu
+		$this->parent_hierarchy = trim((string) getinput('hierarchy'));      // Načtení vybrané hierarchie z URL nebo POSTu
 
 		// Pokud v požadavku nebyla předána konkrétní hierarchie, vybereme první dostupnou koncovou hierarchii (is_leaf = 1)
 		if ($this->parent_hierarchy === '') {                                // Hledání výchozí koncové hierarchie
 			$leaf_hiers = $this->em_hierarchy->fetch_rows('m.is_leaf = 1 AND m.inactive = 0', 'sort_code ASC, builtin_code ASC', true); // Načtení koncových hierarchií
 			if (! empty($leaf_hiers)) {                                      // Pokud byla nalezena alespoň jedna hierarchie
-				$this->parent_hierarchy = (string)$leaf_hiers[0]['original']; // Nastavení výchozí hierarchie
+				$this->parent_hierarchy = (string) $leaf_hiers[0]['original']; // Nastavení výchozí hierarchie
 				$_GET['hierarchy'] = $this->parent_hierarchy;                // Zápis do $_GET pro přenos kontextu v odkazech
 			}
 		}
@@ -63,7 +71,7 @@ class page_hierarchy_item extends abstract_page_tree {
 			$where_par = "m.original = " . guidliteral($this->parent_hierarchy); // Podmínka pro vyhledání hierarchie
 			$par_row = $this->em_hierarchy->fetch_row($where_par);           // Načtení hierarchie s vyhodnocením překladů
 			if (! empty($par_row)) {                                         // Pokud byla definice hierarchie nalezena
-				$this->parent_hierarchy_name = (string)$par_row['caption'] !== '' ? (string)$par_row['caption'] : (string)$par_row['builtin_code']; // Název
+				$this->parent_hierarchy_name = (string) $par_row['caption'] !== '' ? (string) $par_row['caption'] : (string) $par_row['builtin_code']; // Název
 				$this->page_title = $this->phrase('page_title_with_hier', ['hierarchy' => $this->parent_hierarchy_name], 'Položky hierarchie: {' . chr(36) . 'hierarchy}'); // Titulek
 			}
 		} else {
@@ -77,7 +85,7 @@ class page_hierarchy_item extends abstract_page_tree {
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_pres => ['caption', 'shortname', 'description_text', 'help_text'], // Lokalizované názvy a popisy uzlu
-			$grp_hier => ['hierarchy', 'builtin_code', 'parent_uuid', 'sort_code', 'is_leaf', 'external_code'], // Stromové zařazení uzlu
+			$grp_hier => ['hierarchy', 'builtin_code', 'parent_uuid', 'sort_code', 'is_leaf', 'is_default', 'external_code'], // Stromové zařazení uzlu a výchozí položka
 			$grp_vis  => ['color_code', 'svg_icon', 'valid_from', 'valid_to', 'inactive'] // Barva, ikona a platnost
 		];                                                                   // Konec definice skupin formuláře
 	}
@@ -87,7 +95,7 @@ class page_hierarchy_item extends abstract_page_tree {
 	 */
 	protected function get_detail_header(): string {
 		global $datarow;                                                     // Aktuálně načtený řádek uzlu
-		$code = (string)($datarow['builtin_code'] ?? '');                    // Technický kód uzlu v hierarchii
+		$code = (string) ($datarow['builtin_code'] ?? '');                   // Technický kód uzlu v hierarchii
 		if ($code === '') {                                                  // Pokud zakládáme nový uzel
 			return htmlspecialchars($this->phrase('header_new_item', [], 'Nová položka hierarchie')); // Nadpis pro nový uzel
 		}
@@ -124,9 +132,9 @@ class page_hierarchy_item extends abstract_page_tree {
 		$options_html = '';                                                  // HTML položek roletky hierarchií
 		if (is_array($hier_rows) AND ! empty($hier_rows)) {                  // Pokud existují koncové hierarchie
 			foreach ($hier_rows as $h_row) {                                 // Průchod hierarchiemi
-				$h_uuid = (string)$h_row['original'];                        // UUID hierarchie
-				$h_code = htmlspecialchars((string)$h_row['builtin_code']);  // Ošetřený kód hierarchie
-				$h_cap  = htmlspecialchars((string)$h_row['caption']);       // Ošetřený přeložený název hierarchie
+				$h_uuid = (string) $h_row['original'];                       // UUID hierarchie
+				$h_code = htmlspecialchars((string) $h_row['builtin_code']); // Ošetřený kód hierarchie
+				$h_cap  = htmlspecialchars((string) $h_row['caption']);      // Ošetřený přeložený název hierarchie
 				$sel = (strcasecmp($h_uuid, $this->parent_hierarchy) === 0) ? 'selected' : ''; // Označení právě vybrané hierarchie
 				$label = ($h_cap !== '' AND $h_cap !== $h_code) ? "{$h_cap} ({$h_code})" : $h_code; // Text volby v roletce
 				$options_html .= "<option value=\"" . htmlspecialchars($h_uuid) . "\" {$sel}>{$label}</option>"; // Přidání volby
@@ -156,7 +164,7 @@ HTML;
 	 */
 	protected function render_detail_top(): void {
 		global $datarow;                                                     // Aktuálně načtený datový řádek detailu
-		$update_guid = trim((string)getinput('update_guid'));                // Identifikátor záznamu v detailu
+		$update_guid = trim((string) getinput('update_guid'));               // Identifikátor záznamu v detailu
 
 		if ($update_guid === 'NEW' AND is_array($datarow)) {                 // Při zakládání nového uzlu hierarchie
 			if ($this->parent_hierarchy !== '') {                            // Pokud máme vybranou nadřazenou hierarchii

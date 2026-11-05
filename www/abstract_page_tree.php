@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-31 11:30
+ * Verze: 2026-11-05 16:45
  * Soubor: abstract_page_tree.php
  * Třída: abstract_page_tree
  * Účel: Znovupoužitelná abstraktní šablona pro všechny stromové (hierarchické)
@@ -22,13 +22,18 @@
  *   3. Podporou Drag & Drop (Varianta 1): přetažení uzlu v levém stromu vypočítá
  *      nový `parent_uuid` a lexikografický `sort_code` a předvyplní je do pravého
  *      detailního formuláře se zapnutím `isFormDirty = true` a `window.isTreeDomDirty = true`
- *      (bez přímého zápisu do DB).
+ *      (bez přímého zápisu do DB). Pokud má položka definovanou SVG ikonu (`svg_icon`),
+ *      použije se jako úchyt pro Drag & Drop místo výchozích znaků ⋮⋮ se zachováním vlastní barvy.
  *   4. Ochranou pravidel hierarchie při Drag & Dropu:
  *      - Vložit uzel dovnitř (`inside`) lze pouze do složky (`is_leaf = 0`).
  *      - U uzamčeného uzlu (`data-locked="1"`) lze měnit pouze jeho pořadí (`sort_code`)
  *        mezi sourozenci pod stejným rodičem (`parent_uuid`), nikoliv jej přepodřizovat.
  *
  * Změny:
+ * 2026-11-05 16:45 - Sjednoceno CSS pravidlo .dnd-grip svg:not([fill]) pro zachování
+ *                    vlastních barev SVG ikon i automatické dědění currentColor.
+ * 2026-11-05 16:15 - Doplněna podpora zobrazení vektorové ikony ($icon_column = 'svg_icon')
+ *                    jako úchytu pro Drag & Drop místo znaků ⋮⋮, pokud ikona u položky existuje.
  * 2026-10-31 11:30 - Explicitní deklarace všech konfigurovatelných vlastností třídy
  *                    (`$storage_key_prefix`, `$tree_heading`, `$tree_caption_header`,
  *                    `$new_button_code`, `$new_button_default_caption`, `$tree_extra_columns`,
@@ -46,6 +51,7 @@ abstract class abstract_page_tree extends abstract_page_master_detail {
 	protected string $sort_column = 'sort_code';                             // Název sloupce pro řazení sourozenců
 	protected string $code_column = 'builtin_code';                          // Název sloupce s technickým kódem uzlu
 	protected string $leaf_column = 'is_leaf';                               // Název sloupce příznaku koncového listu (1 = list, 0 = složka)
+	protected string $icon_column = 'svg_icon';                              // Název sloupce s volitelnou SVG ikonou uzlu
 
 	protected bool $can_edit_structure = true;                               // Zda má uživatel právo měnit hierarchii a pořadí (D&D)
 	protected array $protected_root_codes = [];                              // Seznam kódů kořenových uzlů chráněných proti přesunu (např. ['home'])
@@ -359,16 +365,35 @@ HTML;
 				background-color: #fff;
 			}
 			.tree-ctrl-link:hover { background-color: #e9f2fa; }
-			.dnd-grip {
-				display: inline-block;
-				color: #94a3b8;
-				cursor: grab;
+			.dnd-grip, .tree-node-icon {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				min-width: 16px;
+				height: 16px;
 				margin-right: 5px;
 				font-size: 13px;
+				line-height: 1;
 				user-select: none;
 				vertical-align: middle;
 			}
+			.dnd-grip {
+				color: #94a3b8;
+				cursor: grab;
+			}
+			.dnd-grip:hover { color: #004488; }
 			.dnd-grip:active { cursor: grabbing; }
+			.dnd-grip.dnd-grip-icon, .tree-node-icon { color: #004488; }
+			.dnd-grip svg, .tree-node-icon svg {
+				width: 16px;
+				height: 16px;
+				display: block;
+				flex-shrink: 0;
+				pointer-events: none;
+			}
+			.dnd-grip svg:not([fill]), .tree-node-icon svg:not([fill]) {
+				fill: currentColor;
+			}
 			.tree-folder-icon { font-size: 12px; margin-right: 4px; vertical-align: middle; }
 			.tree-lock-icon { font-size: 11px; margin-left: 5px; vertical-align: middle; cursor: help; }
 			tr.dnd-dragging { opacity: 0.45; }
@@ -472,9 +497,20 @@ HTML;
 				? "<button type=\"button\" class=\"tree-toggle-btn\" data-toggle-orig=\"{$orig_low}\" title=\"{$tip_toggle_branch}\" onclick=\"toggleMenuBranch(event, '{$orig_low}');\">▼</button>"
 				: "<span class=\"tree-toggle-spacer\"></span>";              // Tlačítko sbalení/rozbalení nebo odsazení listu
 
+			$raw_svg = trim((string)($row[$this->icon_column] ?? ''));       // Případná vektorová SVG ikona položky
+			$has_svg = ($raw_svg !== '' AND str_starts_with(strtolower($raw_svg), '<svg')); // Zda obsahuje platnou značku <svg>
+
 			$can_drag_row = ($this->can_edit_structure AND !$is_prot_root);  // Chráněný kořen nelze přesouvat
 			$drag_attr = $can_drag_row ? 'draggable="true"' : '';            // HTML5 atribut draggable
-			$grip_html = $can_drag_row ? "<span class=\"dnd-grip\" title=\"{$tip_drag_handle}\">⋮⋮</span>" : ""; // Úchyt pro Drag & Drop
+			if ($can_drag_row) {                                             // Pokud lze řádek přetahovat myší (Drag & Drop)
+				$grip_cls = $has_svg ? 'dnd-grip dnd-grip-icon' : 'dnd-grip'; // Třída úchytu (SVG ikona nebo tečky)
+				$grip_cnt = $has_svg ? $raw_svg : '⋮⋮';                      // Obsah úchytu (SVG ikona nebo znaky ⋮⋮)
+				$grip_html = "<span class=\"{$grip_cls}\" title=\"{$tip_drag_handle}\">{$grip_cnt}</span>"; // Úchyt pro Drag & Drop
+			} elseif ($has_svg) {                                            // Nepřetahovatelný řádek (např. kořen home) s ikonou
+				$grip_html = "<span class=\"tree-node-icon\">{$raw_svg}</span>"; // Statické zobrazení SVG ikony uzlu
+			} else {
+				$grip_html = '';                                             // Bez úchytu i bez ikony
+			}
 
 			$folder_icon_html = ($has_leaf_col AND $is_folder)
 				? "<span class=\"tree-folder-icon\" title=\"{$tip_folder_node}\">📁</span>"

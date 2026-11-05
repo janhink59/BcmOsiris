@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-04 10:30
+ * Verze: 2026-11-04 15:15
  * Soubor: entity_manager_ui.php
  * Trait: entity_manager_ui
  * Účel: Prezentační a UI vrstva třídy entity_manager.
@@ -9,21 +9,30 @@
  *       databázovou funkci dbo.f_is_hierarchy_node_locked), vyhodnocení oprávnění
  *       pro rušení záznamů (evaluate_remove_permission, render_removed_section)
  *       a vykreslování dynamických vstupních prvků (render_dynamic_input přes
- *       databázovou proceduru dbo.p_em_get_select_options a službu rich_text).
+ *       databázovou proceduru dbo.p_em_get_select_options, službu rich_text
+ *       a modální editor svg_icon_editor).
  *
  * VAZBY NA OKOLÍ:
  * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
  * - Volá databázovou funkci `dbo.f_is_hierarchy_node_locked` (`p_sync_derived_links.sql`)
  *   a uloženou proceduru `dbo.p_em_get_select_options` (`p_em_metadata.sql`).
- * - Využívá třídu `rich_text` (`rich_text.php`) pro sloupce s `is_html = 1`.
+ * - Využívá třídu `rich_text` (`rich_text.php`) pro sloupce s `is_html = 1`
+ *   a třídu `svg_icon_editor` (`svg_icon_editor.php`) pro sloupec `svg_icon`.
  *
  * Změny:
+ * 2026-11-04 15:15 - Napojení sloupce svg_icon na modální editor svg_icon_editor,
+ *                    automatické klientské předvyplňování builtin_code z názvu/zkratky
+ *                    u nových záznamů (NEW) a podpora desetinných čísel (step="any").
  * 2026-11-04 10:30 - V render_dynamic_input() napojena kontrola povinnosti klíčového
  *                    sloupce na metodu $this->is_key_column_mandatory($column_name).
  * =============================================================================
  */
 
 declare(strict_types=1);
+
+if (file_exists(__DIR__ . '/svg_icon_editor.php')) {
+	require_once __DIR__ . '/svg_icon_editor.php';
+}
 
 trait entity_manager_ui {
 
@@ -50,7 +59,7 @@ trait entity_manager_ui {
 		}
 
 		global $dbsession;                                                   // Globální kontext relace
-		$org_sql = guidliteral((string)($dbsession['organization'] ?? '0x00')); // SQL literál aktivní organizace
+		$org_sql = guidliteral((string) ($dbsession['organization'] ?? '0x00')); // SQL literál aktivní organizace
 		$safe_tab = charliteral($this->storage_table, 128);                  // SQL literál názvu tabulky
 
 		$row = sqlfirstrow("SELECT dbo.f_is_hierarchy_node_locked({$safe_tab}, {$orig_sql}, {$org_sql}) AS is_locked"); // Volání DB funkce
@@ -65,65 +74,65 @@ trait entity_manager_ui {
 	 */
 	public function evaluate_remove_permission(array $datarow, bool $is_mine): array { // Vyhodnocení oprávnění pro removed
 		global $dbsession;                                                   // Globální kontext relace
-		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role uživatele (U, A, S, D)
-		$org_uuid_raw = (string)($dbsession['organization'] ?? '0x00');      // UUID aktivní organizace
-		$sess_lang_raw = (string)($dbsession['language'] ?? 'cs');           // Jazyk aktivní relace
+		$active_role = (string) ($dbsession['active_role'] ?? 'U');          // Aktuální role uživatele (U, A, S, D)
+		$org_uuid_raw = (string) ($dbsession['organization'] ?? '0x00');     // UUID aktivní organizace
+		$sess_lang_raw = (string) ($dbsession['language'] ?? 'cs');          // Jazyk aktivní relace
 		$right_translate = ! empty($dbsession['right_translate']);           // Oprávnění ke globálnímu překladu
 
 		$is_sysadmin_org = is_zero_guid($org_uuid_raw);                      // Zda uživatel pracuje v systémové organizaci 0x00
-		$rec_lang = (string)($datarow['native_language'] ?? $datarow['language'] ?? 'cs'); // Mateřský jazyk 'A' záznamu
-		$is_native_lang = ($rec_lang ===$sess_lang_raw);                    // Zda uživatel pracuje v mateřském jazyce záznamu
+		$rec_lang = (string) ($datarow['native_language'] ?? $datarow['language'] ?? 'cs'); // Mateřský jazyk 'A' záznamu
+		$is_native_lang = ($rec_lang === $sess_lang_raw);                    // Zda uživatel pracuje v mateřském jazyce záznamu
 
 		// 1. Práce v sekundárním jazyce (jazyková mutace 'L')
 		if (! $is_native_lang) {                                             // Pokud jde o sekundární jazyk
-			if ($is_sysadmin_org OR $right_translate OR$is_mine) {          // Oprávněný překladatel nebo vlastník
+			if ($is_sysadmin_org OR $right_translate OR $is_mine) {          // Oprávněný překladatel nebo vlastník
 				$note_l = $this->phrase('msg_remove_lang_mutation_only', 'Ruší pouze jazykovou mutaci ({' . chr(36) . 'lang})', ['lang' => $sess_lang_raw]); // Poznámka k rušení L
 				return ['allowed' => true, 'is_lang_only' => true, 'reason' => $note_l]; // Povoleno zrušení překladu L
 			}
-			$deny_l =$this->phrase('msg_remove_lang_denied', 'Nemáte oprávnění rušit systémové překlady tohoto jazyka'); // Důvod zákazu
+			$deny_l = $this->phrase('msg_remove_lang_denied', 'Nemáte oprávnění rušit systémové překlady tohoto jazyka'); // Důvod zákazu
 			return ['allowed' => false, 'is_lang_only' => true, 'reason' => $deny_l]; // Zákaz rušení cizího překladu
 		}
 
 		// 1b. Kontrola pro všechny hierarchické tabulky (zákaz zrušení uzlu 0x00, uzlu s aktivními potomky nebo uzamčené větve)
-		$orig_val_raw = (string)($datarow['original'] ?? '');                // Surové UUID originálu záznamu
+		$orig_val_raw = (string) ($datarow['original'] ?? '');               // Surové UUID originálu záznamu
 		$orig_sql = guidliteral($orig_val_raw);                              // SQL literál originálu záznamu
-		if (is_zero_guid($orig_val_raw) AND$orig_val_raw !== '') {          // Kořenový záznam 0x00
-			$deny_root =$this->phrase('msg_remove_root_0x00_denied', 'Systémový kořenový záznam (0x00) nelze zrušit'); // Důvod zákazu
+		if (is_zero_guid($orig_val_raw) AND $orig_val_raw !== '') {          // Kořenový záznam 0x00
+			$deny_root = $this->phrase('msg_remove_root_0x00_denied', 'Systémový kořenový záznam (0x00) nelze zrušit'); // Důvod zákazu
 			return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_root]; // Uzamčeno
 		}
 
-		if ($this->has_physical_column('parent_uuid') AND empty($datarow['removed']) AND$orig_sql !== 'NULL') { // Platný uzel hierarchie
-			$tab =$this->storage_table;                                     // Fyzická tabulka hierarchie
+		if ($this->has_physical_column('parent_uuid') AND empty($datarow['removed']) AND $orig_sql !== 'NULL') { // Platný uzel hierarchie
+			$tab = $this->storage_table;                                     // Fyzická tabulka hierarchie
 			$ch_row = sqlfirstrow("SELECT TOP 1 1 AS has_ch FROM [{$tab}] WHERE parent_uuid = {$orig_sql} AND record_type = 'A' AND removed = 0"); // Kontrola aktivních potomků
 			if (! empty($ch_row)) {                                          // Uzel má aktivní podřízené položky
-				$deny_ch =$this->phrase('msg_remove_node_has_children', 'Uzel hierarchie nelze zrušit, dokud obsahuje aktivní podřízené položky'); // Důvod
+				$deny_ch = $this->phrase('msg_remove_node_has_children', 'Uzel hierarchie nelze zrušit, dokud obsahuje aktivní podřízené položky'); // Důvod
 				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_ch]; // Uzamčeno
 			}
 			if ($this->is_hierarchy_node_locked($orig_val_raw)) {            // Kontrola aktivních vazeb na uzlu nebo podstromu
-				$deny_lk =$this->phrase('msg_remove_node_locked_by_links', 'Uzel hierarchie nelze zrušit, protože jsou na něj navázány platné záznamy'); // Důvod
+				$deny_lk = $this->phrase('msg_remove_node_locked_by_links', 'Uzel hierarchie nelze zrušit, protože jsou na něj navázány platné záznamy'); // Důvod
 				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_lk]; // Uzamčeno
 			}
 		}
 
 		// 2. Práce v primárním jazyce u systémové organizace (0x00)
 		if ($is_sysadmin_org) {                                              // Systémová organizace 0x00
-			if ($this->is_metadata_entity() AND$active_role !== 'D') {      // Metadata smí rušit jen Developer ('D')
-				$deny_d =$this->phrase('msg_remove_meta_only_dev', 'Systémová metadata smí rušit pouze vývojář (Developer)'); // Důvod pro roli
+			if ($this->is_metadata_entity() AND $active_role !== 'D') {      // Metadata smí rušit jen Developer ('D')
+				$deny_d = $this->phrase('msg_remove_meta_only_dev', 'Systémová metadata smí rušit pouze vývojář (Developer)'); // Důvod pro roli
 				return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_d]; // Uzamčeno mimo roli D
 			}
 
 			if ($this->storage_table === 'meta_object') {                    // Kontrola tabulky meta_object
-				$obj_type = (string)($datarow['object_type'] ?? '');         // Typ objektu (T, V, F, P, C, M)
-				$b_code = (string)($datarow['builtin_code'] ?? '');          // Kód objektu
-				if ($obj_type !== 'P' OR$b_code === 'global_phrase') {      // Fyzické objekty a global_phrase nelze rušit
-					$deny_mo =$this->phrase('msg_remove_phys_object_denied', 'Fyzický databázový objekt ani kontejner global_phrase nelze v metadatech zrušit'); // Důvod
+				$obj_type = (string) ($datarow['object_type'] ?? '');        // Typ objektu (T, V, F, P, C, M)
+				$b_code = (string) ($datarow['builtin_code'] ?? '');         // Kód objektu
+				if ($obj_type !== 'P' OR $b_code === 'global_phrase') {      // Fyzické objekty a global_phrase nelze rušit
+					$deny_mo = $this->phrase('msg_remove_phys_object_denied', 'Fyzický databázový objekt ani kontejner global_phrase nelze v metadatech zrušit'); // Důvod
 					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_mo]; // Uzamčeno
 				}
 			} elseif ($this->storage_table === 'meta_class') {               // Kontrola tabulky meta_class
-				$cls_name = (string)($datarow['class_name'] ?? '');          // Název logické třídy
-				$stg_orig = guidliteral((string)($datarow['storage_object'] ?? '')); // UUID úložného objektu
+				$cls_name = (string) ($datarow['class_name'] ?? '');         // Název logické třídy
+				$stg_orig = guidliteral((string) ($datarow['storage_object'] ?? '')); // UUID úložného objektu
 				if ($cls_name === 'sys_global_columns') {                    // Kořenový slovník sloupců nelze zrušit
-					$deny_gc =$this->phrase('msg_remove_global_cls_denied', 'Systémový kontejner sys_global_columns nelze zrušit'); // Důvod
+					$deny_gc = $this->phrase('msg_remove_global_cls_denied', 'Systémový kontejner sys_global_columns nelze zrušit'); // Důvod
 					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_gc]; // Uzamčeno
 				}
 				if ($stg_orig !== 'NULL') {                                  // Ověření, zda nejde o primitivní třídu žijící tabulky
@@ -133,14 +142,14 @@ trait entity_manager_ui {
 						JOIN v_syscolumns vc ON vc.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
 						WHERE mo.original = {$stg_orig} AND mo.object_owner = 0x00 AND mo.record_type = 'A' AND mo.removed = 0
 					");                                                      // Kontrola existence fyzické tabulky ve v_syscolumns
-					if (! empty($stg_row) AND (string)$stg_row['builtin_code'] ===$cls_name) { // Primitivní třída existující tabulky
+					if (! empty($stg_row) AND (string) $stg_row['builtin_code'] ===$cls_name) { // Primitivní třída existující tabulky
 						$deny_pc =$this->phrase('msg_remove_prim_class_denied', 'Primitivní třídu svázanou s existující fyzickou tabulkou nelze zrušit'); // Důvod
 						return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_pc]; // Uzamčeno
 					}
 				}
 			} elseif ($this->storage_table === 'meta_column') {              // Kontrola tabulky meta_column
-				$col_name = (string)($datarow['column_name'] ?? '');         // Název sloupce
-				$par_cls = guidliteral((string)($datarow['parent_class'] ?? '')); // UUID nadřízené třídy
+				$col_name = (string) ($datarow['column_name'] ?? '');        // Název sloupce
+				$par_cls = guidliteral((string) ($datarow['parent_class'] ?? '')); // UUID nadřízené třídy
 				if ($par_cls !== 'NULL' AND$col_name !== '') {              // Ověření fyzické existence sloupce v DB
 					$safe_col = charliteral($col_name, 80);                  // SQL literál názvu sloupce
 					$phys_row = sqlfirstrow("
@@ -157,7 +166,7 @@ trait entity_manager_ui {
 					}
 				}
 			} elseif ($this->storage_table === 'meta_menu') {                // Kontrola tabulky meta_menu
-				$b_code = (string)($datarow['builtin_code'] ?? '');          // Kód položky menu
+				$b_code = (string) ($datarow['builtin_code'] ?? '');         // Kód položky menu
 				if ($b_code === 'home') {                                    // Kořenovou položku Domů nelze zrušit
 					$deny_hm =$this->phrase('msg_remove_menu_home_denied', 'Kořenovou položku menu (home) nelze zrušit'); // Důvod
 					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_hm]; // Uzamčeno
@@ -185,7 +194,7 @@ trait entity_manager_ui {
 		$can_remove = (! $force_readonly AND $perm['allowed']);              // Zda je checkbox aktivní pro editaci
 		$is_lang_only = $perm['is_lang_only'];                               // Zda se ruší pouze jazyková mutace 'L'
 		$reason_note = $perm['reason'];                                      // Doplňková poznámka nebo důvod uzamčení
-		$is_draft_rec = ((string)($datarow['record_type'] ?? 'A') === 'D');  // Zda jde o rozpracovaný koncept 'D'
+		$is_draft_rec = ((string) ($datarow['record_type'] ?? 'A') === 'D'); // Zda jde o rozpracovaný koncept 'D'
 
 		$rem_val = ($is_lang_only AND ! $is_draft_rec)
 			? (! empty($datarow['l_removed']) ? '1' : '0')                   // Hodnota removed pro schválenou jazykovou mutaci 'L'
@@ -235,7 +244,8 @@ HTML;
 
 	/**
 	 * Dynamický HTML generátor formulářových prvků na základě metadat v DB.
-	 * Využívá proceduru dbo.p_em_get_select_options pro plnění roletek a službu rich_text pro is_html = 1.
+	 * Využívá proceduru dbo.p_em_get_select_options pro plnění roletek, službu rich_text pro is_html = 1
+	 * a modální editor svg_icon_editor pro sloupec svg_icon.
 	 */
 	public function render_dynamic_input(string $column_name, string $value, bool $is_mine = true, bool $force_readonly = false): string { // Vykreslení formulářového prvku
 		$meta = $this->get_column_meta($column_name);                        // Načtení metadat sloupce
@@ -243,54 +253,55 @@ HTML;
 			return "<!-- Neznámý sloupec: {$column_name} -->";               // HTML komentář pro neznámý sloupec
 		}
 
-		if ($column_name === 'svg_icon') {                                   // Speciální neredigovatelný náhled pro svg_icon
-			$trimmed_svg = trim($value);                                     // Očištěný SVG řetězec
-			$note_svg = htmlspecialchars($this->phrase('msg_svg_readonly_note', 'Nastavuje se pouze databázovým skriptem')); // Informační poznámka
-			if ($trimmed_svg !== '' AND str_starts_with($trimmed_svg, '<svg')) { // Pokud obsahuje platnou značku <svg
-				return "<div style=\"display: inline-flex; align-items: center; gap: 10px; padding: 6px 10px; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px;\">"
-					. "<span style=\"display: inline-flex; width: 24px; height: 24px; color: #004488;\">{$trimmed_svg}</span>"
-					. "<span style=\"font-size: 12px; color: #64748b; font-style: italic;\">({$note_svg})</span>"
-					. "</div>";                                              // Neredigovatelný vizuální náhled SVG ikony
-			}
-			$lbl_no_svg = htmlspecialchars($this->phrase('lbl_no_svg_icon', 'Ikona není nastavena')); // Popisek prázdné ikony
-			return "<div style=\"padding: 6px 10px; background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 12px; color: #64748b; font-style: italic;\">{$lbl_no_svg} ({$note_svg})</div>"; // Box bez ikony
-		}
-
 		global $dbsession;                                                   // Globální kontext relace
-		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální role uživatele v relaci
-		$curr_guid = trim((string)getinput('update_guid'));                  // Identifikátor právě otevřeného záznamu
+		$active_role = (string) ($dbsession['active_role'] ?? 'U');          // Aktuální role uživatele v relaci
+		$curr_guid = trim((string) getinput('update_guid'));                 // Identifikátor právě otevřeného záznamu
 
 		$type = $meta['input_type'] ?: 'text';                               // Výchozí typ prvku je text
 		$safe_name = htmlspecialchars($column_name);                         // Ošetřený název prvku
 		$safe_val = htmlspecialchars($value);                                // Ošetřená hodnota prvku
 
-		$attrs = [];                                                         // Pole HTML atributů
-		if (! empty($meta['css_class'])) {                                   // Pokud má sloupec CSS třídu
-			$attrs[] = "class=\"" . htmlspecialchars((string)$meta['css_class']) . "\""; // Atribut class
-		}
-		if (! empty($meta['placeholder'])) {                                 // Pokud má sloupec placeholder
-			$attrs[] = "placeholder=\"" . htmlspecialchars((string)$meta['placeholder']) . "\""; // Atribut placeholder
-		}
-		if (! empty($meta['max_length'])) {                                  // Pokud má sloupec omezení délky
-			$attrs[] = "maxlength=\"{$meta['max_length']}\"";                // Atribut maxlength
-		}
-
-		$is_key_col = $this->is_key_column_mandatory($column_name);          // Kontrola podmíněné povinnosti klíčového sloupce
-		if (! empty($meta['is_mandatory']) OR $is_key_col) {                 // Pokud je sloupec povinný v metadatech nebo v daném kontextu
-			$attrs[] = "required";                                           // HTML5 atribut required
-		}
-
 		$is_readonly = $force_readonly;                                      // Výchozí stav uzamčení dle panelu
 		if ($curr_guid !== '' AND $curr_guid !== 'NEW' AND in_array($column_name, $this->original_key_cols, true)) { // Existující záznam
 			$is_readonly = true;                                             // Uzamčení klíčového sloupce u existujícího záznamu
-		} elseif ($this->storage_table === 'hierarchy_item' AND $column_name === 'hierarchy' AND $value !== '') { // Předvyplněná hierarchie v hierarchy_item
-			$is_readonly = true;                                             // Uzamčení nadřízené hierarchie proti nechtěnému přepnutí
+		} elseif (in_array($this->storage_table, ['hierarchy_item', 'scale_value'], true) AND in_array($column_name, ['hierarchy', 'scale'], true) AND $value !== '') { // Nadřazená entita
+			$is_readonly = true;                                             // Uzamčení nadřazené hierarchie nebo škály proti přepnutí
 		} elseif (! empty($meta['is_computed'])) {                           // Kontrola vypočítávaného sloupce
 			$is_readonly = true;                                             // Vypočítávaný sloupec nelze měnit
 		} elseif ($this->is_metadata_entity() AND $active_role !== 'D' AND empty($meta['translate'])) { // Ochrana metadat mimo roli D
 			$is_readonly = true;                                             // Uzamčení funkčního atributu metadat
 		} elseif (! $is_mine AND ! empty($meta['is_protected']) AND empty($meta['translate'])) { // Ochrana chráněných sloupců
 			$is_readonly = true;                                             // Chráněný systémový sloupec
+		}
+
+		// 0. Speciální modální editor a náhled pro sloupec svg_icon
+		if ($column_name === 'svg_icon') {                                   // Vektorová ikona SVG
+			if (class_exists('svg_icon_editor')) {                           // Pokud je načtena třída svg_icon_editor
+				if (method_exists('svg_icon_editor', 'render_editor')) {     // Volání metody render_editor
+					return svg_icon_editor::render_editor($column_name, $value, $meta, $is_readonly); // Modální editor SVG ikony
+				}
+				if (method_exists('svg_icon_editor', 'render_input')) {      // Alternativní název metody render_input
+					return svg_icon_editor::render_input($column_name, $value, $meta, $is_readonly); // Modální editor SVG ikony
+				}
+			}
+			$trimmed_svg = trim($value);                                     // Záložní zobrazení při nedostupnosti třídy
+			return "<input type=\"text\" name=\"{$safe_name}\" value=\"" . htmlspecialchars($trimmed_svg) . "\" style=\"width: 100%; font-family: monospace;\">"; // Fallback input
+		}
+
+		$attrs = [];                                                         // Pole HTML atributů
+		if (! empty($meta['css_class'])) {                                   // Pokud má sloupec CSS třídu
+			$attrs[] = "class=\"" . htmlspecialchars((string) $meta['css_class']) . "\""; // Atribut class
+		}
+		if (! empty($meta['placeholder'])) {                                 // Pokud má sloupec placeholder
+			$attrs[] = "placeholder=\"" . htmlspecialchars((string) $meta['placeholder']) . "\""; // Atribut placeholder
+		}
+		if (! empty($meta['max_length'])) {                                  // Pokud má sloupec omezení délky
+			$attrs[] = "maxlength=\"{$meta['max_length']}\"";                // Atribut maxlength
+		}
+
+		$is_key_col = $this->is_key_column_mandatory($column_name);          // Kontrola povinnosti klíčového sloupce
+		if (! empty($meta['is_mandatory']) OR $is_key_col) {                 // Pokud je sloupec povinný v metadatech nebo jako klíč
+			$attrs[] = "required";                                           // HTML5 atribut required
 		}
 
 		if (! $is_readonly AND $curr_guid !== '' AND $curr_guid !== 'NEW') { // Kontrola uzamčení u existujícího uzlu stromu
@@ -329,8 +340,8 @@ HTML;
 			$lvl_rows = sqlarray_simple("SELECT licence_level, name FROM licence_level ORDER BY licence_level"); // Načtení úrovní
 			if (is_array($lvl_rows)) {                                       // Kontrola platného pole úrovní
 				foreach ($lvl_rows as $l_row) {                              // Průchod úrovněmi licencí
-					$l_code = (string)$l_row['licence_level'];               // Číselný kód úrovně licence
-					$l_name = (string)$l_row['name'];                        // Název úrovně licence
+					$l_code = (string) $l_row['licence_level'];              // Číselný kód úrovně licence
+					$l_name = (string) $l_row['name'];                       // Název úrovně licence
 					$sel = ($l_code === $value) ? 'selected' : '';           // Označení vybrané úrovně
 					$options_html .= "<option value=\"" . htmlspecialchars($l_code) . "\" {$sel}>" . htmlspecialchars("{$l_name} ({$l_code})") . "</option>"; // Položka roletky
 				}
@@ -348,9 +359,9 @@ HTML;
 			$safe_eff_lang = htmlspecialchars($eff_lang);                    // Ošetřený kód jazyka pro hidden pole
 			$options_html = '';                                              // HTML voleb jazyků
 			foreach ($this->lang_manager->get_languages() as $l_code => $l_row) { // Průchod podporovanými jazyky z keše
-				$l_cap = (string)($l_row['caption'] ?? $l_code);             // Název jazyka
-				$sel = ((string)$l_code === $eff_lang) ? 'selected' : '';    // Označení vybraného jazyka
-				$options_html .= "<option value=\"" . htmlspecialchars((string)$l_code) . "\" {$sel}>" . htmlspecialchars("{$l_cap} ({$l_code})") . "</option>"; // Volba jazyka
+				$l_cap = (string) ($l_row['caption'] ?? $l_code);            // Název jazyka
+				$sel = ((string) $l_code === $eff_lang) ? 'selected' : '';   // Označení vybraného jazyka
+				$options_html .= "<option value=\"" . htmlspecialchars((string) $l_code) . "\" {$sel}>" . htmlspecialchars("{$l_cap} ({$l_code})") . "</option>"; // Volba jazyka
 			}
 			$lng_style = $is_readonly ? "disabled style=\"background-color: #f4f4f4; width: 220px; padding: 6px;\"" : "style=\"width: 220px; padding: 6px;\""; // Styl roletky
 			if ($is_readonly) {                                              // Zamčená roletka jazyka
@@ -370,8 +381,8 @@ HTML;
 			$src_rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'source_code'"); // Načtení PHP tříd přes proceduru
 			if (is_array($src_rows)) {                                       // Kontrola platného pole výsledků
 				foreach ($src_rows as $r_src) {                              // Průchod registrovanými PHP třídami
-					$b_code = (string)$r_src['value_code'];                  // Název PHP třídy
-					$b_cap = (string)$r_src['caption'];                      // Přeložený popisek třídy
+					$b_code = (string) $r_src['value_code'];                 // Název PHP třídy
+					$b_cap = (string) $r_src['caption'];                     // Přeložený popisek třídy
 					$sel = ($b_code === $eff_value) ? 'selected' : '';       // Shoda s aktuální hodnotou
 					$opt_label = ($b_cap !== '' AND $b_cap !== $b_code) ? "{$b_code} ({$b_cap})" : $b_code; // Popisek volby
 					$options_html .= "<option value=\"" . htmlspecialchars($b_code) . "\" {$sel}>" . htmlspecialchars($opt_label) . "</option>"; // Položka roletky
@@ -387,13 +398,13 @@ HTML;
 		// 3. Generování <select> seznamů pro číselníky (referenced_codetable přes dbo.p_em_get_select_options)
 		if (! empty($meta['referenced_codetable'])) {                        // Pokud je sloupec napojen na číselník
 			$options_html = "<option value=\"\">{$lbl_select}</option>";     // Prázdná výchozí volba číselníku
-			$safe_ct = charliteral((string)$meta['referenced_codetable'], 80); // Bezpečný literál číselníku
+			$safe_ct = charliteral((string) $meta['referenced_codetable'], 80); // Bezpečný literál číselníku
 			$opt_rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'codetable', @param_code = {$safe_ct}"); // Volání procedury
 
 			if (is_array($opt_rows)) {                                       // Kontrola platného pole položek číselníku
 				foreach ($opt_rows as $opt) {                                // Průchod položkami číselníku
 					$sel = ($opt['value_code'] === $value) ? 'selected' : ''; // Označení vybrané položky
-					$options_html .= "<option value=\"" . htmlspecialchars((string)$opt['value_code']) . "\" {$sel}>" . htmlspecialchars((string)$opt['caption']) . "</option>"; // Položka číselníku
+					$options_html .= "<option value=\"" . htmlspecialchars((string) $opt['value_code']) . "\" {$sel}>" . htmlspecialchars((string) $opt['caption']) . "</option>"; // Položka číselníku
 				}
 			}
 
@@ -406,7 +417,7 @@ HTML;
 		// 4. Generování <select> seznamů pro relační odkazy (referenced_class přes dbo.p_em_get_select_options)
 		if (! empty($meta['referenced_class'])) {                            // Pokud sloupec odkazuje na jinou třídu
 			$options_html = "<option value=\"\">{$lbl_select}</option>";     // Prázdná výchozí volba relace
-			$ref_class_uuid = guidliteral((string)$meta['referenced_class']); // UUID odkazované logické třídy
+			$ref_class_uuid = guidliteral((string) $meta['referenced_class']); // UUID odkazované logické třídy
 			$curr_sql = ($curr_guid !== '' AND $curr_guid !== 'NEW') ? guidliteral($curr_guid) : 'NULL'; // Aktuální záznam
 			$val_sql = guidliteral($value);                                  // Aktuální hodnota pole
 			$safe_col = charliteral($column_name, 80);                       // Název sloupce
@@ -414,7 +425,7 @@ HTML;
 
 			if ($column_name === 'parent_uuid' AND $this->has_physical_column('parent_uuid')) { // Stromová vazba na rodiče
 				global $datarow;                                             // Aktuální řádek detailu
-				$h_uuid = trim((string)($datarow['hierarchy'] ?? getinput('hierarchy'))); // Případná nadřazená hierarchie
+				$h_uuid = trim((string) ($datarow['hierarchy'] ?? getinput('hierarchy'))); // Případná nadřazená hierarchie
 				$hier_sql = ($h_uuid !== '') ? guidliteral($h_uuid) : 'NULL'; // SQL literál hierarchie
 				$items = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'parent_tree', @param_code = {$safe_col}, @ref_class_uuid = {$ref_class_uuid}, @curr_guid = {$curr_sql}, @current_val = {$val_sql}, @hier_uuid = {$hier_sql}, @storage_table = {$safe_stg}"); // Stromové položky
 			} else {
@@ -423,9 +434,9 @@ HTML;
 
 			if (is_array($items)) {                                          // Kontrola platného pole položek relace
 				foreach ($items as $item) {                                  // Sestavení voleb relační roletky
-					$item_uuid = (string)$item['original'];                  // UUID položky v roletce
-					$item_code = (string)$item['code_col'];                  // Technický kód položky
-					$item_cap = (string)$item['caption'];                    // Přeložený název položky
+					$item_uuid = (string) $item['original'];                 // UUID položky v roletce
+					$item_code = (string) $item['code_col'];                 // Technický kód položky
+					$item_cap = (string) $item['caption'];                   // Přeložený název položky
 					$sel = (strcasecmp($item_uuid, $value) === 0) ? 'selected' : ''; // Porovnání UUID bez ohledu na velikost písmen
 					$item_label = ($item_code !== '' AND $item_cap !== '' AND $item_cap !== $item_code) ? "{$item_code} ({$item_cap})" : ($item_code ?: $item_cap ?: $item_uuid); // Text položky
 					$options_html .= "<option value=\"" . htmlspecialchars($item_uuid) . "\" {$sel}>" . htmlspecialchars($item_label) . "</option>"; // Přidání volby
@@ -452,6 +463,45 @@ HTML;
 			return rich_text::render_editor($column_name, $value, $meta);    // Preview box s tlačítkem Upravit a modálním editorem na popředí
 		}
 
+		// 5b. Automatické klientské předvyplňování builtin_code ze shortname / caption u nových záznamů (NEW)
+		$auto_code_script = '';                                              // Volitelný JS skript pro automatické odvození builtin_code
+		if ($column_name === 'builtin_code' AND $curr_guid === 'NEW' AND ! $is_readonly) { // Pouze u nového záznamu
+			$auto_code_script = <<<'HTML'
+<script>
+(function() {
+	const form = document.querySelector('.md-detail form');
+	if (!form) return;
+	const codeInp = form.querySelector('input[name="builtin_code"]');
+	const capInp  = form.querySelector('input[name="caption"], textarea[name="caption"]');
+	const shInp   = form.querySelector('input[name="shortname"]');
+	if (!codeInp) return;
+	if (codeInp.value.trim() !== '') {
+		codeInp.dataset.manualEdit = '1';
+	}
+	codeInp.addEventListener('input', function() {
+		this.dataset.manualEdit = (this.value.trim() !== '') ? '1' : '0';
+	});
+	function toSlug(str) {
+		return (str || '')
+			.normalize('NFD')
+			.replace(/[\u0300-\u036f]/g, '')
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '_')
+			.replace(/^_+|_+$/g, '')
+			.substring(0, 60);
+	}
+	function syncAutoCode() {
+		if (codeInp.dataset.manualEdit === '1') return;
+		const srcText = (shInp && shInp.value.trim() !== '') ? shInp.value : (capInp ? capInp.value : '');
+		codeInp.value = toSlug(srcText);
+	}
+	if (capInp) capInp.addEventListener('input', syncAutoCode);
+	if (shInp) shInp.addEventListener('input', syncAutoCode);
+})();
+</script>
+HTML;
+		}
+
 		// 6. Standardní HTML prvky podle 'input_type'
 		switch ($type) {                                                     // Rozlišení podle typu vstupního prvku
 			case 'textarea':
@@ -470,12 +520,14 @@ HTML;
 				return "<input type=\"date\" name=\"{$safe_name}\" value=\"{$safe_val}\" {$attr_string}>"; // Pole pro datum
 
 			case 'number':
-				return "<input type=\"number\" name=\"{$safe_name}\" value=\"{$safe_val}\" {$attr_string}>"; // Číselné pole
+				$phys_t = (string) ($this->col_types[$column_name] ?? '');   // Fyzický datový typ v databázi
+				$step_attr = in_array($phys_t, ['decimal', 'numeric', 'float', 'real', 'money'], true) ? ' step="any"' : ''; // Povolení desetinných čísel
+				return "<input type=\"number\" name=\"{$safe_name}\" value=\"{$safe_val}\"{$step_attr} {$attr_string}>"; // Číselné pole
 
 			case 'text':
 			default:
 				$inputType = ! empty($meta['is_url']) ? 'url' : 'text';      // Rozlišení URL a běžného textu
-				return "<input type=\"{$inputType}\" name=\"{$safe_name}\" value=\"{$safe_val}\" {$attr_string}>"; // Jednořádkové pole
+				return "<input type=\"{$inputType}\" name=\"{$safe_name}\" value=\"{$safe_val}\" {$attr_string}>" . $auto_code_script; // Jednořádkové pole
 		}
 	}
 }

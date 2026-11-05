@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-01 18:00
+ * Verze: 2026-11-05 10:15
  * Soubor: p_sync_derived_links.sql
  * Funkce:    dbo.f_is_hierarchy_node_locked
  * Procedura: dbo.p_sync_derived_links
@@ -10,10 +10,13 @@
  *         2. Procedura p_sync_derived_links provádí materializaci (a výmaz)
  *            zděděných vazeb v tabulce link pomocí sloupce ancestor_link.
  * Vazby:  - Čte tabulky link, meta_link_def, meta_class, meta_object, asset_class,
- *           threat, impact, scenario, hierarchy, hierarchy_item a v_syscolumns.
+ *           threat, impact, scenario, countermeasure, hierarchy, hierarchy_item
+ *           a v_syscolumns.
  *         - Využívá deterministickou funkci dbo.f_link_original.
  *         - Volána z entity_manager_ui.php a entity_manager_write.php.
- * Změny:  - 2026-11-01 18:00: Do funkce dbo.f_is_hierarchy_node_locked doplněn
+ * Změny:  - 2026-11-05 10:15: Do funkce dbo.f_is_hierarchy_node_locked doplněn
+ *           průchod podstromem pro katalog protiopatření (countermeasure).
+ *         - 2026-11-01 18:00: Do funkce dbo.f_is_hierarchy_node_locked doplněn
  *           průchod podstromem pro katalogové tabulky threat, impact a scenario
  *           a kontrola přímých odkazů ze scenario (threat_uuid, asset_class_uuid).
  * ============================================================================= */
@@ -112,6 +115,20 @@ BEGIN
 			INSERT INTO @subtree (original)
 			SELECT DISTINCT c.original
 			FROM scenario c
+			JOIN @subtree s ON c.parent_uuid = s.original
+			WHERE c.record_type = 'A'
+			  AND c.removed = 0
+			  AND c.object_owner IN (0x00, @object_owner)
+			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
+		END
+	END
+	ELSE IF @table_name = 'countermeasure' AND OBJECT_ID('countermeasure') IS NOT NULL
+	BEGIN
+		WHILE @@ROWCOUNT > 0
+		BEGIN
+			INSERT INTO @subtree (original)
+			SELECT DISTINCT c.original
+			FROM countermeasure c
 			JOIN @subtree s ON c.parent_uuid = s.original
 			WHERE c.record_type = 'A'
 			  AND c.removed = 0

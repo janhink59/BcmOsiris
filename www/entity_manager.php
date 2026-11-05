@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-04 10:30
+ * Verze: 2026-11-05 10:15
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – jádro třídy a metadatová vrstva (STI Architektura).
  *       Pro přehlednost a malý rozsah jednotlivých zdrojových souborů je třída
@@ -13,23 +13,24 @@
  *
  * VAZBY NA OKOLÍ:
  * - Instancován z potomků `abstract_page_master_detail` / `abstract_page_tree`,
- *   `page_meta_column.php`, `page_hierarchy_item.php` a `page_approval.php`.
+ *   `page_meta_column.php`, `page_hierarchy_item.php`, `page_scale_value.php` a `page_approval.php`.
  * - Volá databázové procedury `dbo.p_em_get_class_meta` a `dbo.p_em_get_columns_meta`
  *   (definované v `p_em_metadata.sql`).
- * - Využívá třídu `rich_text` (`rich_text.php`), `language_manager` (`language_manager.php`),
- *   funkci `translate_phrase()` (`new_functions.php`) a `OsirisLib.php`.
+ * - Využívá třídy `rich_text` (`rich_text.php`), `svg_icon_editor` (`svg_icon_editor.php`),
+ *   `language_manager` (`language_manager.php`), funkci `translate_phrase()` (`new_functions.php`)
+ *   a `OsirisLib.php`.
  *
  * Změny:
- * 2026-11-04 10:30 - Doplněna metoda is_key_column_mandatory() sjednocující podmíněnou
- *                    povinnost sloupce builtin_code (povinný v 0x00, u meta_* a hierarchy,
- *                    volitelný u běžného tenanta ve věcných tabulkách CRMM).
- * 2026-11-01 17:15 - Metoda phrase() zobecněna pomocí typu mixed (bez znaku svislítka).
+ * 2026-11-05 10:15 - Sjednocena povinnost builtin_code v is_key_column_mandatory()
+ *                    (vždy povinný s automatickým odvozením z názvu/zkratky u NEW)
+ *                    a doplněno načtení svg_icon_editor.php.
  * =============================================================================
  */
 
 declare(strict_types=1);
 
 require_once __DIR__ . '/rich_text.php';
+require_once __DIR__ . '/svg_icon_editor.php';
 require_once __DIR__ . '/entity_manager_read.php';
 require_once __DIR__ . '/entity_manager_ui.php';
 require_once __DIR__ . '/entity_manager_write.php';
@@ -75,7 +76,7 @@ class entity_manager {
 			$actual_vars = $default_caption;                                 // Pole proměnných pro interpolaci
 			$actual_default = is_string($vars) ? $vars : '';                 // Výchozí text ze 3. argumentu
 		} else {
-			$actual_default = (string)$default_caption;                      // Výchozí text z 2. argumentu
+			$actual_default = (string) $default_caption;                     // Výchozí text z 2. argumentu
 			$actual_vars = is_array($vars) ? $vars : [];                     // Pole proměnných ze 3. argumentu
 		}
 
@@ -98,18 +99,15 @@ class entity_manager {
 	}
 
 	/**
-	 * Určí, zda je daný klíčový sloupec z meta_original_keys v aktuálním kontextu povinný.
-	 * Sloupec builtin_code je povinný v 0x00, u metadatových tabulek (meta_*) a u tabulky hierarchy;
-	 * u běžného tenanta ve věcných tabulkách může zůstat prázdný (záznam pak dostane NEWID()).
+	 * Určí, zda je daný klíčový sloupec z meta_original_keys povinný.
+	 * Všechny klíčové sloupce z meta_original_keys (včetně builtin_code, který se
+	 * u nových záznamů automaticky předvyplňuje z názvu/zkratky) jsou povinné.
 	 */
 	public function is_key_column_mandatory(string $column_name): bool {     // Kontrola povinnosti klíčového sloupce
 		if (! in_array($column_name, $this->original_key_cols, true) OR $column_name === 'ancestor_link') { // Mimo klíčové sloupce
 			return false;                                                    // Nejde o povinný klíčový sloupec
 		}
-		if ($column_name === 'builtin_code') {                               // Podmíněná povinnost sloupce builtin_code
-			return ($this->is_metadata_entity() OR $this->storage_table === 'hierarchy' OR is_sys_org()); // Povinný v 0x00, meta_* a hierarchy
-		}
-		return true;                                                         // Ostatní klíčové sloupce (class_name, hierarchy atd.) jsou vždy povinné
+		return true;                                                         // Všechny klíčové sloupce originálu jsou povinné
 	}
 
 	/**
@@ -119,7 +117,7 @@ class entity_manager {
 	private function load_metadata(): void {
 		global $dbsession;                                                   // Globální kontext relace
 		$safe_class = charliteral($this->class_name, 80);                    // Bezpečný SQL literál názvu třídy
-		$org_uuid = guidliteral((string)($dbsession['organization'] ?? '0x00')); // SQL literál organizace
+		$org_uuid = guidliteral((string) ($dbsession['organization'] ?? '0x00')); // SQL literál organizace
 		$curr_lang = $this->lang_manager->get_current_language();            // Aktuální jazyk relace
 		$safe_lang = charliteral($curr_lang, 2);                             // SQL literál jazyka
 		$lang_chain = $this->lang_manager->get_fallback_chain();             // Řetězec jazyků s fallback_order < 1000
@@ -134,36 +132,36 @@ class entity_manager {
 		$cls_anc_map = [];                                                   // Prázdné pole předků třídy
 		$cls_l_map = [];                                                     // Podřízené pole 'L' záznamů třídy
 		foreach ($cls_rows as $cr) {                                         // Rozdělení na 'A' a 'L' pole
-			$c_orig = (string)$cr['original'];                               // UUID třídy
+			$c_orig = (string) $cr['original'];                              // UUID třídy
 			if ($cr['row_kind'] === 'A') {                                   // Hlavní záznam třídy
 				$cls_a_map[$c_orig] = $cr;                                   // Uložení 'A' záznamu třídy
 			} else {
-				$c_lang = (string)$cr['language'];                           // Jazyk 'L' záznamu třídy
+				$c_lang = (string) $cr['language'];                          // Jazyk 'L' záznamu třídy
 				if (! isset($cls_l_map[$c_orig][$c_lang])) {                 // První záznam pro daný jazyk
 					$cls_l_map[$c_orig][$c_lang] = $cr;                      // Uložení do podřízeného pole
 				}
 			}
 		}
 
-		$main_cls_orig = (string)array_key_first($cls_a_map);                // UUID načtené třídy
+		$main_cls_orig = (string) array_key_first($cls_a_map);               // UUID načtené třídy
 		$row = $cls_a_map[$main_cls_orig];                                   // Základní data třídy
 		foreach (['caption', 'caption_plural', 'description', 'helptext'] as $tf) { // Dosazení přeložených textů třídy
 			$row[$tf] = $this->resolve_field_from_arrays($main_cls_orig, $tf, $cls_a_map, $cls_anc_map, $cls_l_map, $curr_lang, $lang_chain, 'ancestor_class'); // Překlad
 		}
 
 		$this->class_meta = $row;                                            // Uložení metadat třídy
-		$this->storage_table = (string)$row['storage_table_name'];           // Název fyzické tabulky
-		$col_parent_cls_uuid = guidliteral((string)($row['effective_col_parent_class'] ?? $main_cls_orig)); // Třída pro načtení sloupců
+		$this->storage_table = (string) $row['storage_table_name'];          // Název fyzické tabulky
+		$col_parent_cls_uuid = guidliteral((string) ($row['effective_col_parent_class'] ?? $main_cls_orig)); // Třída pro načtení sloupců
 
 		// 2. Načtení fyzického databázového schématu z v_syscolumns a klíčových sloupců z meta_original_keys
 		$safe_tab = charliteral($this->storage_table, 128);                  // SQL literál fyzické tabulky
 		$syscols = sqlarray_simple("SELECT colname, typename, nulls FROM v_syscolumns WHERE tabname = {$safe_tab} AND iscomputed = 0 AND is_identity = 0"); // Fyzické sloupce
 		if (is_array($syscols)) {                                            // Kontrola platného pole fyzických sloupců
 			foreach ($syscols as $c) {                                       // Průchod fyzickými sloupci tabulky
-				$cname = (string)$c['colname'];                              // Název fyzického sloupce
+				$cname = (string) $c['colname'];                             // Název fyzického sloupce
 				$this->physical_cols[] = $cname;                             // Zařazení do seznamu fyzických sloupců
-				$this->col_types[$cname] = (string)$c['typename'];           // Datový typ sloupce
-				$this->col_nulls[$cname] = strtolower(trim((string)$c['nulls'])); // Příznak nullability sloupce
+				$this->col_types[$cname] = (string) $c['typename'];          // Datový typ sloupce
+				$this->col_nulls[$cname] = strtolower(trim((string) $c['nulls'])); // Příznak nullability sloupce
 			}
 		}
 
@@ -173,10 +171,10 @@ class entity_manager {
 			$mok_row = sqlfirstrow("SELECT key1_column, key2_column FROM meta_original_keys WHERE table_name = {$safe_tab}"); // Dotaz na klíčové sloupce
 			if (! empty($mok_row)) {                                         // Pokud je tabulka v meta_original_keys
 				if (! empty($mok_row['key1_column'])) {                      // První klíčový sloupec
-					$this->original_key_cols[] = (string)$mok_row['key1_column']; // Zařazení 1. klíčového sloupce
+					$this->original_key_cols[] = (string) $mok_row['key1_column']; // Zařazení 1. klíčového sloupce
 				}
 				if (! empty($mok_row['key2_column'])) {                      // Druhý volitelný klíčový sloupec
-					$this->original_key_cols[] = (string)$mok_row['key2_column']; // Zařazení 2. klíčového sloupce
+					$this->original_key_cols[] = (string) $mok_row['key2_column']; // Zařazení 2. klíčového sloupce
 				}
 			}
 		}
@@ -190,19 +188,19 @@ class entity_manager {
 
 		if (is_array($raw_col_rows)) {                                       // Rozdělení načtených řádků do polí
 			foreach ($raw_col_rows as $rc) {                                 // Průchod načtenými řádky
-				$orig = (string)$rc['original'];                             // UUID originálu sloupce
-				$kind = (string)$rc['row_kind'];                             // Druh řádku ('A', 'ANC_A', 'L')
+				$orig = (string) $rc['original'];                            // UUID originálu sloupce
+				$kind = (string) $rc['row_kind'];                            // Druh řádku ('A', 'ANC_A', 'L')
 				if ($kind === 'A') {                                         // Vlastní sloupec třídy
 					$col_a_map[$orig] = $rc;                                 // Uložení do hlavního pole sloupců
 				} elseif ($kind === 'ANC_A') {                               // Sloupec předka v sys_global_columns
 					$col_anc_map[$orig] = $rc;                               // Uložení do pole předků
 				} else {
-					$lang = (string)$rc['language'];                         // Jazyk 'L' záznamu
+					$lang = (string) $rc['language'];                        // Jazyk 'L' záznamu
 					if (! isset($col_l_map[$orig][$lang])) {                 // První záznam pro daný jazyk
 						$col_l_map[$orig][$lang] = $rc;                      // Uložení do podřízeného pole
 					} else {
 						foreach ($trans_col_fields as $tf) {                 // Doplnění případných NULL polí ze systémového 'L'
-							if ((string)($col_l_map[$orig][$lang][$tf] ?? '') === '' AND (string)($rc[$tf] ?? '') !== '') { // Fallback
+							if ((string) ($col_l_map[$orig][$lang][$tf] ?? '') === '' AND (string) ($rc[$tf] ?? '') !== '') { // Fallback
 								$col_l_map[$orig][$lang][$tf] = $rc[$tf];    // Převzetí hodnoty ze systémového 'L'
 							}
 						}
@@ -222,7 +220,7 @@ class entity_manager {
 		$list_cols_temp = [];                                                // Dočasné pole pro sloupce seznamu
 
 		foreach ($col_a_map as $orig => $col) {                              // Průchod sloupci logické třídy
-			$anc_orig = (string)($col['ancestor'] ?? '');                    // UUID předka v sys_global_columns
+			$anc_orig = (string) ($col['ancestor'] ?? '');                   // UUID předka v sys_global_columns
 			$anc_row = ($anc_orig !== '' AND isset($col_anc_map[$anc_orig])) ? $col_anc_map[$anc_orig] : null; // Záznam předka
 
 			if ($anc_row !== null) {                                         // Pokud má sloupec předka
@@ -236,8 +234,8 @@ class entity_manager {
 				}
 			}
 
-			$c_name = (string)$col['column_name'];                           // Technický název sloupce
-			if ($this->is_key_column_mandatory($c_name)) {                   // Kontrola podmíněné povinnosti klíčového sloupce
+			$c_name = (string) $col['column_name'];                          // Technický název sloupce
+			if ($this->is_key_column_mandatory($c_name)) {                   // Kontrola povinnosti klíčového sloupce
 				$col['is_mandatory'] = 1;                                    // Vynucení příznaku povinného sloupce
 			}
 
@@ -249,7 +247,7 @@ class entity_manager {
 
 			if ($col['list_order'] !== null) {                               // Pokud má sloupec pořadí v Master panelu
 				$header_val = $col['header'] ?: $col['caption'];             // Záhlaví sloupce v seznamu
-				$list_cols_temp[(int)$col['list_order']] = [                 // Uložení sloupce pod klíčem pořadí
+				$list_cols_temp[(int) $col['list_order']] = [                // Uložení sloupce pod klíčem pořadí
 					'name'   => $c_name,                                     // Technický název sloupce
 					'header' => $header_val ?: $c_name                       // Zobrazované záhlaví sloupce
 				];                                                           // Konec položky seznamu

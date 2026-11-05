@@ -223,7 +223,7 @@ if (is_array($manifestLines)) {                                            // Ko
 					close_output();
 					$autoPartIndex++;                                      // Posun indexu další části
 					$outputFile = get_next_output_filename($outputFile, $autoPartIndex); // Název dalšího souboru
-					echo "\n[INFO] Prekrocen limit {$maxOutputBytes} B, automaticke prepnuti na '{$outputFile}'\n"; // Info o odlomení
+					echo "\n[INFO] Prekrocen limit {$maxOutputBytes} B u souboru '{$file} ({$entryBytes} B)',\nautomaticke prepnuti na '{$outputFile}'\n"; // Info o odlomení
 					open_output();
 				}
 
