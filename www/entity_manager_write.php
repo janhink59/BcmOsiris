@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-06 00:35
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  * Účel: Zápisová, validační, klonovací a schvalovací (SSC) část třídy entity_manager.
@@ -10,17 +10,20 @@
  *
  * VAZBY NA OKOLÍ:
  * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
- * - Využívá třídu `rich_text` (`rich_text.php`) pro formátované sloupce (`is_html = 1`)
- *   a třídu `svg_icon_editor` (`svg_icon_editor.php`) pro validaci a sanitizaci `svg_icon`.
+ * - Využívá třídu `rich_text` (`rich_text.php`) pro formátované sloupce (`is_html = 1`),
+ *   třídu `svg_icon_editor` (`svg_icon_editor.php`) pro validaci a sanitizaci `svg_icon`
+ *   a funkci `generate_builtin_code()` (`new_functions.php`) pro odvození `builtin_code`.
  * - Volán z `abstract_page_master_detail::process_save()` a `page_approval::process_save()`.
  *
  * Změny:
+ * 2026-11-06 00:35 - Propojení derive_builtin_code_from_post() s funkcí generate_builtin_code()
+ *                    z new_functions.php a napojení extract_post_data() / save_post_data()
+ *                    na metodu svg_icon_editor::validate_svg() se zachycením chyby XML syntaxe.
  * 2026-11-04 15:15 - Doplněno ukládání a serverová validace svg_icon, automatické
  *                    odvození builtin_code z názvu/zkratky u NEW (s rozlišovacím
  *                    sufixem _2, _3 při kolizi), kontrola jednoznačnosti is_default = 1,
  *                    automatické vygenerování n stupňů v scale_value při založení škály
  *                    a validace intervalu 0..100 % a přísné monotonie v scale_value.
- * 2026-11-04 10:30 - Sjednocení validace klíčového sloupce builtin_code.
  * =============================================================================
  */
 
@@ -61,13 +64,14 @@ trait entity_manager_write {
 		if ($src === '') {                                                   // Pokud není vyplněn ani název
 			return '';                                                       // Nelze odvodit
 		}
-		if (method_exists($this, 'generate_code_from_text')) {               // Pokud je metoda definována v entity_manager.php
+		if (function_exists('generate_builtin_code')) {                      // Primární konverzní funkce z new_functions.php
+			$code = generate_builtin_code($src, 60);                         // Převod diakritiky a sestavení snake_case kódu
+			return ($code !== '') ? $code : 'item';                          // Vrácení neprázdného identifikátoru
+		}
+		if (method_exists($this, 'generate_code_from_text')) {               // Záložní kontrola metody na třídě
 			return (string) $this->generate_code_from_text($src);            // Odvození přes metodu třídy
 		}
-		if (function_exists('generate_code_from_text')) {                    // Pokud existuje globální helper v new_functions.php
-			return (string) generate_code_from_text($src);                   // Odvození přes globální funkci
-		}
-		$ascii = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $src);           // Převod diakritiky na čisté ASCII
+		$ascii = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $src);           // Nouzový převod diakritiky na ASCII
 		$clean = strtolower((string) ($ascii !== false ? $ascii : $src));    // Převod na malá písmena
 		$clean = (string) preg_replace('/[^a-z0-9]+/', '_', $clean);         // Nahrazení nečíselných a nepísmenných znaků podtržítkem
 		$clean = trim($clean, '_');                                          // Oříznutí okrajových podtržítek
@@ -149,14 +153,20 @@ trait entity_manager_write {
 				$raw_val = 'global_phrase';                                  // Přesměrování prázdného zdroje na global_phrase
 			}
 
-			// Serverová validace a sanitizace vektorové ikony svg_icon
+			// Serverová validace a sanitizace vektorové ikony svg_icon přes svg_icon_editor::validate_svg()
 			if ($colname === 'svg_icon') {                                   // Ošetření SVG kódu ikony
 				$raw_val = trim($raw_val);                                   // Oříznutí bílých znaků kolem SVG
 				if ($raw_val !== '' AND class_exists('svg_icon_editor')) {   // Pokud je k dispozici validátor SVG
-					if (method_exists('svg_icon_editor', 'sanitize_svg')) {  // Metoda sanitize_svg
+					if (method_exists('svg_icon_editor', 'validate_svg')) {  // Primární validační a sanitizační metoda
+						$svg_err = null;                                     // Proměnná pro zachycení chyby XML syntaxe
+						$clean_svg = svg_icon_editor::validate_svg($raw_val, $svg_err); // Validace a XSS sanitizace SVG
+						if ($svg_err !== null AND $svg_err !== '') {         // Pokud XML/SVG syntaxe není platná
+							$this->set_last_save_error((string) $svg_err);   // Uložení chybové hlášky pro zobrazení v detailu
+							return [];                                       // Přerušení extrakce při chybě SVG
+						}
+						$raw_val = $clean_svg;                               // Použití očištěného SVG kódu
+					} elseif (method_exists('svg_icon_editor', 'sanitize_svg')) { // Fallback pro starší název metody
 						$raw_val = (string) svg_icon_editor::sanitize_svg($raw_val); // Sanitizace SVG
-					} elseif (method_exists('svg_icon_editor', 'validate_and_sanitize')) { // Alternativní metoda
-						$raw_val = (string) svg_icon_editor::validate_and_sanitize($raw_val); // Sanitizace SVG
 					}
 				}
 			}
@@ -440,7 +450,10 @@ trait entity_manager_write {
 			$target_status = 'A';                                            // Fallback na schválený stav
 		}
 
-		$post_data = $this->extract_post_data();                             // Extrakce hodnot z POSTu
+		$post_data = $this->extract_post_data();                             // Extrakce a validace hodnot z POSTu
+		if ($this->get_last_save_error() !== '') {                           // Pokud při extrakci (např. validaci SVG ikony) vznikla chyba
+			return '';                                                       // Zastavení zápisu se zachováním chybové zprávy
+		}
 		if (empty($post_data)) {                                             // Pokud nepřišla žádná data
 			return $update_guid;                                             // Ukončení bez zápisu
 		}

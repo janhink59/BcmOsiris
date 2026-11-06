@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-05 16:45
+ * Verze: 2026-11-06 00:20
  * Soubor: menu_manager.php
  * Třída: menu_manager
  * Účel: Globální správce uživatelského menu. 
@@ -15,12 +15,11 @@
  * - Pro překlad nouzového odkazu využívá globální $phrase_manager.
  * 
  * Změny:
+ * 2026-11-06 00:20 - Oprava sloučeného řádku ($match = false;) v resolve_active_node()
+ *                    a doplnění mezer před znakem $ a diakritiky v komentářích.
  * 2026-11-05 16:45 - Sjednocení CSS pravidel pro SVG ikony v menu (.bcm-menu-icon svg:not([fill])).
  * 2026-10-21 15:00 - Čtení procedury p_get_menu_hierarchy převedeno ze sqlrun/fetch
  *                    na sqlarray_simple() (ochrana globálního $dbquery).
- *                  - Všechny operátory && nahrazeny za AND (Anti-LaTeX pravidlo).
- * 2026-10-15 - Sjednocení detekce aktivní stránky a odkazů složek na plné názvy
- *              s prefixem 'page_' (při zachování zpětné kompatibility URL).
  * =============================================================================
  */
 
@@ -44,21 +43,21 @@ class menu_manager {
 	 */
 	protected function load_hierarchy(): void {
 		$rows = sqlarray_simple("EXEC p_get_menu_hierarchy");                // Načtení hierarchie menu do pole v paměti
-		if (!is_array($rows)) {                                              // Kontrola platného pole výsledků
+		if (! is_array($rows)) {                                             // Kontrola platného pole výsledků
 			return;                                                          // Ukončení při prázdném výsledku
 		}
 
 		foreach ($rows as$row) {                                            // Průchod načtenými položkami menu
-			$uuid = (string)$row['original'];                                // Originální UUID položky menu
+			$uuid = (string)$row['original'];                               // Originální UUID položky menu
 			$this->items[$uuid] =$row;                                      // Uložení dat položky
-			$this->by_code[(string)$row['builtin_code']] =$uuid;            // Indexace podle textového kódu
+			$this->by_code[(string) $row['builtin_code']] =$uuid;           // Indexace podle textového kódu
 			
-			$page = (string)$row['target_page'];                             // Cílová stránka (např. page_meta_class)
+			$page = (string)$row['target_page'];                            // Cílová stránka (např. page_meta_class)
 			if ($page !== '') {                                              // Pokud položka směřuje na stránku
 				$this->by_page[$page][] =$uuid;                             // Indexace podle cílové stránky
 			}
 			
-			$parent = (string)$row['parent_uuid'];                           // UUID nadřízené položky menu
+			$parent = (string)$row['parent_uuid'];                          // UUID nadřízené položky menu
 			$this->children_map[$parent][] =$uuid;                          // Zařazení do seznamu potomků rodiče
 		}
 	}
@@ -68,8 +67,8 @@ class menu_manager {
 	 * a vybírá "nejlepší shodu" na základě dodatečných URL parametrů.
 	 */
 	protected function resolve_active_node(): void {
-		$req_menu = trim((string)getinput('menu_code'));                     // Požadovaný kód menu z URL
-		$req_page = trim((string)getinput('page'));                          // Požadovaná stránka z URL
+		$req_menu = trim((string) getinput('menu_code'));                    // Požadovaný kód menu z URL
+		$req_page = trim((string) getinput('page'));                         // Požadovaná stránka z URL
 
 		// 1. Explicitní menu_code v URL
 		if ($req_menu !== '' AND isset($this->by_code[$req_menu])) {         // Kontrola explicitního menu_code
@@ -82,7 +81,7 @@ class menu_manager {
 			$req_page = 'page_main';                                         // Výchozí stránka při prázdném URL
 		} else {
 			$req_page = basename($req_page, '.php');                         // Očištění od cesty a přípony
-			if (!str_starts_with($req_page, 'page_')) {                      // Kontrola přítomnosti předpony page_
+			if (! str_starts_with($req_page, 'page_')) {                     // Kontrola přítomnosti předpony page_
 				$req_page = 'page_' .$req_page;                             // Doplnění prefixu page_ pro kompatibilitu
 			}
 		}
@@ -90,15 +89,16 @@ class menu_manager {
 		// 2. Fallback na vyhledání podle target_page s heuristikou pro best-match
 		if ($req_page !== '' AND isset($this->by_page[$req_page])) {         // Hledání položky podle cílové stránky
 			$candidates = $this->by_page[$req_page];                         // Seznam položek mířících na tuto stránku
-			$best_match =$candidates[0];                                    // Výchozí první shoda
+			$best_match =$candidates[0];                                    // Výchozí první nalezená shoda
 
 			foreach ($candidates as$uuid) {                                 // Průchod kandidátními položkami
-				$params_str = (string)$this->items[$uuid]['url_parameters']; // Dodatečné parametry URL u položky
+				$params_str = (string) $this->items[$uuid]['url_parameters']; // Dodatečné parametry URL u položky
 				if ($params_str !== '') {                                    // Pokud má položka definované parametry
 					parse_str(ltrim($params_str, '&?'),$parsed_params);     // Rozparsování parametrů z DB
 					$match = true;                                           // Příznak shody všech parametrů
 					foreach ($parsed_params as $k =>$v) {                   // Porovnání parametrů s aktuálním URL
-						if ((string)getinput($k) !== (string)$v) {           // Kontrola shody hodnoty parametru$match = false;                                  // Parametr v URL neodpovídá položce
+						if ((string) getinput($k) !== (string)$v) {         // Ověření shody hodnoty parametru v požadavku
+							$match = false;                                  // Parametr v URL neodpovídá položce
 							break;                                           // Ukončení kontroly této položky
 						}
 					}
@@ -123,26 +123,26 @@ class menu_manager {
 	 * Sestaví URL odkaz pro konkrétní položku menu.
 	 */
 	public function build_link(array $item): string {                        // Sestavení odkazu položky menu
-		if (!empty($item['is_disabled'])) {                                  // Kontrola deaktivované položky
+		if (! empty($item['is_disabled'])) {                                 // Kontrola deaktivované položky
 			return '#';                                                      // Prázdný odkaz pro neaktivní položku
 		}
 		
 		// 1. Odkaz na konkrétní modul / stránku
-		if ((string)$item['target_page'] !== '') {                           // Pokud má položka cílovou stránku
-			$url = "index.php?page=" . urlencode((string)$item['target_page']) . "&menu_code=" . urlencode((string)$item['builtin_code']); // Základní URL
-			if ((string)$item['url_parameters'] !== '') {                    // Pokud jsou zadány další parametry
+		if ((string) $item['target_page'] !== '') {                          // Pokud má položka cílovou stránku
+			$url = "index.php?page=" . urlencode((string) $item['target_page']) . "&menu_code=" . urlencode((string) $item['builtin_code']); // Základní URL
+			if ((string) $item['url_parameters'] !== '') {                   // Pokud jsou zadány další parametry
 				$url .=$item['url_parameters'];                             // Připojení dodatečných GET parametrů
 			}
 			return htmlspecialchars($url);                                   // Vrácení ošetřené interní URL
 		}
 		
 		// 2. Odkaz na externí / absolutní URL
-		if ((string)$item['target_url'] !== '') {                            // Pokud má položka externí URL
-			return htmlspecialchars((string)$item['target_url']);            // Vrácení ošetřené externí URL
+		if ((string) $item['target_url'] !== '') {                           // Pokud má položka externí URL
+			return htmlspecialchars((string) $item['target_url']);           // Vrácení ošetřené externí URL
 		}
 		
 		// 3. Složka (nemá target_page) -> odkazujeme na page_main jako na Průzkumník
-		return htmlspecialchars("index.php?page=page_main&menu_code=" . urlencode((string)$item['builtin_code'])); // Odkaz na složku
+		return htmlspecialchars("index.php?page=page_main&menu_code=" . urlencode((string) $item['builtin_code'])); // Odkaz na složku
 	}
 
 	/**
@@ -161,11 +161,11 @@ class menu_manager {
 	 */
 	public function get_children_by_code(string $code): array {              // Získání potomků složky podle kódu
 		$node = $this->get_node_by_code($code);                              // Načtení rodičovského uzlu
-		if (!$node) {                                                        // Pokud složka neexistuje
+		if (! $node) {                                                       // Pokud složka neexistuje
 			return [];                                                       // Vrácení prázdného pole
 		}
 
-		$uuid = (string)$node['original'];                                   // UUID rodičovského uzlu
+		$uuid = (string)$node['original'];                                  // UUID rodičovského uzlu
 		$children = [];                                                      // Výsledné pole potomků
 		
 		if (isset($this->children_map[$uuid])) {                             // Pokud má uzel evidované potomky
@@ -185,10 +185,10 @@ class menu_manager {
 		$curr =$this->active_uuid;                                          // Začínáme od aktivního uzlu
 		$visited = [];                                                       // Ochrana proti zacyklení v hierarchii
 		
-		while ($curr !== null AND isset($this->items[$curr]) AND !isset($visited[$curr])) { // Průchod k rodičům
+		while ($curr !== null AND isset($this->items[$curr]) AND ! isset($visited[$curr])) { // Průchod k rodičům
 			array_unshift($path,$curr);                                     // Vložení uzlu na začátek cesty
 			$visited[$curr] = true;                                          // Označení uzlu jako navštíveného
-			$curr = (string)$this->items[$curr]['parent_uuid'] !== '' ? (string)$this->items[$curr]['parent_uuid'] : null; // Posun na rodiče
+			$curr = (string) $this->items[$curr]['parent_uuid'] !== '' ? (string) $this->items[$curr]['parent_uuid'] : null; // Posun na rodiče
 		}
 		
 		return $path;                                                        // Vrácení seřazené cesty
@@ -242,40 +242,40 @@ HTML;
 				$node = $this->items[$node_id];                              // Data aktuálního uzlu drobečkové cesty
 				$children = $this->children_map[$node_id] ?? [];             // Potomci uzlu pro roletku
 				
-				$caption = htmlspecialchars((string)$node['caption']);       // Ošetřený název uzlu
-				$helptext = htmlspecialchars((string)$node['helptext']);     // Ošetřený tooltip uzlu
+				$caption = htmlspecialchars((string) $node['caption']);      // Ošetřený název uzlu
+				$helptext = htmlspecialchars((string) $node['helptext']);    // Ošetřený tooltip uzlu
 				$icon = $node['svg_icon'] ? '<span class="bcm-menu-icon">' . $node['svg_icon'] . '</span>' : ''; // SVG ikona uzlu
 				
 				$link = $this->build_link($node);                            // Sestavení odkazu uzlu
-				$target = $node['target_window'] ? ' target="' . htmlspecialchars((string)$node['target_window']) . '"' : ''; // Cílové okno
-				$disabled_attr = !empty($node['is_disabled']) ? ' style="color:#94a3b8; cursor:default;" onclick="return false;"' : ''; // Deaktivace
+				$target = $node['target_window'] ? ' target="' . htmlspecialchars((string) $node['target_window']) . '"' : ''; // Cílové okno
+				$disabled_attr = ! empty($node['is_disabled']) ? ' style="color:#94a3b8; cursor:default;" onclick="return false;"' : ''; // Deaktivace
 				$active_class = ($idx === $last_idx) ? ' active' : '';       // Zvýraznění posledního prvku cesty
 
 				$html .= '<li class="bcm-breadcrumb-item">';                 // Otevření položky drobečkové cesty
 				$html .= "<a href=\"{$link}\" class=\"bcm-breadcrumb-link{$active_class}\"{$target}{$disabled_attr} title=\"{$helptext}\">{$icon}{$caption}</a>"; // Odkaz uzlu
 				
 				// Sestavení roletky s POTOMKY tohoto uzlu
-				if (!empty($children)) {                                     // Pokud uzel obsahuje podpoložky
+				if (! empty($children)) {                                    // Pokud uzel obsahuje podpoložky
 					$html .= '<ul class="bcm-menu-dropdown">';               // Otevření rozbalovacího seznamu
 					foreach ($children as $child_id) {                       // Průchod podpoložkami uzlu
 						$child = $this->items[$child_id];                    // Data podřízené položky
-						$c_caption = htmlspecialchars((string)$child['caption']); // Název podpoložky
-						$c_helptext = htmlspecialchars((string)$child['helptext']); // Tooltip podpoložky
+						$c_caption = htmlspecialchars((string) $child['caption']); // Název podpoložky
+						$c_helptext = htmlspecialchars((string) $child['helptext']); // Tooltip podpoložky
 						$c_icon = $child['svg_icon'] ? '<span class="bcm-menu-icon">' . $child['svg_icon'] . '</span>' : ''; // Ikona podpoložky
 						
 						$c_link = $this->build_link($child);                 // URL podřízené položky
-						$c_target = $child['target_window'] ? ' target="' . htmlspecialchars((string)$child['target_window']) . '"' : ''; // Okno
+						$c_target = $child['target_window'] ? ' target="' . htmlspecialchars((string) $child['target_window']) . '"' : ''; // Okno
 						
 						$classes = ['bcm-menu-link'];                        // Základní CSS třída položky v roletce
-						if (!empty($child['is_disabled'])) {                 // Kontrola neaktivní podpoložky
+						if (! empty($child['is_disabled'])) {                // Kontrola neaktivní podpoložky
 							$classes[] = 'disabled';                         // Příznak neaktivní položky
 						}
-						if ((string)$child['css_class'] !== '') {            // Kontrola vlastní CSS třídy
-							$classes[] = htmlspecialchars((string)$child['css_class']); // Přidání vlastní třídy
+						if ((string) $child['css_class'] !== '') {           // Kontrola vlastní CSS třídy
+							$classes[] = htmlspecialchars((string) $child['css_class']); // Přidání vlastní třídy
 						}
 						
 						$class_str = implode(' ', $classes);                 // Spojení CSS tříd
-						$c_disabled_attr = !empty($child['is_disabled']) ? ' onclick="return false;"' : ''; // Zákaz kliknutí
+						$c_disabled_attr = ! empty($child['is_disabled']) ? ' onclick="return false;"' : ''; // Zákaz kliknutí
 						
 						$html .= "<li><a href=\"{$c_link}\" class=\"{$class_str}\"{$c_target}{$c_disabled_attr} title=\"{$c_helptext}\">{$c_icon}{$c_caption}</a></li>"; // Položka roletky
 					}

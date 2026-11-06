@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-05 16:45
+ * Verze: 2026-11-06 00:35
  * Soubor: svg_icon_editor.php
  * Třída: svg_icon_editor
  * Účel: Komponenta pro vykreslení náhledové karty, klientskou validaci přes
@@ -14,6 +14,12 @@
  *   entity_manager_write.php (validate_svg) při ukládání záznamu.
  * - Modální kontejner #bcm-svg-modal-overlay v document.body je řízen přes
  *   globální singleton window.bcmSvgState (neduplikuje se při AJAX loadDetailPanel).
+ *
+ * Změny:
+ * 2026-11-06 00:35 - Do render_editor() doplněn volitelný 4. parametr $is_readonly = false
+ *                    (při true deleguje na render_readonly), opraven překlep 'audio'
+ *                    ve validate_svg() a odstraněny znaky svislítka a přímé https:// URL
+ *                    dle Anti-LaTeX pravidla.
  * =============================================================================
  */
 
@@ -21,20 +27,20 @@ declare(strict_types=1);
 
 class svg_icon_editor {
 
-	private static bool $assets_rendered = false;                            // Příznak jednorázového vložení CSS/JS do stránky
-	private static int $editor_counter = 0;                                  // Počitadlo instancí SVG editoru na stránce
+	private static bool $assets_rendered = false; // Příznak jednorázového vložení CSS/JS do stránky
+	private static int $editor_counter = 0; // Počitadlo instancí SVG editoru na stránce
 
 	/**
 	 * Pomocná metoda pro překlad textů komponenty svg_icon_editor přes phrase_manager.
 	 */
 	private static function phrase(string $builtin_code, string $default_caption, array $vars = []): string { // Překlad fráze
-		if (function_exists('translate_phrase')) {                           // Pokud je dostupný globální helper z new_functions.php
+		if (function_exists('translate_phrase')) { // Pokud je dostupný globální helper z new_functions.php
 			return translate_phrase($builtin_code, $default_caption, $vars, 'svg_icon_editor'); // Překlad přes helper
 		}
-		global $phrase_manager;                                              // Globální instance správce frází
+		global $phrase_manager; // Globální instance správce frází
 		if (! isset($phrase_manager) OR ! ($phrase_manager instanceof phrase_manager)) { // Kontrola existence správce
-			$phrase_manager = new phrase_manager('svg_icon_editor');         // Nouzová inicializace správce frází
-			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
+			$phrase_manager = new phrase_manager('svg_icon_editor'); // Nouzová inicializace správce frází
+			$GLOBALS['phrase_manager'] = $phrase_manager; // Uložení do globálního kontextu
 		}
 		return $phrase_manager->get($builtin_code, $vars, $default_caption, 'svg_icon_editor'); // Vrácení přeložené fráze
 	}
@@ -45,99 +51,99 @@ class svg_icon_editor {
 	 * Při syntaktické chybě XML nastaví chybovou zprávu do $error_msg a vrátí prázdný řetězec.
 	 */
 	public static function validate_svg(string $raw_svg, ?string &$error_msg = null): string { // Serverová validace SVG
-		$error_msg = null;                                                   // Vynulování chybové zprávy
-		$trimmed = trim($raw_svg);                                           // Oříznutí bílých znaků
-		if ($trimmed === '') {                                               // Prázdná ikona je platný stav
+		$error_msg = null; // Vynulování chybové zprávy
+		$trimmed = trim($raw_svg); // Oříznutí bílých znaků
+		if ($trimmed === '') { // Prázdná ikona je platný stav
 			return '';
 		}
 
-		if (! class_exists('DOMDocument')) {                                 // Pojistka pokud by chyběla extenze dom
+		if (! class_exists('DOMDocument')) { // Pojistka pokud by chyběla extenze dom
 			if (! str_starts_with(strtolower($trimmed), '<svg') OR ! str_ends_with(strtolower($trimmed), '</svg>')) { // Základní kontrola
 				$error_msg = self::phrase('err_svg_not_root', 'Kód ikony musí začínat značkou <svg> a končit </svg>.'); // Chyba
 				return '';
 			}
-			return $trimmed;                                                 // Vrácení oříznutého řetězce
+			return $trimmed; // Vrácení oříznutého řetězce
 		}
 
-		$prev_use_errors = libxml_use_internal_errors(true);                 // Zapnutí interního zachytávání XML chyb
-		libxml_clear_errors();                                               // Vyčištění fronty XML chyb
+		$prev_use_errors = libxml_use_internal_errors(true); // Zapnutí interního zachytávání XML chyb
+		libxml_clear_errors(); // Vyčištění fronty XML chyb
 
-		$dom = new DOMDocument();                                            // Inicializace XML DOM parseru
-		$xml_flags = LIBXML_NONET + LIBXML_NOERROR + LIBXML_NOWARNING;       // Bezpečné příznaky bez svislítka (Anti-LaTeX)
-		$loaded = $dom->loadXML($trimmed, $xml_flags);                       // Načtení a rozparsování XML struktury
-		$xml_err = libxml_get_last_error();                                  // Zjištění případné syntaktické chyby XML
-		libxml_clear_errors();                                               // Vyčištění chyb
-		libxml_use_internal_errors($prev_use_errors);                        // Obnovení původního režimu libxml
+		$dom = new DOMDocument(); // Inicializace XML DOM parseru
+		$xml_flags = LIBXML_NONET + LIBXML_NOERROR + LIBXML_NOWARNING; // Bezpečné příznaky bez svislítka (Anti-LaTeX)
+		$loaded = $dom->loadXML($trimmed, $xml_flags); // Načtení a rozparsování XML struktury
+		$xml_err = libxml_get_last_error(); // Zjištění případné syntaktické chyby XML
+		libxml_clear_errors(); // Vyčištění chyb
+		libxml_use_internal_errors($prev_use_errors); // Obnovení původního režimu libxml
 
-		if (! $loaded OR $dom->documentElement === null) {                   // Pokud XML syntaxe není platná
+		if (! $loaded OR $dom->documentElement === null) { // Pokud XML syntaxe není platná
 			$detail = ($xml_err !== false) ? trim($xml_err->message) : 'Neplatná XML struktura'; // Detail chyby z parseru
 			$error_msg = self::phrase('err_svg_xml_syntax', 'Chyba syntaxe SVG ikony: {' . chr(36) . 'detail}', ['detail' => $detail]); // Hláška
 			return '';
 		}
 
-		$root = $dom->documentElement;                                       // Kořenový element dokumentu
-		if (strtolower($root->localName ?? $root->nodeName) !== 'svg') {     // Kořenovým elementem musí být <svg>
+		$root = $dom->documentElement; // Kořenový element dokumentu
+		if (strtolower($root->localName ?? $root->nodeName) !== 'svg') { // Kořenovým elementem musí být <svg>
 			$error_msg = self::phrase('err_svg_not_root', 'Kořenovým elementem ikony musí být značka <svg>.'); // Chybová hláška
 			return '';
 		}
 
 		// Odstranění nebezpečných elementů (XSS ochrana)
-		$forbidden_tags = ['script', 'foreignobject', 'iframe', 'object', 'embed', ' audio', 'video']; // Zakázané značky
-		$all_elements = $dom->getElementsByTagName('*');                     // Všechny elementy v dokumentu
-		$nodes_to_remove = [];                                               // Seznam uzlů k odstranění
-		foreach ($all_elements as $el) {                                     // Průchod všemi elementy
-			$tag_low = strtolower($el->localName ?? $el->nodeName);          // Název značky malými písmeny
-			if (in_array($tag_low, $forbidden_tags, true)) {                 // Pokud jde o zakázanou značku
-				$nodes_to_remove[] = $el;                                    // Zařazení uzlu ke smazání
+		$forbidden_tags = ['script', 'foreignobject', 'iframe', 'object', 'embed', 'audio', 'video']; // Zakázané značky
+		$all_elements = $dom->getElementsByTagName('*'); // Všechny elementy v dokumentu
+		$nodes_to_remove = []; // Seznam uzlů k odstranění
+		foreach ($all_elements as $el) { // Průchod všemi elementy
+			$tag_low = strtolower($el->localName ?? $el->nodeName); // Název značky malými písmeny
+			if (in_array($tag_low, $forbidden_tags, true)) { // Pokud jde o zakázanou značku
+				$nodes_to_remove[] = $el; // Zařazení uzlu ke smazání
 				continue;
 			}
-			if ($el->hasAttributes()) {                                      // Kontrola atributů elementu
-				$attrs_to_remove = [];                                       // Seznam nebezpečných atributů
-				foreach ($el->attributes as $attr) {                         // Průchod atributy elementu
-					$a_name = strtolower($attr->nodeName);                   // Název atributu malými písmeny
-					$a_val = strtolower(trim($attr->nodeValue ?? ''));       // Hodnota atributu malými písmeny
+			if ($el->hasAttributes()) { // Kontrola atributů elementu
+				$attrs_to_remove = []; // Seznam nebezpečných atributů
+				foreach ($el->attributes as $attr) { // Průchod atributy elementu
+					$a_name = strtolower($attr->nodeName); // Název atributu malými písmeny
+					$a_val = strtolower(trim($attr->nodeValue ?? '')); // Hodnota atributu malými písmeny
 					if (str_starts_with($a_name, 'on') OR str_starts_with($a_val, 'javascript:') OR str_starts_with($a_val, 'data:text/html')) { // XSS
-						$attrs_to_remove[] = $attr->nodeName;                // Zařazení atributu ke smazání
+						$attrs_to_remove[] = $attr->nodeName; // Zařazení atributu ke smazání
 					}
 				}
-				foreach ($attrs_to_remove as $rem_a) {                       // Odstranění nebezpečných atributů
-					$el->removeAttribute($rem_a);                            // Smazání atributu z elementu
+				foreach ($attrs_to_remove as $rem_a) { // Odstranění nebezpečných atributů
+					$el->removeAttribute($rem_a); // Smazání atributu z elementu
 				}
 			}
 		}
 
-		foreach ($nodes_to_remove as $rem_node) {                            // Fyzické odstranění zakázaných elementů
-			if ($rem_node->parentNode !== null) {                            // Pokud má uzel rodiče
-				$rem_node->parentNode->removeChild($rem_node);               // Odpojení uzlu z DOMu
+		foreach ($nodes_to_remove as $rem_node) { // Fyzické odstranění zakázaných elementů
+			if ($rem_node->parentNode !== null) { // Pokud má uzel rodiče
+				$rem_node->parentNode->removeChild($rem_node); // Odpojení uzlu z DOMu
 			}
 		}
 
-		if (! $root->hasAttribute('xmlns')) {                                // Doplnění standardního jmenného prostoru SVG
-			$root->setAttribute('xmlns', 'http://www.w3.org/2000/svg');      // Nastavení atributu xmlns
+		if (! $root->hasAttribute('xmlns')) { // Doplnění standardního jmenného prostoru SVG
+			$root->setAttribute('xmlns', 'http://www.w3.org/2000/svg'); // Nastavení atributu xmlns
 		}
 		if (! $root->hasAttribute('viewBox') AND ! $root->hasAttribute('viewbox')) { // Pojistka atributu viewBox
-			$w = (int) $root->getAttribute('width') ?: 24;                   // Šířka z atributu nebo výchozích 24
-			$h = (int) $root->getAttribute('height') ?: 24;                  // Výška z atributu nebo výchozích 24
-			$root->setAttribute('viewBox', "0 0 {$w} {$h}");                 // Automatické doplnění viewBoxu
+			$w = (int) $root->getAttribute('width') ?: 24; // Šířka z atributu nebo výchozích 24
+			$h = (int) $root->getAttribute('height') ?: 24; // Výška z atributu nebo výchozích 24
+			$root->setAttribute('viewBox', "0 0 {$w} {$h}"); // Automatické doplnění viewBoxu
 		}
 
-		$clean_xml = $dom->saveXML($root);                                   // Serializace samotného kořenového prvku <svg>
-		return is_string($clean_xml) ? trim($clean_xml) : '';                // Vrácení čistého jednořádkového SVG kódu
+		$clean_xml = $dom->saveXML($root); // Serializace samotného kořenového prvku <svg>
+		return is_string($clean_xml) ? trim($clean_xml) : ''; // Vrácení čistého jednořádkového SVG kódu
 	}
 
 	/**
 	 * Vykreslí kompaktní náhled SVG ikony v režimu pouze pro čtení ($is_readonly).
 	 */
-	public static function render_readonly(string $value): string {          // Vykreslení náhledu v readonly režimu
-		$assets_html = self::render_assets_once();                           // Zajištění CSS pravidel pro SVG náhled
-		$trimmed = trim($value);                                             // Očištěný SVG řetězec
-		$safe_val = htmlspecialchars($trimmed);                              // Ošetřená hodnota pro skrytý input
+	public static function render_readonly(string $value): string { // Vykreslení náhledu v readonly režimu
+		$assets_html = self::render_assets_once(); // Zajištění CSS pravidel pro SVG náhled
+		$trimmed = trim($value); // Očištěný SVG řetězec
+		$safe_val = htmlspecialchars($trimmed); // Ošetřená hodnota pro skrytý input
 		if ($trimmed !== '' AND str_starts_with(strtolower($trimmed), '<svg')) { // Pokud obsahuje platnou SVG značku
 			return $assets_html
 				. "<input type=\"hidden\" name=\"svg_icon\" value=\"{$safe_val}\">"
 				. "<div class=\"bcm-svg-card\">"
 				. "<span class=\"bcm-svg-preview-box\" style=\"cursor: default; border-style: solid;\">{$trimmed}</span>"
-				. "</div>";                                                  // Neredigovatelný náhled ikony se shodným CSS
+				. "</div>"; // Neredigovatelný náhled ikony se shodným CSS
 		}
 		$lbl_none = htmlspecialchars(self::phrase('lbl_no_svg_icon', 'Ikona není nastavena')); // Popisek prázdné ikony
 		return $assets_html
@@ -149,10 +155,10 @@ class svg_icon_editor {
 	 * Jednorázově vloží do stránky CSS styly a JavaScript obsluhu modálního editoru SVG ikon.
 	 */
 	private static function render_assets_once(): string {
-		if (self::$assets_rendered) {                                        // Pokud již byly skripty v tomto requestu vloženy
+		if (self::$assets_rendered) { // Pokud již byly skripty v tomto requestu vloženy
 			return '';
 		}
-		self::$assets_rendered = true;                                       // Označení, že skripty jsou již vypsány
+		self::$assets_rendered = true; // Označení, že skripty jsou již vypsány
 
 		$lbl_title    = addslashes(self::phrase('lbl_modal_title', 'Editor vektorové ikony (SVG):')); // Titulek modálu
 		$lbl_code     = addslashes(self::phrase('lbl_svg_code_input', 'Zdrojový kód SVG ikony (vložte <svg ...>...</svg>):')); // Popisek pole
@@ -168,6 +174,10 @@ class svg_icon_editor {
 		$err_xml      = addslashes(self::phrase('err_js_xml_invalid', 'Neplatná XML syntaxe: ')); // Prefix chyby XML
 		$err_root     = addslashes(self::phrase('err_js_not_svg_root', 'Kód musí obsahovat kořenový element <svg>...</svg>.')); // Chyba kořene
 		$txt_no_icon  = addslashes(self::phrase('lbl_no_svg_icon', 'Ikona není nastavena (dvojklikem upravíte)')); // Placeholder
+
+		$url_boot   = 'https://' . 'icons.getbootstrap.com/'; // Rozdělená URL Bootstrap Icons proti Markdown auto-linkování
+		$url_remix  = 'https://' . 'remixicon.com/'; // Rozdělená URL Remix Icon
+		$url_tabler = 'https://' . 'tabler.io/icons'; // Rozdělená URL Tabler Icons
 
 		return '<style>
 	.bcm-svg-card { display: inline-flex; align-items: center; gap: 10px; padding: 5px 10px; background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 4px; min-height: 34px; }
@@ -204,7 +214,7 @@ class svg_icon_editor {
 		}
 
 		function parseAndCleanSvgClient(rawText) {
-			const trimmed = (rawText || "").trim();
+			const trimmed = (rawText ? rawText : "").trim();
 			if (trimmed === "") {
 				return { valid: true, empty: true, svg: "", message: "' . $msg_empty . '" };
 			}
@@ -215,18 +225,18 @@ class svg_icon_editor {
 				return { valid: false, empty: false, svg: "", message: "' . $err_xml . '" + pErr.textContent.replace(/\\s+/g, " ").trim() };
 			}
 			const root = doc.documentElement;
-			if (!root || root.nodeName.toLowerCase() !== "svg") {
+			if (!root ? true : root.nodeName.toLowerCase() !== "svg") {
 				return { valid: false, empty: false, svg: "", message: "' . $err_root . '" };
 			}
 
-			["script", "foreignObject", "iframe", "object", "embed"].forEach(function(tag) {
+			["script", "foreignObject", "iframe", "object", "embed", "audio", "video"].forEach(function(tag) {
 				root.querySelectorAll(tag).forEach(function(el) { el.remove(); });
 			});
 			root.querySelectorAll("*").forEach(function(el) {
 				Array.from(el.attributes).forEach(function(attr) {
 					const an = attr.name.toLowerCase();
-					const av = (attr.value || "").trim().toLowerCase();
-					if (an.indexOf("on") === 0 || av.indexOf("javascript:") === 0) {
+					const av = (attr.value ? attr.value : "").trim().toLowerCase();
+					if (an.indexOf("on") === 0 ? true : av.indexOf("javascript:") === 0) {
 						el.removeAttribute(attr.name);
 					}
 				});
@@ -236,9 +246,11 @@ class svg_icon_editor {
 				root.setAttribute("xmlns", "http://www.w3.org/2000/svg");
 			}
 			if (!root.hasAttribute("viewBox")) {
-				const w = parseInt(root.getAttribute("width") || "24", 10) || 24;
-				const h = parseInt(root.getAttribute("height") || "24", 10) || 24;
-				root.setAttribute("viewBox", "0 0 " + w + " " + h);
+				const wAttr = root.getAttribute("width");
+				const hAttr = root.getAttribute("height");
+				const w = parseInt(wAttr ? wAttr : "24", 10);
+				const h = parseInt(hAttr ? hAttr : "24", 10);
+				root.setAttribute("viewBox", "0 0 " + (w ? w : 24) + " " + (h ? h : 24));
 			}
 
 			const serialized = new XMLSerializer().serializeToString(root);
@@ -263,9 +275,9 @@ class svg_icon_editor {
 				+ "			<label for=\"bcm-svg-modal-ta\" style=\"font-size:12px; font-weight:bold; color:#334155;\">' . $lbl_code . '</label>"
 				+ "			<div class=\"bcm-svg-ext-links\">"
 				+ "				<span>' . $lbl_sources . '</span>"
-				+ "				<a href=\"https://icons.getbootstrap.com/\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"bcm-svg-ext-link\" title=\"' . $tip_source . '\">Bootstrap Icons ↗</a>"
-				+ "				<a href=\"https://remixicon.com/\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"bcm-svg-ext-link\" title=\"' . $tip_source . '\">Remix Icon ↗</a>"
-				+ "				<a href=\"https://tabler.io/icons\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"bcm-svg-ext-link\" title=\"' . $tip_source . '\">Tabler Icons ↗</a>"
+				+ "				<a href=\"' . $url_boot . '\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"bcm-svg-ext-link\" title=\"' . $tip_source . '\">Bootstrap Icons ↗</a>"
+				+ "				<a href=\"' . $url_remix . '\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"bcm-svg-ext-link\" title=\"' . $tip_source . '\">Remix Icon ↗</a>"
+				+ "				<a href=\"' . $url_tabler . '\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"bcm-svg-ext-link\" title=\"' . $tip_source . '\">Tabler Icons ↗</a>"
 				+ "			</div>"
 				+ "		</div>"
 				+ "		<textarea id=\"bcm-svg-modal-ta\" class=\"bcm-svg-modal-ta\" placeholder=\"<svg viewBox=&quot;0 0 24 24&quot; fill=&quot;currentColor&quot;>...</svg>\"></textarea>"
@@ -329,7 +341,7 @@ class svg_icon_editor {
 
 			applyBtn.addEventListener("click", function() {
 				const res = refreshModalPreview(true);
-				if (!res.valid || !window.bcmSvgState.activeCfg) return;
+				if (!res.valid ? true : !window.bcmSvgState.activeCfg) return;
 				const cfg = window.bcmSvgState.activeCfg;
 				const inpEl = document.getElementById(cfg.inputId);
 				const prevEl = document.getElementById(cfg.previewId);
@@ -361,13 +373,14 @@ class svg_icon_editor {
 			const inpEl = document.getElementById(cfg.inputId);
 			const titleEl = document.getElementById("bcm-svg-modal-title");
 			const taEl = document.getElementById("bcm-svg-modal-ta");
-			if (!inpEl || !taEl) return;
+			if (!inpEl ? true : !taEl) return;
 
 			window.bcmSvgState.activeCfg = cfg;
 			if (titleEl) {
-				titleEl.textContent = "' . $lbl_title . ' " + (cfg.fieldLabel || cfg.columnName || "svg_icon");
+				const lbl = cfg.fieldLabel ? cfg.fieldLabel : (cfg.columnName ? cfg.columnName : "svg_icon");
+				titleEl.textContent = "' . $lbl_title . ' " + lbl;
 			}
-			taEl.value = inpEl.value || "";
+			taEl.value = inpEl.value ? inpEl.value : "";
 			overlay.classList.add("active");
 			if (typeof overlay._refreshPreview === "function") {
 				overlay._refreshPreview(false);
@@ -389,25 +402,30 @@ class svg_icon_editor {
 			}
 		};
 	})();
-</script>' . "\n";                                                           // Konec CSS/JS bloku modálního SVG editoru
+</script>' . "\n"; // Konec CSS/JS bloku modálního SVG editoru
 	}
 
 	/**
 	 * Vykreslí náhledovou kartu SVG ikony s podporou dvojkliku a tlačítka pro otevření modálního editoru.
+	 * Pokud je předán parametr $is_readonly = true, vykreslí uzamčený náhled přes render_readonly().
 	 */
-	public static function render_editor(string $column_name, string $value, array $meta = []): string { // Vykreslení editoru ikony
-		self::$editor_counter++;                                             // Inkrementace unikátního počitadla prvku
-		$idx = self::$editor_counter;                                        // Pořadové číslo prvku na stránce
+	public static function render_editor(string $column_name, string $value, array $meta = [], bool $is_readonly = false): string { // Vykreslení editoru ikony
+		if ($is_readonly) { // V režimu pouze pro čtení vykreslíme neredigovatelnou kartu
+			return self::render_readonly($value); // Delegování na readonly náhled
+		}
 
-		$assets_html = self::render_assets_once();                           // Jednorázové načtení JS/CSS modálu
-		$trimmed = trim($value);                                             // Očištěný SVG řetězec
-		$safe_name = htmlspecialchars($column_name);                         // Ošetřený název sloupce
-		$safe_val = htmlspecialchars($trimmed);                              // Ošetřená hodnota pro skrytý input
+		self::$editor_counter++; // Inkrementace unikátního počitadla prvku
+		$idx = self::$editor_counter; // Pořadové číslo prvku na stránce
+
+		$assets_html = self::render_assets_once(); // Jednorázové načtení JS/CSS modálu
+		$trimmed = trim($value); // Očištěný SVG řetězec
+		$safe_name = htmlspecialchars($column_name); // Ošetřený název sloupce
+		$safe_val = htmlspecialchars($trimmed); // Ošetřená hodnota pro skrytý input
 		$field_lbl = (string) ($meta['label'] ?: $meta['caption'] ?: $column_name); // Lidsky čitelný popisek pole
 
-		$inp_id = "bcm_svg_inp_{$idx}";                                      // ID skrytého pole formuláře
-		$prev_id = "bcm_svg_prev_{$idx}";                                    // ID kontejneru živého náhledu
-		$clr_id = "bcm_svg_clr_{$idx}";                                      // ID tlačítka pro vymazání ikony
+		$inp_id = "bcm_svg_inp_{$idx}"; // ID skrytého pole formuláře
+		$prev_id = "bcm_svg_prev_{$idx}"; // ID kontejneru živého náhledu
+		$clr_id = "bcm_svg_clr_{$idx}"; // ID tlačítka pro vymazání ikony
 
 		$btn_edit_lbl = htmlspecialchars(self::phrase('btn_edit_svg', 'Upravit ikonu')); // Popisek tlačítka úpravy
 		$btn_clr_lbl  = htmlspecialchars(self::phrase('btn_clear_svg', 'Smazat')); // Popisek tlačítka smazání
@@ -418,15 +436,15 @@ class svg_icon_editor {
 		$preview_inner = $has_icon
 			? $trimmed
 			: "<span style=\"color:#94a3b8; font-style:italic; font-size:12px;\">{$txt_no_icon}</span>"; // Obsah náhledu
-		$clr_disp = $has_icon ? 'inline-flex' : 'none';                      // Viditelnost tlačítka Smazat
+		$clr_disp = $has_icon ? 'inline-flex' : 'none'; // Viditelnost tlačítka Smazat
 
-		$js_cfg = json_encode([                                              // Konfigurace předávaná do JS handleru
+		$js_cfg = json_encode([ // Konfigurace předávaná do JS handleru
 			'inputId'    => $inp_id,
 			'previewId'  => $prev_id,
 			'clearBtnId' => $clr_id,
 			'columnName' => $column_name,
 			'fieldLabel' => $field_lbl
-		]);                                                                  // Konec JSON konfigurace
+		]); // Konec JSON konfigurace
 		$safe_cfg = htmlspecialchars((string) $js_cfg, ENT_QUOTES, 'UTF-8'); // Ošetřený JSON pro onclick/ondblclick
 
 		return $assets_html
@@ -435,6 +453,13 @@ class svg_icon_editor {
 			. "\t<div id=\"{$prev_id}\" class=\"bcm-svg-preview-box\" title=\"{$tip_dblclick}\" ondblclick=\"window.bcmOpenSvgIconModal({$safe_cfg});\">{$preview_inner}</div>\n"
 			. "\t<button type=\"button\" class=\"bcm-rt-edit-btn\" title=\"{$tip_dblclick}\" onclick=\"window.bcmOpenSvgIconModal({$safe_cfg});\">{$btn_edit_lbl}</button>\n"
 			. "\t<button type=\"button\" id=\"{$clr_id}\" class=\"bcm-rt-edit-btn\" style=\"display:{$clr_disp}; color:#b91c1c; border-color:#fca5a5; background-color:#fef2f2;\" onclick=\"window.bcmClearSvgIcon({$safe_cfg});\">{$btn_clr_lbl}</button>\n"
-			. "</div>";                                                      // Výsledný HTML kód karty SVG ikony
+			. "</div>"; // Výsledný HTML kód karty SVG ikony
+	}
+
+	/**
+	 * Zpětně kompatibilní alias pro render_editor().
+	 */
+	public static function render_input(string $column_name, string $value, array $meta = [], bool $is_readonly = false): string { // Alias pro render_editor
+		return self::render_editor($column_name, $value, $meta, $is_readonly); // Delegování na render_editor
 	}
 }

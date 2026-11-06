@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-05 16:45
+ * Verze: 2026-11-06 00:20
  * Soubor: abstract_page.php
  * Třída: abstract_page
  * Účel: Základní abstraktní třída pro objektově orientované stránky.
@@ -14,6 +14,8 @@
  *   a volá `has_role_access()` z `new_functions.php` a `$menu_manager->render_breadcrumbs()`.
  * 
  * Změny:
+ * 2026-11-06 00:20 - Oprava sloučených řádků v metodách phrase() a render() a doplnění
+ *                    mezer před znakem $ a diakritiky v komentářích (Anti-LaTeX).
  * 2026-11-05 16:45 - Sjednocení chování barev SVG ikon v tlačítkách (.btn svg:not([fill]))
  *                    pro zachování vlastních barev ikon i podpory currentColor.
  * 2026-11-01 12:15 - V check_system_role_access() využita sdílená funkce
@@ -39,9 +41,9 @@ abstract class abstract_page {
 	 * Zajistí vytvoření instance phrase_manager pro aktuální stránku.
 	 */
 	protected function init_phrases(): void {
-		if ($this->phrases === null) {
+		if ($this->phrases === null) {                                       // Pokud správce frází ještě není vytvořen
 			$this->phrases = new phrase_manager($this);                      // Dávkové načtení frází přes reflexi
-			$GLOBALS['phrase_manager'] =$this->phrases;                     // Zpřístupnění pro tlačítka a komponenty
+			$GLOBALS['phrase_manager'] = $this->phrases;                     // Zpřístupnění pro tlačítka a komponenty
 		}
 	}
 
@@ -50,13 +52,13 @@ abstract class abstract_page {
 	 * dostatečnou active_role pro přístup k této stránce (Fail-safe autorizace).
 	 */
 	protected function check_system_role_access(): void {
-		global $dbsession;                                                   // Globální kontext relace
-		if (empty($dbsession) OR ! isset($dbsession['active_role'])) {
+		global $dbsession;                                                   // Globální kontext relace uživatele
+		if (empty($dbsession) OR ! isset($dbsession['active_role'])) {       // Kontrola platné inicializace relace
 			return;                                                          // Pokud relace není inicializována, neblokujeme
 		}
 
-		$active_role = (string)$dbsession['active_role'];                    // Aktuální role uživatele (U, A, S, D)
-		if ($active_role === 'S' OR$active_role === 'D') {
+		$active_role = (string) $dbsession['active_role'];                   // Aktuální role uživatele (U, A, S, D)
+		if ($active_role === 'S' OR $active_role === 'D') {                  // Kontrola nejvyšších systémových rolí
 			return;                                                          // Sysadmin a Developer mají přístup vždy
 		}
 
@@ -74,8 +76,8 @@ abstract class abstract_page {
 		");                                                                  // Dotaz na požadovanou roli stránky
 
 		if (! empty($row) AND isset($row['system_role'])) {                  // Pokud je stránka v meta_object registrována
-			$req_role = (string)$row['system_role'];                         // Minimální vyžadovaná role (U, A, S, D)
-			if (! has_role_access($req_role,$active_role)) {                // Vyhodnocení přes sdílenou funkci has_role_access
+			$req_role = (string) $row['system_role'];                        // Minimální vyžadovaná role (U, A, S, D)
+			if (! has_role_access($req_role, $active_role)) {                // Vyhodnocení přes sdílenou funkci has_role_access
 				$this->access_denied = true;                                 // Odepření přístupu při nedostatečné roli
 			}
 		}
@@ -89,8 +91,9 @@ abstract class abstract_page {
 	 * @param string               $default_caption Výchozí text při neexistenci v DB
 	 * @return string Přeložený text fráze
 	 */
-	public function phrase(string $builtin_code, array$vars = [], string $default_caption = ''): string {$this->init_phrases();                                               // Pojistka inicializace správce frází
-		return $this->phrases->get($builtin_code, $vars,$default_caption);  // Vrácení přeložené a interpolované fráze
+	public function phrase(string $builtin_code, array $vars = [], string $default_caption = ''): string { // Překlad fráze stránky
+		$this->init_phrases();                                               // Pojistka inicializace správce frází
+		return $this->phrases->get($builtin_code, $vars, $default_caption);  // Vrácení přeložené a interpolované fráze
 	}
 
 	/**
@@ -107,21 +110,22 @@ abstract class abstract_page {
 		$this->init_phrases();                                               // Pojistka inicializace frází
 		$this->check_system_role_access();                                   // Pojistka kontroly oprávnění
 
-		if (! $this->access_denied AND ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {$this->process_save();                                           // Spuštění ukládací logiky potomka pouze při POST
+		if (! $this->access_denied AND ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') { // Kontrola odeslání formuláře metodou POST
+			$this->process_save();                                           // Spuštění ukládací logiky potomka pouze při POST
 		}
 
 		$user_context = new user_context();                                  // Horní lišta s kontextem uživatele
 
-		global $menu_manager,$dbsession;                                    // Přístup k navigaci a relaci
+		global $menu_manager, $dbsession;                                    // Přístup k navigaci a relaci
 		$breadcrumbs_html = '';                                              // HTML kód drobečkové navigace
-		if (isset($menu_manager) AND is_object($menu_manager)) {
-			$breadcrumbs_html =$menu_manager->render_breadcrumbs();         // Vykreslení drobečkové navigace
+		if (isset($menu_manager) AND is_object($menu_manager)) {             // Kontrola existence správce navigace
+			$breadcrumbs_html = $menu_manager->render_breadcrumbs();         // Vykreslení drobečkové navigace
 		}
 
-		$lang_code = htmlspecialchars((string)($dbsession['language'] ?? 'cs')); // Kód jazyka do atributu html
+		$lang_code = htmlspecialchars((string) ($dbsession['language'] ?? 'cs')); // Kód jazyka do atributu html
 		$safe_title = htmlspecialchars($this->page_title);                   // Bezpečný titulek stránky
 		$unsaved_msg = addslashes($this->phrase('msg_unsaved_changes', [], 'Máte neuložené změny. Opravdu chcete stránku opustit?')); // Text varování
-		$panel_cls =$this->full_width ? 'page-panel page-panel-full' : 'page-panel'; // Volba šířky hlavního panelu
+		$panel_cls = $this->full_width ? 'page-panel page-panel-full' : 'page-panel'; // Volba šířky hlavního panelu
 
 		echo <<<HTML
 <!DOCTYPE html>
@@ -224,9 +228,9 @@ abstract class abstract_page {
 	<div class="{$panel_cls}">
 HTML;
 
-		if ($this->access_denied) {
+		if ($this->access_denied) {                                          // Pokud uživatel nemá dostatečná oprávnění
 			$denied_msg = htmlspecialchars($this->phrase('msg_access_denied', [], 'Přístup odepřen. K zobrazení této stránky nemáte dostatečná oprávnění.')); // Chybová zpráva
-			echo "<div class='msg-err'>{$denied_msg}</div>\n";
+			echo "<div class='msg-err'>{$denied_msg}</div>\n";               // Výpis chyby odepřeného přístupu
 		} else {
 			$this->render_body();                                            // Vykreslení těla potomka
 		}

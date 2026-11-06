@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-06 00:20
  * Soubor: entity_manager_ui.php
  * Trait: entity_manager_ui
  * Účel: Prezentační a UI vrstva třídy entity_manager.
@@ -20,11 +20,11 @@
  *   a třídu `svg_icon_editor` (`svg_icon_editor.php`) pro sloupec `svg_icon`.
  *
  * Změny:
+ * 2026-11-06 00:20 - Propojení readonly režimu sloupce svg_icon na metodu
+ *                    svg_icon_editor::render_readonly($value) a oprava mezer před $.
  * 2026-11-04 15:15 - Napojení sloupce svg_icon na modální editor svg_icon_editor,
  *                    automatické klientské předvyplňování builtin_code z názvu/zkratky
  *                    u nových záznamů (NEW) a podpora desetinných čísel (step="any").
- * 2026-11-04 10:30 - V render_dynamic_input() napojena kontrola povinnosti klíčového
- *                    sloupce na metodu $this->is_key_column_mandatory($column_name).
  * =============================================================================
  */
 
@@ -46,7 +46,7 @@ trait entity_manager_ui {
 		if ($clean_orig === '' OR $clean_orig === 'new' OR is_zero_guid($clean_orig)) { // Kořen nebo nový záznam
 			return false;                                                    // Nový nebo kořenový uzel není uzamčen vazbou
 		}
-		if (! $this->has_physical_column('parent_uuid') OR$this->storage_table === 'meta_menu') { // Mimo věcné hierarchie CRMM
+		if (! $this->has_physical_column('parent_uuid') OR $this->storage_table === 'meta_menu') { // Mimo věcné hierarchie CRMM
 			return false;                                                    // Navigace menu se neuzamyká tabulkou link
 		}
 		if (isset($this->hierarchy_lock_cache[$clean_orig])) {               // Kontrola v lokální keši requestu
@@ -64,7 +64,7 @@ trait entity_manager_ui {
 
 		$row = sqlfirstrow("SELECT dbo.f_is_hierarchy_node_locked({$safe_tab}, {$orig_sql}, {$org_sql}) AS is_locked"); // Volání DB funkce
 		$is_locked = ! empty($row['is_locked']);                             // Výsledek kontroly uzamčení
-		$this->hierarchy_lock_cache[$clean_orig] =$is_locked;               // Uložení do keše pro aktuální request
+		$this->hierarchy_lock_cache[$clean_orig] = $is_locked;               // Uložení do keše pro aktuální request
 		return $is_locked;                                                   // Vrácení stavu uzamčení větve
 	}
 
@@ -142,15 +142,15 @@ trait entity_manager_ui {
 						JOIN v_syscolumns vc ON vc.tabname = mo.builtin_code COLLATE DATABASE_DEFAULT
 						WHERE mo.original = {$stg_orig} AND mo.object_owner = 0x00 AND mo.record_type = 'A' AND mo.removed = 0
 					");                                                      // Kontrola existence fyzické tabulky ve v_syscolumns
-					if (! empty($stg_row) AND (string) $stg_row['builtin_code'] ===$cls_name) { // Primitivní třída existující tabulky
-						$deny_pc =$this->phrase('msg_remove_prim_class_denied', 'Primitivní třídu svázanou s existující fyzickou tabulkou nelze zrušit'); // Důvod
+					if (! empty($stg_row) AND (string) $stg_row['builtin_code'] === $cls_name) { // Primitivní třída existující tabulky
+						$deny_pc = $this->phrase('msg_remove_prim_class_denied', 'Primitivní třídu svázanou s existující fyzickou tabulkou nelze zrušit'); // Důvod
 						return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_pc]; // Uzamčeno
 					}
 				}
 			} elseif ($this->storage_table === 'meta_column') {              // Kontrola tabulky meta_column
 				$col_name = (string) ($datarow['column_name'] ?? '');        // Název sloupce
 				$par_cls = guidliteral((string) ($datarow['parent_class'] ?? '')); // UUID nadřízené třídy
-				if ($par_cls !== 'NULL' AND$col_name !== '') {              // Ověření fyzické existence sloupce v DB
+				if ($par_cls !== 'NULL' AND $col_name !== '') {              // Ověření fyzické existence sloupce v DB
 					$safe_col = charliteral($col_name, 80);                  // SQL literál názvu sloupce
 					$phys_row = sqlfirstrow("
 						SELECT 1 AS is_phys
@@ -161,14 +161,14 @@ trait entity_manager_ui {
 						  AND mc.class_name = mo.builtin_code
 					");                                                      // Kontrola existence sloupce v primitivní třídě
 					if (! empty($phys_row)) {                                // Sloupec fyzicky existuje v databázi
-						$deny_col =$this->phrase('msg_remove_phys_col_denied', 'Fyzicky existující sloupec databázové tabulky nelze v metadatech zrušit'); // Důvod
+						$deny_col = $this->phrase('msg_remove_phys_col_denied', 'Fyzicky existující sloupec databázové tabulky nelze v metadatech zrušit'); // Důvod
 						return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_col]; // Uzamčeno
 					}
 				}
 			} elseif ($this->storage_table === 'meta_menu') {                // Kontrola tabulky meta_menu
 				$b_code = (string) ($datarow['builtin_code'] ?? '');         // Kód položky menu
 				if ($b_code === 'home') {                                    // Kořenovou položku Domů nelze zrušit
-					$deny_hm =$this->phrase('msg_remove_menu_home_denied', 'Kořenovou položku menu (home) nelze zrušit'); // Důvod
+					$deny_hm = $this->phrase('msg_remove_menu_home_denied', 'Kořenovou položku menu (home) nelze zrušit'); // Důvod
 					return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_hm]; // Uzamčeno
 				}
 			}
@@ -181,7 +181,7 @@ trait entity_manager_ui {
 			return ['allowed' => true, 'is_lang_only' => false, 'reason' => '']; // Tenant smí zrušit svůj vlastní záznam
 		}
 
-		$deny_sys =$this->phrase('msg_remove_system_record_denied', 'Systémový záznam nelze v organizaci smazat (použijte příznak Neaktivní)'); // Vysvětlení pro tenanta
+		$deny_sys = $this->phrase('msg_remove_system_record_denied', 'Systémový záznam nelze v organizaci smazat (použijte příznak Neaktivní)'); // Vysvětlení pro tenanta
 		return ['allowed' => false, 'is_lang_only' => false, 'reason' => $deny_sys]; // Systémový záznam tenant nemůže smazat
 	}
 
@@ -277,12 +277,10 @@ HTML;
 		// 0. Speciální modální editor a náhled pro sloupec svg_icon
 		if ($column_name === 'svg_icon') {                                   // Vektorová ikona SVG
 			if (class_exists('svg_icon_editor')) {                           // Pokud je načtena třída svg_icon_editor
-				if (method_exists('svg_icon_editor', 'render_editor')) {     // Volání metody render_editor
-					return svg_icon_editor::render_editor($column_name, $value, $meta, $is_readonly); // Modální editor SVG ikony
+				if ($is_readonly) {                                          // V uzamčeném režimu vykreslíme pouze náhled bez tlačítek
+					return svg_icon_editor::render_readonly($value);         // Neredigovatelný náhled SVG ikony
 				}
-				if (method_exists('svg_icon_editor', 'render_input')) {      // Alternativní název metody render_input
-					return svg_icon_editor::render_input($column_name, $value, $meta, $is_readonly); // Modální editor SVG ikony
-				}
+				return svg_icon_editor::render_editor($column_name, $value, $meta); // Modální editor SVG ikony na dvojklik / tlačítko
 			}
 			$trimmed_svg = trim($value);                                     // Záložní zobrazení při nedostupnosti třídy
 			return "<input type=\"text\" name=\"{$safe_name}\" value=\"" . htmlspecialchars($trimmed_svg) . "\" style=\"width: 100%; font-family: monospace;\">"; // Fallback input
