@@ -1,29 +1,27 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-05 10:15
+ * Verze: 2026-11-06 13:30
  * Soubor: entity_manager.php
  * Účel: Dynamický správce entit – jádro třídy a metadatová vrstva (STI Architektura).
  *       Pro přehlednost a malý rozsah jednotlivých zdrojových souborů je třída
- *       rozdělena do 4 modulů:
+ *       rozdělena do 5 modulů:
  *       1. entity_manager.php       - Jádro, načtení metadat (přes p_em_get_*), gettery
  *       2. entity_manager_read.php  - Trait: Čtecí dotazy (fetch_rows, fetch_row) a překlady
- *       3. entity_manager_ui.php    - Trait: Generování UI prvků (render_dynamic_input, removed)
- *       4. entity_manager_write.php - Trait: Autonomní zápis, klonování, validace klíčů a SSC
+ *       3. entity_manager_ui.php    - Trait: Generování UI prvků a roletek pro formuláře i filtry
+ *       4. entity_manager_write.php - Trait: Autonomní zápis, klonování, validace klíčů a škál
+ *       5. entity_manager_ssc.php   - Trait: Schvalovací cyklus SSC (koncepty D/F/R, schválení, zamítnutí)
  *
  * VAZBY NA OKOLÍ:
  * - Instancován z potomků `abstract_page_master_detail` / `abstract_page_tree`,
- *   `page_meta_column.php`, `page_hierarchy_item.php`, `page_scale_value.php` a `page_approval.php`.
+ *   `filter_manager.php`, `csv_package_simple_class.php` a `page_approval.php`.
  * - Volá databázové procedury `dbo.p_em_get_class_meta` a `dbo.p_em_get_columns_meta`
  *   (definované v `p_em_metadata.sql`).
- * - Využívá třídy `rich_text` (`rich_text.php`), `svg_icon_editor` (`svg_icon_editor.php`),
- *   `language_manager` (`language_manager.php`), funkci `translate_phrase()` (`new_functions.php`)
- *   a `OsirisLib.php`.
  *
  * Změny:
- * 2026-11-05 10:15 - Sjednocena povinnost builtin_code v is_key_column_mandatory()
- *                    (vždy povinný s automatickým odvozením z názvu/zkratky u NEW)
- *                    a doplněno načtení svg_icon_editor.php.
+ * 2026-11-06 13:30 - Vyčlenění SSC metod do samostatného traitu entity_manager_ssc.php
+ *                    a doplnění metod get_column_sql_type() a get_filter_select_options()
+ *                    pro univerzální třídu filter_manager.
  * =============================================================================
  */
 
@@ -31,15 +29,18 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/rich_text.php';
 require_once __DIR__ . '/svg_icon_editor.php';
+require_once __DIR__ . '/filter_manager.php';
 require_once __DIR__ . '/entity_manager_read.php';
 require_once __DIR__ . '/entity_manager_ui.php';
 require_once __DIR__ . '/entity_manager_write.php';
+require_once __DIR__ . '/entity_manager_ssc.php';
 
 class entity_manager {
 
 	use entity_manager_read;
 	use entity_manager_ui;
 	use entity_manager_write;
+	use entity_manager_ssc;
 
 	private string $class_name;                                              // Název logické třídy
 	private array $class_meta = [];                                          // Metadata logické třídy
@@ -100,8 +101,6 @@ class entity_manager {
 
 	/**
 	 * Určí, zda je daný klíčový sloupec z meta_original_keys povinný.
-	 * Všechny klíčové sloupce z meta_original_keys (včetně builtin_code, který se
-	 * u nových záznamů automaticky předvyplňuje z názvu/zkratky) jsou povinné.
 	 */
 	public function is_key_column_mandatory(string $column_name): bool {     // Kontrola povinnosti klíčového sloupce
 		if (! in_array($column_name, $this->original_key_cols, true) OR $column_name === 'ancestor_link') { // Mimo klíčové sloupce
@@ -239,7 +238,7 @@ class entity_manager {
 				$col['is_mandatory'] = 1;                                    // Vynucení příznaku povinného sloupce
 			}
 
-			foreach ($trans_col_fields as $tf) {                             // Průchod překládanými vlastnostmi sloupce
+			foreach ($trans_col_fields as $tf) {                             // Průchod překládanými vlastmi sloupce
 				$col[$tf] = $this->resolve_field_from_arrays($orig, $tf, $col_a_map, $col_anc_map, $col_l_map, $curr_lang, $lang_chain, 'ancestor'); // Překlad
 			}
 
@@ -274,12 +273,94 @@ class entity_manager {
 		$this->is_initialized = true;                                        // Metadata jsou plně připravena
 	}
 
+	/**
+	 * Vrátí asociativní pole `[value => label]` pro roletku filtru u výčtových a relačních sloupců.
+	 */
+	public function get_filter_select_options(string $column_name): array {  // Načtení položek roletky pro filter_manager
+		$meta = $this->get_column_meta($column_name);                        // Metadata sloupce
+		$opts = [];                                                          // Výstupní pole voleb
+
+		if ($column_name === 'licence_level') {                              // Číselník úrovní licencí
+			$rows = sqlarray_simple("SELECT licence_level, name FROM licence_level ORDER BY licence_level"); // Načtení úrovní
+			if (is_array($rows)) {                                           // Průchod úrovněmi
+				foreach ($rows as $r) {                                      // Zpracování úrovně
+					$k = (string) $r['licence_level'];                       // Kód úrovně
+					$opts[$k] = (string) $r['name'] . " ({$k})";             // Popisek úrovně
+				}
+			}
+			return $opts;                                                    // Vrácení voleb
+		}
+
+		if ($column_name === 'preferred_language') {                         // Číselník podporovaných jazyků
+			foreach ($this->lang_manager->get_languages() as $l_code => $l_row) { // Průchod jazyky
+				$opts[(string) $l_code] = (string) ($l_row['caption'] ?? $l_code) . " ({$l_code})"; // Popisek jazyka
+			}
+			return $opts;                                                    // Vrácení jazyků
+		}
+
+		if ($this->storage_table === 'meta_phrase' AND $column_name === 'source_code') { // Zdrojová třída fráze
+			$opts['global_phrase'] = 'global_phrase (Globální fráze systému)'; // Výchozí globální zdroj
+			$rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'source_code'"); // Načtení tříd
+			if (is_array($rows)) {                                           // Průchod třídami
+				foreach ($rows as $r) {                                      // Zpracování třídy
+					$bc = (string) $r['value_code'];                         // Kód třídy
+					$cp = (string) $r['caption'];                            // Popisek třídy
+					$opts[$bc] = ($cp !== '' AND $cp !== $bc) ? "{$bc} ({$cp})" : $bc; // Text volby
+				}
+			}
+			return $opts;                                                    // Vrácení zdrojových tříd
+		}
+
+		if (! empty($meta['referenced_codetable'])) {                        // Číselník z meta_codetable
+			$safe_ct = charliteral((string) $meta['referenced_codetable'], 80); // SQL literál číselníku
+			$rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'codetable', @param_code = {$safe_ct}"); // Volání DB procedury
+			if (is_array($rows)) {                                           // Průchod položkami číselníku
+				foreach ($rows as $r) {                                      // Zpracování položky
+					$opts[(string) $r['value_code']] = (string) $r['caption']; // Uložení volby
+				}
+			}
+			return $opts;                                                    // Vrácení položek číselníku
+		}
+
+		if (! empty($meta['referenced_class'])) {                            // Relační odkaz referenced_class
+			$ref_cls = guidliteral((string) $meta['referenced_class']);      // UUID odkazované třídy
+			$safe_col = charliteral($column_name, 80);                       // Název sloupce
+			$safe_stg = charliteral($this->storage_table, 128);              // Fyzická tabulka
+			if ($column_name === 'parent_uuid' AND $this->has_physical_column('parent_uuid')) { // Nadřízený uzel stromu
+				$h_uuid = trim((string) getinput('hierarchy'));              // Případná sekundární hierarchie z URL
+				$hier_sql = ($h_uuid !== '') ? guidliteral($h_uuid) : 'NULL'; // SQL literál hierarchie
+				$rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'parent_tree', @param_code = {$safe_col}, @ref_class_uuid = {$ref_cls}, @curr_guid = NULL, @current_val = NULL, @hier_uuid = {$hier_sql}, @storage_table = {$safe_stg}"); // Strom
+			} else {
+				$rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'ref_class', @param_code = {$safe_col}, @ref_class_uuid = {$ref_cls}, @curr_guid = NULL, @current_val = NULL, @storage_table = {$safe_stg}"); // Relace
+			}
+			if (is_array($rows)) {                                           // Průchod položkami relace
+				foreach ($rows as $r) {                                      // Zpracování položky
+					$u = (string) $r['original'];                            // UUID položky
+					$c = (string) $r['code_col'];                            // Kód položky
+					$cp = (string) $r['caption'];                            // Název položky
+					$opts[$u] = ($c !== '' AND $cp !== '' AND $cp !== $c) ? "{$c} ({$cp})" : ($cp ?: $c ?: $u); // Popisek
+				}
+			}
+			return $opts;                                                    // Vrácení relačních položek
+		}
+
+		return $opts;                                                        // Prázdné pole voleb
+	}
+
+	public function get_class_name(): string {
+		return $this->class_name;                                            // Vrácení názvu logické třídy
+	}
+
 	public function get_storage_table(): string {
 		return $this->storage_table;                                         // Vrácení názvu fyzické tabulky
 	}
 
 	public function has_physical_column(string $column_name): bool {         // Kontrola existence fyzického sloupce
 		return in_array($column_name, $this->physical_cols, true);           // Vyhledání v poli fyzických sloupců
+	}
+
+	public function get_column_sql_type(string $column_name): string {       // Zjištění fyzického SQL typu sloupce
+		return (string) ($this->col_types[$column_name] ?? 'varchar');       // Vrácení SQL typu
 	}
 
 	public function get_original_key_columns(): array {

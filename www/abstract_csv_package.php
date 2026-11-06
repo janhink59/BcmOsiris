@@ -1,40 +1,30 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-24 20:05
+ * Verze: 2026-11-06 14:15
  * Soubor: abstract_csv_package.php
  * Třída: abstract_csv_package
  * Účel: Abstraktní předek pro víceblokový CSV export a dvoufázový import
  *       aplikačních balíčků mezi instancemi systému BCM Osiris.
  *
  * ARCHITEKTONICKÉ VAZBY:
- * - Registruje autoloader pro potomky s prefixem `csv_package_` (např. `csv_package_metadata`
- *   v souboru `csv_package_metadata.php`).
+ * - Registruje autoloader pro potomky s prefixem `csv_package_` (např. `csv_package_metadata`,
+ *   `csv_package_simple_class`).
  * - Využívá nativní streamové funkce PHP `fputcsv()` a `fgetcsv()` s parametrem
  *   `$escape = ''` (RFC 4180 kompatibilní zdvojování uvozovek `""`; hodnoty obsahující
  *   středník, nový řádek `\n` nebo uvozovky jsou vždy uzavřeny v dvojitých uvozovkách `"`,
- *   znaky `\r` jsou vypuštěny). Výchozím oddělovačem je středník `;` a příponou `.csv`
- *   pro přímé otevření v MS Excelu.
- * - Zabezpečení proti změnám zajišťuje HMAC-SHA256 podpis (`signature`). Při exportu lze
- *   nastavit podepsaný parametr `verify_data = 1` (podpis chrání parametry i všechna data)
- *   nebo `verify_data = 0` (podpis chrání hlavičku parametrů, data lze upravit v Excelu).
- *   Ověření podpisu při importu nelze obejít.
- * - Ve Fázi 1 importu v jediné databázové transakci vyčistí a naplní tabulky
- *   `session_import_parameter`, `session_import_table`, `session_import_column`
- *   a `session_import_data` (definované v `table_session_import.sql`) a zapíše
- *   statistiku a případné chyby do `request_message`.
- * - Ve Fázi 2 importu spustí uloženou proceduru `p_csv_import_{$package_code}`, která
- *   pomocí `p_csv_fill_table` a `dbo.f_csv_param` zpracuje načtená data.
+ *   znaky `\r` jsou vypuštěny). Výchozím oddělovačem je středník `;` a příponou `.csv`.
+ * - Zabezpečení proti změnám zajišťuje HMAC-SHA256 podpis (`signature`).
+ * - Obecný parametr `same_org_only` (společně s podepsaným `source_org_uuid`) umožňuje
+ *   omezit import dat pouze do stejné organizace, která data exportovala; porušení
+ *   tohoto omezení je detekováno a zablokováno již v 1. fázi importu (`load_file_to_session`).
  *
  * Změny:
- * 2026-10-24 20:05 - Doplněna normalizace parametru `version_date` přes `date_from_string()`
- *                    při výpočtu HMAC podpisu, aby přeformátování data v MS Excelu
- *                    při uložení souboru (`verify_data = 0`) nezneplatnilo podpis hlavičky.
- * 2026-10-24 14:35 - Změna výchozího oddělovače na středník `;` a přípony na `.csv`
- *                    pro přímou kontrolu a úpravy v MS Excelu.
- *                  - Zjišťování názvů sloupců při exportu přímo přes `sqlsrv_field_metadata()`.
- *                  - Plnění `session_import_*` v `load_file_to_session()` obaleno transakcí
- *                    `BEGIN TRAN ... COMMIT` s dávkovým vkládáním buněk.
+ * 2026-11-06 14:15 - Doplněn obecný parametr `same_org_only` a podepsaný `source_org_uuid`
+ *                    s kontrolou shody organizace již ve Fázi 1 importu.
+ *                  - Doplněna podpora víceřádkových parametrů (`textarea`, např. `info`)
+ *                    ve formuláři exportu i v přehledu Fáze 1 importu.
+ * 2026-10-24 20:05 - Normalizace parametru `version_date` přes `date_from_string()` pro HMAC.
  * =============================================================================
  */
 
@@ -55,7 +45,7 @@ abstract class abstract_csv_package {
 	/** Výchozí interní klíč pro HMAC-SHA256 podpis CSV balíčků */
 	private const DEFAULT_HMAC_KEY = 'BcmOsiris_CSV_Package_HMAC_Key_2026';
 
-	public string $package_code = '';                                        // Technický kód balíčku (např. 'metadata')
+	public string $package_code = '';                                        // Technický kód balíčku (např. 'metadata', 'simple_class')
 	public string $package_title = '';                                       // Lidsky čitelný název balíčku
 	public string $description = '';                                         // Popis účelu a obsahu balíčku
 	public bool $is_system_package = false;                                  // true = Systémová data (0x00), nevytvářejí koncepty 'D'
@@ -64,7 +54,7 @@ abstract class abstract_csv_package {
 	public bool $phase1_ready = false;                                       // Příznak úspěšného dokončení Fáze 1 bez chyb
 
 	/**
-	 * Konstruktor balíčku. Přijímá volitelné výchozí parametry (např. z detailu záznamu).
+	 * Konstruktor balíčku. Přijímá volitelné výchozí parametry (např. z detailu nebo seznamu záznamů).
 	 *
 	 * @param array<string, mixed> $initial_params Výchozí hodnoty parametrů pro export/import
 	 */
@@ -73,10 +63,12 @@ abstract class abstract_csv_package {
 		$this->init_package();                                               // Nastavení kódu a názvu v potomkovi
 
 		foreach ($this->get_all_parameters_def() as $p_code => $p_def) {     // Inicializace výchozích hodnot parametrů
-			$this->params[$p_code] = (string)($p_def['default'] ?? '');      // Nastavení výchozí hodnoty z definice
+			$this->params[$p_code] = (string) ($p_def['default'] ?? '');     // Nastavení výchozí hodnoty z definice
 		}
 		foreach ($initial_params as $k => $v) {                              // Přepsání hodnotami předanými do konstruktoru
-			$this->params[(string)$k] = (string)$v;                          // Uložení předaného parametru
+			if (is_scalar($v)) {                                             // Pouze skalární hodnoty z requestu
+				$this->params[(string) $k] = (string) $v;                    // Uložení předaného parametru
+			}
 		}
 	}
 
@@ -90,7 +82,7 @@ abstract class abstract_csv_package {
 	 */
 	protected function phrase(string $builtin_code, string $default_caption, array $vars = []): string { // Načtení přeložené fráze
 		global $phrase_manager;                                              // Globální instance správce frází
-		if (!isset($phrase_manager) OR !($phrase_manager instanceof phrase_manager)) { // Kontrola inicializace správce frází
+		if (! isset($phrase_manager) OR ! ($phrase_manager instanceof phrase_manager)) { // Kontrola inicializace správce frází
 			$phrase_manager = new phrase_manager($this);                     // Inicializace správce frází pro balíček
 			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
 		}
@@ -104,7 +96,6 @@ abstract class abstract_csv_package {
 
 	/**
 	 * Potomek vrátí definici filtračních parametrů specifických pro daný balíček.
-	 * Formát: ['param_code' => ['label' => '...', 'type' => 'varchar|bit|date|uuid|int', 'mandatory' => true|false, 'default' => '...', 'options' => [...]]]
 	 *
 	 * @return array<string, array<string, mixed>>
 	 */
@@ -112,7 +103,6 @@ abstract class abstract_csv_package {
 
 	/**
 	 * Potomek vrátí pole SQL dotazů pro export jednotlivých tabulek podle zadaných parametrů.
-	 * Formát: ['table_name' => 'SELECT ...']
 	 *
 	 * @param array<string, string> $params Platné parametry exportu
 	 * @return array<string, string>
@@ -121,15 +111,6 @@ abstract class abstract_csv_package {
 
 	/**
 	 * Potomek vrátí definici očekávaných tabulek a jejich sloupců pro formální kontrolu při importu.
-	 * Formát:
-	 * [
-	 *   'table_name' => [
-	 *     'mandatory' => true|false,
-	 *     'columns' => [
-	 *       'col_name' => ['datatype' => 'varchar|bit|int|decimal|date|uuid', 'mandatory' => true|false]
-	 *     ]
-	 *   ]
-	 * ]
 	 *
 	 * @return array<string, array<string, mixed>>
 	 */
@@ -148,6 +129,12 @@ abstract class abstract_csv_package {
 				'mandatory' => true,
 				'default'   => '1'
 			],
+			'same_org_only' => [                                             // Volba omezení importu pouze do stejné organizace
+				'label'     => $this->phrase('lbl_param_same_org_only', 'Povolit import pouze do stejné organizace, která data exportovala'),
+				'type'      => 'bit',
+				'mandatory' => true,
+				'default'   => ($this->is_system_package ? '0' : '1')
+			],
 			'import_origin' => [                                             // Měkký audit původu balíčku
 				'label'     => $this->phrase('lbl_param_import_origin', 'Označení původu dat (import_origin)'),
 				'type'      => 'varchar',
@@ -156,7 +143,7 @@ abstract class abstract_csv_package {
 			]
 		];                                                                   // Konec standardních parametrů
 
-		if (!$this->is_system_package) {                                     // U nesystémových dat nabízíme volbu režimu zápisu
+		if (! $this->is_system_package) {                                    // U nesystémových dat nabízíme volbu režimu zápisu
 			$std_params['target_status'] = [                                 // Režim zápisu u klientských dat
 				'label'     => $this->phrase('lbl_param_target_status', 'Režim zápisu při importu'),
 				'type'      => 'varchar',
@@ -180,7 +167,7 @@ abstract class abstract_csv_package {
 	public function set_parameters_from_request(array $input): self {        // Načtení parametrů z požadavku
 		foreach ($this->get_all_parameters_def() as $p_code => $p_def) {     // Průchod definovanými parametry
 			if (array_key_exists($p_code, $input)) {                         // Pokud byl parametr v požadavku předán
-				$val = trim((string)$input[$p_code]);                        // Očištěná textová hodnota
+				$val = trim((string) $input[$p_code]);                       // Očištěná textová hodnota
 				if (($p_def['type'] ?? '') === 'bit') {                      // Normalizace bitového parametru
 					$val = ($val === '1' OR strtolower($val) === 'true') ? '1' : '0'; // Bit 1 nebo 0
 				}
@@ -194,7 +181,7 @@ abstract class abstract_csv_package {
 	 * Vrátí tajný klíč pro výpočet a ověření HMAC-SHA256 podpisu.
 	 */
 	protected function get_hmac_secret(): string {
-		$custom_key = (string)($GLOBALS['csv_package_secret'] ?? '');        // Volitelný klíč z config.php
+		$custom_key = (string) ($GLOBALS['csv_package_secret'] ?? '');       // Volitelný klíč z config.php
 		return ($custom_key !== '') ? $custom_key : self::DEFAULT_HMAC_KEY;  // Vrácení klíče pro HMAC
 	}
 
@@ -205,24 +192,35 @@ abstract class abstract_csv_package {
 		if ($val === null) {                                                 // Hodnota NULL se v CSV reprezentuje prázdným řetězcem
 			return '';                                                       // Prázdný řetězec
 		}
-		return str_replace("\r", '', (string)$val);                          // Odstranění všech znaků \r
+		return str_replace("\r", '', (string) $val);                         // Odstranění všech znaků \r
 	}
 
 	/**
 	 * Normalizuje hodnotu hlavičkového parametru před vložením do HMAC-SHA256.
 	 * U parametru `version_date` sjednotí formát data na `YYYY-MM-DD HH:MM`,
-	 * aby přeformátování buňky v MS Excelu (např. na `24.10.2026 14:35`) při
-	 * uložení souboru s `verify_data = 0` nerozbilo podpis hlavičky.
+	 * aby přeformátování buňky v MS Excelu při `verify_data = 0` nerozbilo podpis hlavičky.
 	 */
 	protected function normalize_param_for_hmac(string $param_code, string $val): string { // Normalizace parametru pro podpis
-		$trimmed = trim($val);                                               // Oříznutí okrajových mezer
+		$trimmed = trim(str_replace("\r", '', $val));                        // Oříznutí okrajových mezer a CR
 		if ($param_code === 'version_date' AND $trimmed !== '') {            // Speciální ošetření časového razítka verze
 			$parsed = date_from_string($trimmed);                            // Převod českého i ISO data na YYYY-MM-DD HH:MM:SS
 			if (is_string($parsed) AND strlen($parsed) >= 16) {              // Pokud se datum podařilo rozpoznat
 				return substr($parsed, 0, 16);                               // Sjednocení na minuty (YYYY-MM-DD HH:MM)
 			}
 		}
-		return $trimmed;                                                     // Ostatní parametry vracíme očištěné od okrajových mezer
+		return $trimmed;                                                     // Ostatní parametry vracíme očištěné
+	}
+
+	/**
+	 * Porovná dvě UUID organizací s podporou systémové nuly (0x00 === 00000000-0000-0000-0000-000000000000).
+	 */
+	protected function is_same_organization_uuid(string $org1, string $org2): bool { // Porovnání shodnosti organizací
+		if (is_zero_guid($org1) AND is_zero_guid($org2)) {                   // Obě organizace jsou systémové 0x00
+			return true;                                                     // Shoda systémové organizace
+		}
+		$c1 = strtolower(trim($org1, "{} \t\n\r\0\x0B"));                    // Normalizace 1. UUID
+		$c2 = strtolower(trim($org2, "{} \t\n\r\0\x0B"));                    // Normalizace 2. UUID
+		return ($c1 !== '' AND $c1 === $c2);                                 // Přesná shoda nenulových UUID
 	}
 
 	/**
@@ -243,29 +241,34 @@ abstract class abstract_csv_package {
 
 		$rows_html = '';                                                     // Sběrný HTML řetězec řádků tabulky parametrů
 		foreach ($this->get_all_parameters_def() as $p_code => $p_def) {     // Průchod všemi parametry balíčku
-			$label = htmlspecialchars((string)($p_def['label'] ?? $p_code)); // Popisek parametru
-			$is_mand = !empty($p_def['mandatory']);                          // Zda je parametr povinný
+			$label = htmlspecialchars((string) ($p_def['label'] ?? $p_code)); // Popisek parametru
+			$is_mand = ! empty($p_def['mandatory']);                         // Zda je parametr povinný
 			$req_mark = $is_mand ? ' <span style="color:#b91c1c;">*</span>' : ''; // Hvězdička povinného parametru
 			$req_attr = $is_mand ? 'required' : '';                          // HTML atribut required
-			$cur_val = (string)($this->params[$p_code] ?? '');               // Aktuální hodnota parametru
+			$cur_val = (string) ($this->params[$p_code] ?? '');              // Aktuální hodnota parametru
 			$safe_p_code = htmlspecialchars($p_code);                        // Ošetřený název pole
 			$safe_val = htmlspecialchars($cur_val);                          // Ošetřená hodnota pole
-			$p_type = (string)($p_def['type'] ?? 'varchar');                 // Typ parametru
+			$p_type = (string) ($p_def['type'] ?? 'varchar');                // Typ parametru
 
-			if (!empty($p_def['options']) AND is_array($p_def['options'])) { // Roletka <select> pro výčtový parametr
+			if (! empty($p_def['options']) AND is_array($p_def['options'])) { // Roletka <select> pro výčtový parametr
 				$opts_html = '';                                             // HTML opcí roletky
 				foreach ($p_def['options'] as $opt_k => $opt_v) {            // Sestavení položek roletky
-					$sel = ((string)$opt_k === $cur_val) ? 'selected' : '';  // Označení vybrané položky
-					$opts_html .= '<option value="' . htmlspecialchars((string)$opt_k) . '" ' . $sel . '>' . htmlspecialchars((string)$opt_v) . '</option>'; // Volba
+					$sel = ((string) $opt_k === $cur_val) ? 'selected' : ''; // Označení vybrané položky
+					$opts_html .= '<option value="' . htmlspecialchars((string) $opt_k) . '" ' . $sel . '>' . htmlspecialchars((string) $opt_v) . '</option>'; // Volba
 				}
-				$input_html = "<select name=\"{$safe_p_code}\" style=\"width: 100%; max-width: 380px; padding: 6px;\">{$opts_html}</select>"; // HTML select
+				$onchange_attr = ! empty($p_def['reload_on_change']) ? ' onchange="if(window.bcmReloadCsvClassParams){window.bcmReloadCsvClassParams(this.value);}"' : ''; // Volitelný reload
+				$input_html = "<select name=\"{$safe_p_code}\"{$onchange_attr} style=\"width: 100%; max-width: 460px; padding: 6px;\">{$opts_html}</select>"; // HTML select
 			} elseif ($p_type === 'bit') {                                   // Checkbox pro bitový parametr
 				$chk = ($cur_val === '1') ? 'checked' : '';                  // Stav zaškrtnutí
 				$input_html = "<input type=\"hidden\" name=\"{$safe_p_code}\" value=\"0\"><input type=\"checkbox\" name=\"{$safe_p_code}\" value=\"1\" {$chk} style=\"cursor: pointer;\">"; // HTML checkbox
 			} elseif ($p_type === 'date') {                                  // Datumové pole
 				$input_html = "<input type=\"date\" name=\"{$safe_p_code}\" value=\"{$safe_val}\" {$req_attr} style=\"width: 180px; padding: 6px;\">"; // HTML date
+			} elseif ($p_type === 'textarea') {                              // Víceřádkové pole (např. parametr info s popisem filtru)
+				$rows_cnt = (int) ($p_def['rows'] ?? 4);                     // Počet řádků textarea
+				$ph_attr = ! empty($p_def['placeholder']) ? ' placeholder="' . htmlspecialchars((string) $p_def['placeholder']) . '"' : ''; // Placeholder
+				$input_html = "<textarea name=\"{$safe_p_code}\" rows=\"{$rows_cnt}\"{$ph_attr} {$req_attr} style=\"width: 100%; max-width: 460px; padding: 6px; box-sizing: border-box; font-family: monospace; font-size: 12px;\">{$safe_val}</textarea>"; // HTML textarea
 			} else {
-				$input_html = "<input type=\"text\" name=\"{$safe_p_code}\" value=\"{$safe_val}\" {$req_attr} style=\"width: 100%; max-width: 380px; padding: 6px; box-sizing: border-box;\">"; // Textové pole
+				$input_html = "<input type=\"text\" name=\"{$safe_p_code}\" value=\"{$safe_val}\" {$req_attr} style=\"width: 100%; max-width: 460px; padding: 6px; box-sizing: border-box;\">"; // Textové pole
 			}
 
 			$rows_html .= "<tr><td style=\"width: 35%; font-weight: bold; background-color: #f8fafc;\">{$label}{$req_mark}</td><td>{$input_html}</td></tr>\n"; // Řádek parametru
@@ -287,38 +290,54 @@ HTML;
 	}
 
 	/**
+	 * Hook pro potomky: umožňuje doplnit nebo upravit hlavičkové parametry těsně před podpisem a exportem.
+	 *
+	 * @param array<string, string> $header_params Pole hlavičkových parametrů
+	 */
+	protected function customize_export_header_params(array &$header_params): void { // Hook úpravy hlavičky před exportem
+		// Výchozí prázdná implementace pro překrytí v potomkovi (např. csv_package_simple_class)
+	}
+
+	/**
 	 * Provede kompletní export balíčku do víceblokového CSV souboru a odešle jej do prohlížeče.
-	 * Všechny hodnoty jsou exportovány jako varchar (očištěné od \r) přes standardní fputcsv()
-	 * s dvojitými uvozovkami '"' a výchozím oddělovačem středník ';'.
 	 *
 	 * @param string $delimiter Oddělovač polí (výchozí ';' pro přímé otevření v MS Excelu)
 	 */
 	public function export_to_browser(string $delimiter = ';'): void {       // Export balíčku do prohlížeče
+		global $dbsession;                                                   // Globální kontext relace
 		if ($delimiter === '') {                                             // Pojistka při předání prázdného oddělovače
 			$delimiter = ';';                                                // Výchozím oddělovačem je středník
 		}
 
-		$verify_data = ((string)($this->params['verify_data'] ?? '1') === '1') ? '1' : '0'; // Zda se podepisují i data
-		$version_date = date('Y-m-d H:i');                                   // Časové razítko exportu (s přesností na minuty kvůli Excelu)
+		$verify_data = ((string) ($this->params['verify_data'] ?? '1') === '1') ? '1' : '0'; // Zda se podepisují i data
+		$same_org = ((string) ($this->params['same_org_only'] ?? '0') === '1') ? '1' : '0'; // Omezení na stejnou organizaci
+		$version_date = date('Y-m-d H:i');                                   // Časové razítko exportu
+		$curr_org_uuid = get_session_org();                                  // UUID organizace provádějící export
+		$curr_org_name = (string) ($dbsession['organization_name'] ?? '');   // Název organizace provádějící export
 
 		// 1. Sestavení uspořádaného seznamu parametrů pro 1. blok souboru
 		$header_params = [                                                   // Základní identifikační parametry balíčku
-			'package_name' => $this->package_code,                           // Kód balíčku na prvním řádku
-			'version_date' => $version_date,                                 // Datum a čas pořízení exportu
-			'verify_data'  => $verify_data                                   // Příznak kontroly nezměnitelnosti dat
+			'package_name'    => $this->package_code,                        // Kód balíčku na prvním řádku
+			'version_date'    => $version_date,                              // Datum a čas pořízení exportu
+			'verify_data'     => $verify_data,                               // Příznak kontroly nezměnitelnosti dat
+			'same_org_only'   => $same_org,                                  // Příznak omezení importu na tutéž organizaci
+			'source_org_uuid' => $curr_org_uuid,                             // UUID zdrojové organizace (chráněno podpisem)
+			'source_org_name' => $this->clean_cell_value($curr_org_name)     // Čitelný název zdrojové organizace
 		];                                                                   // Konec základních parametrů
 
 		foreach ($this->get_all_parameters_def() as $p_code => $p_def) {     // Přidání ostatních parametrů balíčku
-			if (!isset($header_params[$p_code])) {                           // Zamezení duplicity verify_data
+			if (! isset($header_params[$p_code])) {                          // Zamezení duplicity již přidaných klíčů
 				$header_params[$p_code] = $this->clean_cell_value($this->params[$p_code] ?? ''); // Hodnota parametru
 			}
 		}
+
+		$this->customize_export_header_params($header_params);               // Případné doplnění parametrů potomkem
 
 		// 2. Inicializace HMAC-SHA256 kontextu a dočasného streamu pro bloky tabulek
 		$hmac_ctx = hash_init('sha256', HASH_HMAC, $this->get_hmac_secret()); // Inicializace HMAC výpočtu
 		foreach ($header_params as $pk => $pv) {                             // Zařazení parametrů do podpisu
 			if ($pk !== 'target_status') {                                   // target_status smí uživatel při importu změnit
-				$norm_pv = $this->normalize_param_for_hmac((string)$pk, (string)$pv); // Normalizace hodnoty pro HMAC
+				$norm_pv = $this->normalize_param_for_hmac((string) $pk, (string) $pv); // Normalizace hodnoty pro HMAC
 				hash_update($hmac_ctx, "P:{$pk}={$norm_pv}\n");              // Přidání parametru do HMAC
 			}
 		}
@@ -337,8 +356,8 @@ HTML;
 				$fields_meta = sqlsrv_field_metadata($stmt);                 // Načtení metadat sloupců přímo ze statementu
 				if (is_array($fields_meta)) {                                // Pokud ovladač vrátil metadata sloupců
 					foreach ($fields_meta as $fm) {                          // Průchod metadaty sloupců
-						if (!empty($fm['Name'])) {                           // Kontrola názvu sloupce
-							$col_names[] = (string)$fm['Name'];              // Přidání přesného názvu sloupce ze SELECTu
+						if (! empty($fm['Name'])) {                          // Kontrola názvu sloupce
+							$col_names[] = (string) $fm['Name'];             // Přidání přesného názvu sloupce ze SELECTu
 						}
 					}
 				}
@@ -346,10 +365,10 @@ HTML;
 
 			$rows = sqlarray_simple($stmt);                                  // Načtení všech řádků do paměti a uvolnění statementu
 
-			if (empty($col_names) AND is_array($rows) AND !empty($rows)) {   // Fallback pro případ nedostupných metadat
+			if (empty($col_names) AND is_array($rows) AND ! empty($rows)) {  // Fallback pro případ nedostupných metadat
 				foreach (array_keys($rows[0]) as $rk) {                      // Průchod klíči prvního řádku
-					if (!is_numeric($rk)) {                                  // Ignorování číselných indexů z fetch()
-						$col_names[] = (string)$rk;                          // Název sloupce z prvního řádku
+					if (! is_numeric($rk)) {                                 // Ignorování číselných indexů z fetch()
+						$col_names[] = (string) $rk;                         // Název sloupce z prvního řádku
 					}
 				}
 			}
@@ -378,34 +397,31 @@ HTML;
 							hash_update($hmac_ctx, "D:{$r_idx}:{$c_idx}={$c_val}\n"); // Přidání buňky do HMAC
 						}
 					}
-					fputcsv($tables_stream, $line_vals, $delimiter, '"', ''); // Zápis datového řádku (středníky v buňce jsou v "uvozovkách")
+					fputcsv($tables_stream, $line_vals, $delimiter, '"', ''); // Zápis datového řádku
 				}
 			}
 
-			// Prázdný řádek ukončující blok tabulky
 			fwrite($tables_stream, "\n");                                    // Oddělení tabulky prázdným řádkem
 		}
 
 		$header_params['signature'] = hash_final($hmac_ctx);                 // Dokončení výpočtu HMAC-SHA256 podpisu
 
 		// 3. Odeslání HTTP hlaviček a sestavení finálního CSV výstupu
-		$filename = sanitize_filename($this->package_code . '_' . date('Ymd_His')) . '.csv'; // Bezpečný název souboru s koncovkou .csv
+		$cls_part = ! empty($header_params['class_name']) ? ('_' . $header_params['class_name']) : ''; // Doplnění názvu třídy do jména souboru
+		$filename = sanitize_filename($this->package_code . $cls_part . '_' . date('Ymd_His')) . '.csv'; // Bezpečný název souboru
 
 		header('Content-Type: text/csv; charset=UTF-8');
 		header('Content-Disposition: attachment; filename="' . $filename . '"'); // Hlavička pro stažení souboru
 		header('Cache-Control: max-age=0');
 
 		$out = fopen('php://output', 'w');                                   // Otevření výstupního proudu prohlížeče
-		// Zápis UTF-8 BOM pro bezproblémové otevření diakritiky a rozdělení sloupců v MS Excelu
-		fwrite($out, "\xEF\xBB\xBF");                                        // Sekvence UTF-8 BOM
+		fwrite($out, "\xEF\xBB\xBF");                                        // Sekvence UTF-8 BOM pro MS Excel
 
-		// Zápis 1. bloku (parametry balíčku včetně vypočteného podpisu)
-		foreach ($header_params as $pk => $pv) {                             // Výpis parametrů balíčku
-			fputcsv($out, [(string)$pk, (string)$pv], $delimiter, '"', '');  // Řádek parametru: kód;hodnota
+		foreach ($header_params as $pk => $pv) {                             // Výpis parametrů balíčku (včetně víceřádkového info v uvozovkách)
+			fputcsv($out, [(string) $pk, (string) $pv], $delimiter, '"', ''); // Řádek parametru: kód;hodnota
 		}
 		fwrite($out, "\n");                                                  // Prázdný řádek ukončující blok parametrů
 
-		// Překopírování připravených bloků tabulek do výstupu
 		rewind($tables_stream);                                              // Přesun na začátek dočasného proudu
 		stream_copy_to_stream($tables_stream, $out);                         // Proudové odeslání všech tabulek
 		fclose($tables_stream);                                              // Uzavření dočasného proudu
@@ -415,33 +431,28 @@ HTML;
 
 	/**
 	 * FÁZE 1 IMPORTU: Přečte nahraný CSV soubor, v jediné transakci vyčistí a naplní
-	 * tabulky `session_import_*`, ověří HMAC-SHA256 podpis a provede formální kontrolu
-	 * povinných parametrů, tabulek, sloupců a datových typů.
-	 *
-	 * @param string $filepath  Cesta k uploadovanému souboru
-	 * @param string $delimiter Oddělovač (pokud '', detekuje se automaticky z 1. řádku: ';', "\t" nebo ',')
-	 * @return bool True pokud je balíček bez kritických chyb (severity < 3)
+	 * tabulky `session_import_*`, ověří HMAC-SHA256 podpis, zkontroluje omezení
+	 * `same_org_only` a provede formální kontrolu povinných parametrů, tabulek a sloupců.
 	 */
 	public function load_file_to_session(string $filepath, string $delimiter = ''): bool { // Fáze 1: Načtení do session tabulek
 		global $SID;                                                         // Identifikátor aktuální relace prohlížeče
 		$this->phase1_ready = false;                                         // Výchozí stav před validací
 
-		if (!is_readable($filepath)) {                                       // Kontrola čitelnosti souboru
+		if (! is_readable($filepath)) {                                      // Kontrola čitelnosti souboru
 			$this->rqm->add_message($this->phrase('err_file_not_readable', 'Vstupní soubor nelze přečíst.'), 3); // Chyba souboru
 			return false;                                                    // Ukončení při chybě
 		}
 
 		$fh = fopen_bom($filepath, 'r');                                     // Otevření souboru s přeskočením případného UTF-8 BOM
-		if (!$fh) {                                                          // Kontrola otevření deskriptoru
+		if (! $fh) {                                                         // Kontrola otevření deskriptoru
 			$this->rqm->add_message($this->phrase('err_file_open_failed', 'Nepodařilo se otevřít vstupní soubor.'), 3); // Chyba
 			return false;                                                    // Ukončení při chybě
 		}
 
-		// Automatická detekce oddělovače (středník vs. tabulátor vs. čárka) z prvního řádku
-		if ($delimiter === '') {                                             // Pokud nebyl oddělovač zadán explicitně
+		if ($delimiter === '') {                                             // Automatická detekce oddělovače z 1. řádku
 			$pos = ftell($fh);                                               // Zapamatování pozice za BOM
-			$first_line = (string)fgets($fh);                                // Přečtení prvního řádku souboru
-			fseek($fh, (int)$pos);                                           // Návrat ukazatele na začátek dat
+			$first_line = (string) fgets($fh);                               // Přečtení prvního řádku souboru
+			fseek($fh, (int) $pos);                                          // Návrat ukazatele na začátek dat
 			if (str_contains($first_line, ';')) {                            // Prioritní detekce středníku (standard pro Excel)
 				$delimiter = ';';                                            // Oddělovačem je středník
 			} elseif (str_contains($first_line, "\t")) {                     // Detekce tabulátoru (TSV)
@@ -451,7 +462,6 @@ HTML;
 			}
 		}
 
-		// Zahájení transakce a reset rozpracovaných dat v session_import_* pro aktuální relaci
 		sqlrun("BEGIN TRAN");                                                // Spuštění transakce pro rychlé naplnění stagingu
 		sqlrun("EXEC p_csv_clear_session_import");                           // Vyčištění session tabulek přes uloženou proceduru
 
@@ -462,15 +472,14 @@ HTML;
 		$table_id = 0;                                                       // Pořadové číslo tabulky v souboru
 		$global_col_id = 0;                                                  // Globální pořadové číslo sloupce (column_id)
 		$current_table = '';                                                 // Název právě čtené tabulky
-		$current_cols = [];                                                  // Mapa sloupců aktuální tabulky: [index => ['id' => ..., 'name' => ...]]
+		$current_cols = [];                                                  // Mapa sloupců aktuální tabulky
 		$current_row_id = 0;                                                 // Pořadové číslo řádku v aktuální tabulce
 		$pending_cells = [];                                                 // Buffer buněk aktuální tabulky pro dávkový INSERT
 
 		$hmac_header_ctx = hash_init('sha256', HASH_HMAC, $this->get_hmac_secret()); // HMAC pouze pro hlavičku
 		$hmac_full_ctx = hash_init('sha256', HASH_HMAC, $this->get_hmac_secret());   // HMAC pro hlavičku i data
 
-		while (($row = fgetcsv($fh, 0, $delimiter, '"', '')) !== false) {    // Proudové čtení CSV řádků
-			// Kontrola, zda je řádek prázdný (všechny buňky prázdné)
+		while (($row = fgetcsv($fh, 0, $delimiter, '"', '')) !== false) {    // Proudové čtení CSV řádků (včetně víceřádkových buněk v "")
 			$is_empty_row = true;                                            // Příznak prázdného řádku
 			foreach ($row as &$cell) {                                       // Očištění všech buněk řádku od \r
 				$cell = $this->clean_cell_value($cell);                      // Odstranění CR z buňky
@@ -484,7 +493,7 @@ HTML;
 				if ($state === 'PARAMS' AND $param_order > 0) {              // Konec bloku parametrů
 					$state = 'TABLE_WAIT';                                   // Přechod na čekání na název první tabulky
 				} elseif ($state === 'DATA' OR $state === 'COLS') {          // Konec bloku dat tabulky -> uložíme buffer buněk
-					if (!empty($pending_cells)) {                            // Vyprázdnění zbývajících buněk tabulky do DB
+					if (! empty($pending_cells)) {                           // Vyprázdnění zbývajících buněk tabulky do DB
 						sqlrun("INSERT INTO session_import_data (wwwsession, row_id, column_id, cell_value) VALUES " . implode(', ', $pending_cells)); // Zápis buněk
 						$pending_cells = [];                                 // Vyčištění bufferu buněk
 					}
@@ -498,8 +507,8 @@ HTML;
 			}
 
 			if ($state === 'PARAMS') {                                       // Čtení 1. bloku parametrů
-				$p_key = trim((string)($row[0] ?? ''));                      // Kód parametru v prvním sloupci
-				$p_val = (string)($row[1] ?? '');                            // Hodnota parametru ve druhém sloupci
+				$p_key = trim((string) ($row[0] ?? ''));                     // Kód parametru v prvním sloupci
+				$p_val = (string) ($row[1] ?? '');                           // Hodnota parametru ve druhém sloupci
 				if ($p_key === '') {                                         // Přeskočení neplatného parametru
 					continue;                                                // Další řádek
 				}
@@ -512,23 +521,23 @@ HTML;
 				sqlrun("INSERT INTO session_import_parameter (wwwsession, param_order, parameter_code, parameter_value) VALUES ({$safe_sid}, {$param_order}, {$safe_pk}, {$safe_pv})"); // Uložení parametru
 
 				if ($p_key !== 'signature' AND $p_key !== 'target_status') { // Do HMAC vstupují všechny podepsané parametry
-					$norm_pv = $this->normalize_param_for_hmac($p_key, $p_val); // Normalizace hodnoty (např. version_date po uložení v Excelu)
+					$norm_pv = $this->normalize_param_for_hmac($p_key, $p_val); // Normalizace hodnoty
 					hash_update($hmac_header_ctx, "P:{$p_key}={$norm_pv}\n"); // Aktualizace hlavičkového HMAC
 					hash_update($hmac_full_ctx, "P:{$p_key}={$norm_pv}\n");  // Aktualizace plného HMAC
 				}
 			} elseif ($state === 'TABLE_WAIT') {                             // Očekáváme řádek s názvem tabulky
-				$current_table = trim((string)($row[0] ?? ''));              // Název tabulky z první buňky
+				$current_table = trim((string) ($row[0] ?? ''));             // Název tabulky z první buňky
 				$table_id++;                                                 // Zvýšení pořadového čísla tabulky
 				$current_cols = [];                                          // Vyčištění seznamu sloupců
 				$current_row_id = 0;                                         // Vynulování počitadla řádků tabulky
 				$safe_tname = charliteral($current_table, 128);              // SQL literál názvu tabulky
-				sqlrun("INSERT INTO session_import_table (wwwsession, table_id, table_name, row_count) VALUES ({$safe_sid}, {$table_id}, {$safe_tname}, 0)"); // Založení záznamu tabulky (kvůli FK sloupců)
+				sqlrun("INSERT INTO session_import_table (wwwsession, table_id, table_name, row_count) VALUES ({$safe_sid}, {$table_id}, {$safe_tname}, 0)"); // Založení záznamu tabulky
 				$state = 'COLS';                                             // Následující řádek bude hlavička sloupců
 			} elseif ($state === 'COLS') {                                   // Čtení řádku s názvy sloupců tabulky
 				$col_names_for_hmac = [];                                    // Pole názvů sloupců pro HMAC
 				$col_insert_vals = [];                                       // Pole pro dávkový INSERT sloupců
 				foreach ($row as $c_idx => $col_raw) {                       // Průchod buňkami hlavičky sloupců
-					$col_name = trim((string)$col_raw);                      // Očištěný název sloupce
+					$col_name = trim((string) $col_raw);                     // Očištěný název sloupce
 					if ($col_name === '') {                                  // Konec hlavičky sloupců při prázdné buňce
 						break;                                               // Ukončení čtení hlavičky
 					}
@@ -541,7 +550,7 @@ HTML;
 					$safe_cname = charliteral($col_name, 128);               // SQL literál názvu sloupce
 					$col_insert_vals[] = "({$safe_sid}, {$global_col_id}, {$table_id}, {$safe_cname})"; // Položka VALUES sloupce
 				}
-				if (!empty($col_insert_vals)) {                              // Dávkové uložení všech sloupců tabulky
+				if (! empty($col_insert_vals)) {                             // Dávkové uložení všech sloupců tabulky
 					sqlrun("INSERT INTO session_import_column (wwwsession, column_id, table_id, column_name) VALUES " . implode(', ', $col_insert_vals)); // Zápis sloupců
 				}
 				hash_update($hmac_full_ctx, "T:{$current_table}:" . implode(',', $col_names_for_hmac) . "\n"); // Podpis hlavičky tabulky
@@ -549,24 +558,23 @@ HTML;
 			} elseif ($state === 'DATA') {                                   // Čtení datového řádku tabulky
 				$current_row_id++;                                           // Zvýšení pořadového čísla datového řádku
 				foreach ($current_cols as $c_idx => $c_info) {               // Průchod definovanými sloupci tabulky
-					$val = (string)($row[$c_idx] ?? '');                     // Hodnota buňky
+					$val = (string) ($row[$c_idx] ?? '');                    // Hodnota buňky
 					if ($val !== '') {                                       // Ukládáme a podepisujeme neprázdné buňky
-						$cid = (int)$c_info['id'];                           // Globální ID sloupce
+						$cid = (int) $c_info['id'];                          // Globální ID sloupce
 						$safe_val = charliteral($val);                       // SQL literál hodnoty buňky
 						$pending_cells[] = "({$safe_sid}, {$current_row_id}, {$cid}, {$safe_val})"; // Přidání do dávkového bufferu
 						hash_update($hmac_full_ctx, "D:{$current_row_id}:{$c_idx}={$val}\n"); // Přidání do HMAC
 					}
 				}
-				if (count($pending_cells) >= 250) {                          // Odeslání dávky buněk při naplnění bufferu (max 1000 v T-SQL)
+				if (count($pending_cells) >= 250) {                          // Odeslání dávky buněk při naplnění bufferu
 					sqlrun("INSERT INTO session_import_data (wwwsession, row_id, column_id, cell_value) VALUES " . implode(', ', $pending_cells)); // Dávkový zápis buněk
 					$pending_cells = [];                                     // Vyprázdnění bufferu
 				}
 			}
 		}
 
-		// Pokud soubor nebyl na konci ukončen prázdným řádkem, zapíšeme poslední otevřenou tabulku
 		if (($state === 'DATA' OR $state === 'COLS') AND $current_table !== '') { // Ošetření neukončeného posledního bloku
-			if (!empty($pending_cells)) {                                    // Vyprázdnění zbývajících buněk
+			if (! empty($pending_cells)) {                                   // Vyprázdnění zbývajících buněk
 				sqlrun("INSERT INTO session_import_data (wwwsession, row_id, column_id, cell_value) VALUES " . implode(', ', $pending_cells)); // Zápis buněk
 				$pending_cells = [];                                         // Vyčištění bufferu
 			}
@@ -577,15 +585,15 @@ HTML;
 		sqlrun("COMMIT");                                                    // Potvrzení transakce načtení souboru do session tabulek
 
 		// =====================================================================
-		// VALIDACE PODPISU, PARAMETRŮ, TABULEK, SLOUPCŮ A POVINNÝCH HODNOT
+		// VALIDACE PODPISU, OMEZENÍ NA STEJNOU ORGANIZACI A STRUKTURY BALÍČKU
 		// =====================================================================
 		$calc_header_sig = hash_final($hmac_header_ctx);                     // Vypočtený podpis hlavičky
 		$calc_full_sig = hash_final($hmac_full_ctx);                         // Vypočtený podpis celého souboru
-		$file_sig = (string)($loaded_params['signature'] ?? '');             // Podpis uvedený v souboru
-		$verify_data = ((string)($loaded_params['verify_data'] ?? '1') === '1'); // Zda soubor vyžaduje kontrolu dat
+		$file_sig = (string) ($loaded_params['signature'] ?? '');            // Podpis uvedený v souboru
+		$verify_data = ((string) ($loaded_params['verify_data'] ?? '1') === '1'); // Zda soubor vyžaduje kontrolu dat
 
 		$expected_sig = $verify_data ? $calc_full_sig : $calc_header_sig;    // Očekávaný podpis podle režimu verify_data
-		if ($file_sig === '' OR !hash_equals($expected_sig, $file_sig)) {    // Striktní kontrola podpisu v konstantním čase
+		if ($file_sig === '' OR ! hash_equals($expected_sig, $file_sig)) {   // Striktní kontrola podpisu v konstantním čase
 			$this->rqm->add_message($this->phrase('err_invalid_signature', 'Neplatný bezpečnostní podpis souboru (soubor byl neautorizovaně změněn nebo poškozen).'), 3)
 				->setobject('Parametr', 'signature');                        // Zápis nepropustné chyby podpisu
 		} else {
@@ -595,8 +603,28 @@ HTML;
 			$this->rqm->add_message($sig_msg, 1)->setobject('Parametr', 'signature'); // Potvrzení platnosti podpisu
 		}
 
+		// Kontrola obecného parametru same_org_only (omezení importu pouze do stejné organizace)
+		$same_org_only = ((string) ($loaded_params['same_org_only'] ?? '0') === '1'); // Zda balíček vyžaduje shodnou organizaci
+		$src_org_uuid = (string) ($loaded_params['source_org_uuid'] ?? '');  // Zdrojová organizace z hlavičky balíčku
+		$src_org_name = (string) ($loaded_params['source_org_name'] ?? $src_org_uuid); // Název zdrojové organizace
+		$curr_org_uuid = get_session_org();                                  // Aktuálně přihlášená organizace uživatele
+
+		if ($same_org_only) {                                                // Pokud bylo při exportu zapnuto omezení na stejnou organizaci
+			if ($src_org_uuid === '' OR ! $this->is_same_organization_uuid($src_org_uuid, $curr_org_uuid)) { // Neshoda organizací
+				$this->rqm->add_message(
+					$this->phrase('err_same_org_only_blocked', 'Import není umožněn: Balíček má nastaveno omezení importu pouze do stejné organizace, která data exportovala (same_org_only = 1).'),
+					3
+				)->setobject('Zdrojová organizace', $src_org_name);          // Kritická chyba blokující Fázi 2 již v 1. fázi
+			} else {
+				$this->rqm->add_message(
+					$this->phrase('msg_same_org_only_verified', 'Kontrola organizace (same_org_only = 1) proběhla úspěšně – import probíhá do stejné organizace.'),
+					1
+				)->setobject('Organizace', $src_org_name);                   // Potvrzení shody organizace
+			}
+		}
+
 		// Kontrola shody kódu balíčku
-		$file_pkg = (string)($loaded_params['package_name'] ?? '');          // Název balíčku ze souboru
+		$file_pkg = (string) ($loaded_params['package_name'] ?? '');         // Název balíčku ze souboru
 		if ($file_pkg !== $this->package_code) {                             // Kontrola shody s očekávaným balíčkem
 			$this->rqm->add_message($this->phrase('err_wrong_package_code', 'Kód balíčku v souboru neodpovídá zvolenému typu importu.'), 3)
 				->setobject('package_name', $file_pkg);                      // Chyba neshody balíčku
@@ -604,7 +632,7 @@ HTML;
 
 		// Kontrola povinných parametrů
 		foreach ($this->get_all_parameters_def() as $p_code => $p_def) {     // Průchod definicemi parametrů
-			if (!empty($p_def['mandatory']) AND trim((string)($loaded_params[$p_code] ?? '')) === '') { // Chybějící povinný parametr
+			if (! empty($p_def['mandatory']) AND trim((string) ($loaded_params[$p_code] ?? '')) === '') { // Chybějící povinný parametr
 				$this->rqm->add_message($this->phrase('err_missing_mandatory_param', 'Chybí povinný parametr balíčku.'), 3)
 					->setobject('Parametr', $p_code);                        // Zápis chyby parametru
 			}
@@ -620,8 +648,8 @@ HTML;
 		");                                                                  // Načtené sloupce seskupené podle tabulky
 
 		foreach ($this->get_tables_definition() as $t_name => $t_def) {      // Průchod definicemi tabulek balíčku
-			$is_mand_tab = !empty($t_def['mandatory']);                      // Zda je tabulka v balíčku povinná
-			if (!isset($loaded_tables[$t_name])) {                           // Pokud tabulka v souboru vůbec není
+			$is_mand_tab = ! empty($t_def['mandatory']);                     // Zda je tabulka v balíčku povinná
+			if (! isset($loaded_tables[$t_name])) {                          // Pokud tabulka v souboru vůbec není
 				if ($is_mand_tab) {                                          // Chybějící povinná tabulka je kritická chyba
 					$this->rqm->add_message($this->phrase('err_missing_mandatory_table', 'V souboru chybí povinná tabulka.'), 3)
 						->setobject('Tabulka', $t_name);                     // Zápis chyby chybějící tabulky
@@ -629,23 +657,23 @@ HTML;
 				continue;                                                    // Přechod na další tabulku
 			}
 
-			$t_row_count = (int)$loaded_tables[$t_name]['row_count'];        // Počet načtených řádků tabulky
+			$t_row_count = (int) $loaded_tables[$t_name]['row_count'];       // Počet načtených řádků tabulky
 			$this->rqm->add_message($this->phrase('msg_table_loaded_rows', 'Tabulka načtena do staging úložiště.'), 0)
 				->setobject('Tabulka', $t_name)
-				->setdetail((string)$t_row_count);                           // Zápis počtu řádků do logu
+				->setdetail((string) $t_row_count);                          // Zápis počtu řádků do logu
 
 			$tab_cols_map = [];                                              // Mapa načtených sloupců tabulky: [col_name => column_id]
 			if (isset($loaded_cols[$t_name]) AND is_array($loaded_cols[$t_name])) { // Sestavení mapy sloupců
 				foreach ($loaded_cols[$t_name] as $lc_row) {                 // Průchod sloupci tabulky
-					$tab_cols_map[(string)$lc_row['column_name']] = (int)$lc_row['column_id']; // Uložení column_id
+					$tab_cols_map[(string) $lc_row['column_name']] = (int) $lc_row['column_id']; // Uložení column_id
 				}
 			}
 
 			$cols_def = $t_def['columns'] ?? [];                             // Definice očekávaných sloupců tabulky
 			if (is_array($cols_def)) {                                       // Kontrola platného pole definic sloupců
 				foreach ($cols_def as $c_name => $c_props) {                 // Průchod očekávanými sloupci
-					$is_mand_col = !empty($c_props['mandatory']);            // Zda je sloupec povinný
-					if (!isset($tab_cols_map[$c_name])) {                    // Sloupec v hlavičce CSV chybí
+					$is_mand_col = ! empty($c_props['mandatory']);           // Zda je sloupec povinný
+					if (! isset($tab_cols_map[$c_name])) {                   // Sloupec v hlavičce CSV chybí
 						if ($is_mand_col) {                                  // Chybějící povinný sloupec
 							$this->rqm->add_message($this->phrase('err_missing_mandatory_col', 'V tabulce chybí povinný sloupec.'), 3)
 								->setobject($t_name, $c_name);               // Zápis chyby sloupce
@@ -653,11 +681,10 @@ HTML;
 						continue;                                            // Další sloupec
 					}
 
-					// Pokud je sloupec povinný a tabulka má řádky, zkontrolujeme, že v každém řádku 1..row_count je neprázdná hodnota
 					if ($is_mand_col AND $t_row_count > 0) {                 // Kontrola vyplnění povinných hodnot
 						$cid = $tab_cols_map[$c_name];                       // Globální ID kontrolovaného sloupce
 						$cnt_row = sqlfirstrow("SELECT COUNT(1) AS cnt FROM session_import_data WHERE wwwsession = {$safe_sid} AND column_id = {$cid} AND LTRIM(RTRIM(cell_value)) <> ''"); // Počet vyplněných řádků
-						$filled_cnt = (int)($cnt_row['cnt'] ?? 0);           // Zjištěný počet neprázdných buněk
+						$filled_cnt = (int) ($cnt_row['cnt'] ?? 0);          // Zjištěný počet neprázdných buněk
 						if ($filled_cnt < $t_row_count) {                    // Některé řádky mají povinnou buňku prázdnou
 							$missing_cnt = $t_row_count - $filled_cnt;       // Počet chybějících hodnot
 							$this->rqm->add_message($this->phrase('err_empty_mandatory_cells', 'Sloupec obsahuje prázdné hodnoty v povinném poli.'), 3)
@@ -674,10 +701,8 @@ HTML;
 
 	/**
 	 * Vykreslí informační <div> po Fázi 1 importu se statistikou načtených tabulek,
-	 * přehledem parametrů, zprávami `request_message` a tlačítkem pro spuštění Fáze 2.
-	 *
-	 * @param string $form_action Cílová URL adresa formuláře pro potvrzení Fáze 2
-	 * @return string HTML kód rekapitulace Fáze 1
+	 * přehledem parametrů (včetně víceřádkového info), zprávami `request_message`
+	 * a tlačítkem pro spuštění Fáze 2.
 	 */
 	public function render_import_summary_div(string $form_action = ''): string { // Vykreslení přehledu Fáze 1
 		global $SID;                                                         // Identifikátor relace
@@ -705,19 +730,19 @@ HTML;
 		$p_html = '';                                                        // HTML řádků parametrů
 		if (is_array($params_rows)) {                                        // Průchod načtenými parametry
 			foreach ($params_rows as $pr) {                                  // Zpracování parametru
-				$pk = (string)$pr['parameter_code'];                         // Kód parametru
-				$pv = (string)$pr['parameter_value'];                        // Hodnota parametru
+				$pk = (string) $pr['parameter_code'];                        // Kód parametru
+				$pv = (string) $pr['parameter_value'];                       // Hodnota parametru
 				$safe_pk = htmlspecialchars($pk);                            // Ošetřený kód parametru
-				$safe_pv = htmlspecialchars($pv);                            // Ošetřená hodnota parametru
+				$safe_pv = nl2br(htmlspecialchars($pv));                     // Ošetřená hodnota se zachováním více řádků (pro info)
 
-				if ($pk === 'target_status' AND !$this->is_system_package) { // U nesystémového balíčku umožníme přepnutí režimu F/A
+				if ($pk === 'target_status' AND ! $this->is_system_package) { // U nesystémového balíčku umožníme přepnutí režimu F/A
 					$sel_f = ($pv === 'F') ? 'selected' : '';                // Označení volby F
 					$sel_a = ($pv === 'A') ? 'selected' : '';                // Označení volby A
 					$opt_f = htmlspecialchars($this->phrase('opt_status_forward', 'Uložit do návrhů ke schválení (F)')); // Popisek F
 					$opt_a = htmlspecialchars($this->phrase('opt_status_direct', 'Přímý přepis schválených záznamů (A)')); // Popisek A
 					$val_cell = "<select name=\"override_param[target_status]\" style=\"padding: 4px;\"><option value=\"F\" {$sel_f}>{$opt_f}</option><option value=\"A\" {$sel_a}>{$opt_a}</option></select>"; // Roletka
 				} else {
-					$val_cell = "<span style=\"font-family: monospace;\">{$safe_pv}</span>"; // Statický výpis hodnoty
+					$val_cell = "<div style=\"font-family: monospace; line-height: 1.4;\">{$safe_pv}</div>"; // Výpis hodnoty (vč. víceřádkového info)
 				}
 				$p_html .= "<tr><td><strong>{$safe_pk}</strong></td><td>{$val_cell}</td></tr>\n"; // Řádek tabulky parametrů
 			}
@@ -726,16 +751,16 @@ HTML;
 		$t_html = '';                                                        // HTML řádků načtených tabulek
 		if (is_array($tables_rows)) {                                        // Průchod načtenými tabulkami
 			foreach ($tables_rows as $tr) {                                  // Zpracování řádku statistiky tabulky
-				$safe_tn = htmlspecialchars((string)$tr['table_name']);      // Ošetřený název tabulky
-				$c_cnt = (int)$tr['col_count'];                              // Počet sloupců tabulky
-				$r_cnt = (int)$tr['row_count'];                              // Počet řádků tabulky
+				$safe_tn = htmlspecialchars((string) $tr['table_name']);     // Ošetřený název tabulky
+				$c_cnt = (int) $tr['col_count'];                             // Počet sloupců tabulky
+				$r_cnt = (int) $tr['row_count'];                             // Počet řádků tabulky
 				$t_html .= "<tr><td><strong>{$safe_tn}</strong></td><td>{$c_cnt}</td><td><strong>{$r_cnt}</strong></td></tr>\n"; // Řádek statistiky
 			}
 		}
 
 		$can_proceed = ($this->rqm->get_severity() < 3);                     // Zda lze pokračovat do Fáze 2
 		$btn_run = new abstract_button('btn_run_phase2', 'Spustit import do databáze (Fáze 2)', 'abstract_csv_package', '', 'btn-success'); // Tlačítko Fáze 2
-		$btn_run->set_type('submit')->set_name_value('btn_run_phase2', '1')->set_disabled(!$can_proceed); // Deaktivace při chybě
+		$btn_run->set_type('submit')->set_name_value('btn_run_phase2', '1')->set_disabled(! $can_proceed); // Deaktivace při chybě
 		$btn_run_html = $btn_run->render();                                  // HTML tlačítka Fáze 2
 
 		return <<<HTML
@@ -767,22 +792,28 @@ HTML;
 	/**
 	 * FÁZE 2 IMPORTU: Uloží případné povolené změny parametrů do `session_import_parameter`
 	 * a spustí databázovou proceduru `p_csv_import_{$this->package_code}` v transakci.
-	 *
-	 * @param array<string, mixed> $override_params Povolené upravené parametry z formuláře Fáze 1
-	 * @return bool True pokud import proběhl úspěšně a transakce byla potvrzena (COMMIT)
 	 */
 	public function run_import(array $override_params = []): bool {          // Fáze 2: Spuštění procedury p_csv_import_*
 		global $SID;                                                         // Identifikátor relace
 		$safe_sid = charliteral($SID, 50);                                   // SQL literál relace
 
-		// U nesystémových balíčků povolíme aktualizaci parametru target_status ('F' vs. 'A')
-		if (!$this->is_system_package AND isset($override_params['target_status'])) { // Kontrola změny target_status
-			$new_status = ((string)$override_params['target_status'] === 'A') ? 'A' : 'F'; // Validace hodnoty A nebo F
+		// Opětovná bezpečnostní kontrola omezení same_org_only před spuštěním Fáze 2
+		$chk_same = sqlfirstrow("SELECT parameter_value FROM session_import_parameter WHERE wwwsession = {$safe_sid} AND parameter_code = 'same_org_only'"); // Čtení příznaku
+		if (! empty($chk_same) AND (string) $chk_same['parameter_value'] === '1') { // Pokud je aktivní omezení na stejnou organizaci
+			$chk_org = sqlfirstrow("SELECT parameter_value FROM session_import_parameter WHERE wwwsession = {$safe_sid} AND parameter_code = 'source_org_uuid'"); // Zdrojová organizace
+			$src_org = (string) ($chk_org['parameter_value'] ?? '');         // UUID zdrojové organizace
+			if ($src_org === '' OR ! $this->is_same_organization_uuid($src_org, get_session_org())) { // Neshoda organizací
+				$this->rqm->add_message($this->phrase('err_same_org_only_blocked', 'Import není umožněn: Neshoda zdrojové a cílové organizace (same_org_only = 1).'), 3); // Chyba
+				return false;                                                // Zablokování Fáze 2
+			}
+		}
+
+		if (! $this->is_system_package AND isset($override_params['target_status'])) { // Kontrola změny target_status
+			$new_status = ((string) $override_params['target_status'] === 'A') ? 'A' : 'F'; // Validace hodnoty A nebo F
 			$safe_st = charliteral($new_status, 1);                          // SQL literál cílového stavu
 			sqlrun("UPDATE session_import_parameter SET parameter_value = {$safe_st} WHERE wwwsession = {$safe_sid} AND parameter_code = 'target_status'"); // Aktualizace
 		}
 
-		// Ověření existence uložené procedury p_csv_import_<package_code> v databázi
 		$proc_name = 'p_csv_import_' . $this->package_code;                  // Název cílové SQL procedury
 		$safe_proc = charliteral($proc_name, 128);                           // SQL literál názvu procedury
 		$proc_row = sqlfirstrow("SELECT OBJECT_ID({$safe_proc}, 'P') AS proc_id"); // Dotaz na existenci procedury
@@ -793,7 +824,6 @@ HTML;
 			return false;                                                    // Ukončení bez spuštění
 		}
 
-		// Spuštění procedury v transakci se sběrem zpráv přes request_message
 		sqlrun("BEGIN TRAN; EXEC p_request_messages_start @reset = 1;");     // Zahájení transakce a inicializace zpráv
 		sqlrun("EXEC {$proc_name}");                                         // Spuštění samotné importní procedury balíčku
 		$this->rqm->add_from_db();                                           // Načtení zpráv vygenerovaných procedurou

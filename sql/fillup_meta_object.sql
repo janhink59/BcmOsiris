@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-06 14:15
  * Soubor: fillup_meta_object.sql
  * Účel:   Idempotentní prvotní naplnění a registrace systémových PHP stránek
  *         a UI tříd (object_type = 'P', object_owner = 0x00) do tabulky meta_object
@@ -8,11 +8,11 @@
  *           a funkce dbo.f_generate_original (f_generate_original.sql).
  *         - Slouží jako podklad pro navigační vazby target_object v fillup_meta_menu.sql
  *           a pro kontrolu oprávnění v abstract_page::check_system_role_access().
- * Změny:  - 2026-11-04 15:15: Doplněna registrace UI komponenty svg_icon_editor
+ * Změny:  - 2026-11-06 14:15: Doplněna registrace třídy filter_manager a CSV balíčku
+ *           csv_package_simple_class; stránka page_csv_package zpřístupněna pro roli 'U'.
+ *         - 2026-11-04 15:15: Doplněna registrace UI komponenty svg_icon_editor
  *           a stránek page_countermeasure, page_countermeasure_state, page_scale
  *           a page_scale_value.
- *         - 2026-11-01 18:00: Doplněna registrace stromových katalogových stránek
- *           CRMM: page_asset_class, page_threat, page_impact a page_scenario.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -51,8 +51,10 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('abstract_button', 'Komponenta tlačítka', 'Základní třída pro vykreslování tlačítek s ikonou a tooltipem', 'U'),
 ('abstract_csv_package', 'Abstraktní CSV/TSV balíček', 'Základní třída pro export a dvoufázový import víceblokových CSV/TSV balíčků', 'U'),
 ('csv_package_metadata', 'CSV/TSV balíček systémových metadat', 'Definice a filtry pro přenos systémových metadat mezi instancemi', 'U'),
+('csv_package_simple_class', 'CSV balíček dat jedné třídy organizace', 'Export a dvoufázový import záznamů jedné logické třídy aktuálního tenanta', 'U'),
+('filter_manager', 'Správce filtrů a filtračních výrazů', 'Univerzální služba pro zobrazení, validaci a vyhodnocování vícepoložkových filtrů', 'U'),
 ('svg_icon_editor', 'Modální editor SVG ikon', 'Komponenta pro náhled, validaci XML syntaxe a úpravu vektorových ikon svg_icon', 'U'),
-('user_context', 'Kontextový panel uživatele', 'Horní lišta s informacemi o přihlášeném uživateli, roli a volbou jazyka', 'U'),
+('user_context', 'Kontextový panel uživatele', 'Horní lišta s informacemi o přihlášeném uživateeli, roli a volbou jazyka', 'U'),
 ('menu_manager', 'Správce navigace', 'Třída pro sestavení a vykreslení drobečkové navigace a menu', 'U'),
 ('entity_manager', 'Správce logických entit', 'Dynamický generátor SQL dotazů, seznamů a formulářů podle metadat', 'U'),
 ('page_main', 'Hlavní panel', 'Úvodní rozcestník aplikace po přihlášení', 'U'),
@@ -76,7 +78,7 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_org_users', 'Uživatelé organizace', 'Správa uživatelských účtů a oprávnění v rámci organizace', 'A'),
 ('page_excel_reader', 'Import dat z Excelu', 'Nástroj pro hromadný import a distribuci datových struktur z Excelu', 'S'),
 ('page_xlsx_export_meta', 'Export metadat do Excelu', 'Nástroj pro zpětný export systémových metadat do souboru XLSX', 'S'),
-('page_csv_package', 'Přenos balíčků (CSV/TSV)', 'Nástroj pro export a dvoufázový import datových balíčků ve formátu TSV/CSV', 'S'),
+('page_csv_package', 'Přenos balíčků (CSV/TSV)', 'Nástroj pro export a dvoufázový import datových balíčků ve formátu TSV/CSV', 'U'),
 ('page_service_logbook', 'Provozní deník (service_logbook)', 'Přehled historie provedených upgradů databáze a importů systémových dávek', 'S'),
 ('page_audit_login_session', 'Aktivita uživatelů (audit_login_session)', 'Přehled historie přihlášení a aktivity uživatelů z tabulky audit_login_session', 'A'),
 ('page_change_user_context', 'Změna kontextu uživatele', 'Přepínání aktivní organizace, aplikační role a žádosti o přístup', 'U'),
@@ -119,13 +121,13 @@ WHERE NOT EXISTS (
 	  AND mo.record_type = 'L' AND mo.[language] = 'cs' AND mo.object_owner = @sys_owner AND mo.removed = 0
 );
 
--- 2c. Aktualizace system_role u page_organization a page_organization_licence na 'A' (pokud nebyly ručně změněny)
+-- 2c. Aktualizace system_role u page_organization, page_organization_licence a page_csv_package
 UPDATE mo
 SET mo.system_role = p.system_role
 FROM meta_object mo
 JOIN @pages p ON p.builtin_code = mo.builtin_code
 WHERE mo.object_owner = @sys_owner
   AND mo.object_type = 'P'
-  AND mo.builtin_code IN ('page_organization', 'page_organization_licence')
+  AND mo.builtin_code IN ('page_organization', 'page_organization_licence', 'page_csv_package')
   AND mo.system_role <> p.system_role;
 GO

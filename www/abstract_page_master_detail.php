@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-05 10:15
+ * Verze: 2026-11-06 14:15
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -15,19 +15,23 @@
  * - Bezpečné načítání parametrů z URL zajišťuje funkce `getinput()`.
  * - Databázové dotazy a překlady podle `fallback_order` jsou delegovány na instanci
  *   `entity_manager` (`fetch_rows()` a `fetch_row()`), kterou tato třída inicializuje v metodě `render()`.
- * - Vykreslování akčních tlačítek využívá komponentu `abstract_button`
- *   a lokalizaci textů zajišťuje `$this->phrase()` přes `phrase_manager`.
+ * - Rozšířené vícepoložkové filtrování v modálním okně zajišťuje třída `filter_manager`
+ *   (`filter_manager.php`) a přímý přechod na export/import CSV využívá balíček `simple_class`.
  *
  * Změny:
- * 2026-11-05 10:15 - Do přenosu kontextových parametrů (get_context_url_suffix,
- *                    get_context_hidden_inputs a getMasterFilterStorageKey) doplněn
- *                    parametr 'scale' pro podřízenou stránku page_scale_value.php.
- * 2026-11-04 10:30 - V render_detail() sjednocena indikace povinného klíčového pole (*)
- *                    přes metodu $this->em->is_key_column_mandatory($colname).
+ * 2026-11-06 14:15 - Integrace třídy filter_manager (modální vícepoložkový filtr,
+ *                    vlastnost $filter_basic_columns, proužek aktivního filtru),
+ *                    tlačítko pro přímý CSV export/import třídy (simple_class)
+ *                    a delegování applyMasterFilter() na stromový filtr applyTreeMasterFilter().
+ * 2026-11-05 10:15 - Do přenosu kontextových parametrů doplněn parametr 'scale'.
  * =============================================================================
  */
 
 declare(strict_types=1);
+
+if (file_exists(__DIR__ . '/filter_manager.php')) {
+	require_once __DIR__ . '/filter_manager.php';
+}
 
 abstract class abstract_page_master_detail extends abstract_page {
 
@@ -40,6 +44,9 @@ abstract class abstract_page_master_detail extends abstract_page {
 	/** Mapování logických skupin vstupních polí. Očekává: ['Název sekce' => ['sloupec1', 'sloupec2']] */
 	protected array $form_groups = [];                                       // Skupiny polí ve formuláři
 
+	/** Seznam prioritních sloupců zobrazených ihned po otevření modálního filtru */
+	protected array $filter_basic_columns = [];                              // Základní sloupce modálního filtru
+
 	/** Příznak režimu pouze pro čtení v detailním panelu */
 	protected bool $is_readonly = false;                                     // Uzamčení celého detailního panelu
 
@@ -48,6 +55,9 @@ abstract class abstract_page_master_detail extends abstract_page {
 	
 	/** Instance dynamického správce objektů řídící čtení a zápis */
 	protected ?entity_manager $em = null;                                    // Instance správce entit
+
+	/** Instance správce vícepoložkového filtru */
+	protected ?filter_manager $filter_manager = null;                        // Instance správce filtrů
 
 	/** Chybová zpráva z validace při ukládání záznamu v process_save() */
 	protected string $save_error_message = '';                               // Text chyby při neúspěšném uložení
@@ -96,8 +106,147 @@ abstract class abstract_page_master_detail extends abstract_page {
 	}
 
 	/**
+	 * Zajistí inicializaci správce vícepoložkového filtru (filter_manager) pro aktuální stránku.
+	 */
+	protected function init_filter_manager(): void {
+		if ($this->filter_manager !== null OR $this->em === null OR ! class_exists('filter_manager')) { // Kontrola dostupnosti
+			return;                                                          // Již inicializováno nebo není k dispozici
+		}
+		$basic_cols = $this->filter_basic_columns;                           // Základní sloupce definované potomkem
+		if (empty($basic_cols)) {                                            // Pokud potomek nevyjmenoval vlastní sloupce
+			$basic_cols = array_keys($this->em->get_list_columns());         // Použijeme sloupce zobrazené v levém panelu
+		}
+		$this->filter_manager = new filter_manager($this->em, '', $basic_cols); // Vytvoření instance správce filtrů
+	}
+
+	/**
+	 * Aplikuje aktivní podmínky z filter_manageru na pole načtených záznamů.
+	 */
+	protected function apply_active_filters_to_rows(array $rows): array {    // Filtrace načtených řádků přes filter_manager
+		$this->init_filter_manager();                                        // Pojistka inicializace správce filtrů
+		if ($this->filter_manager === null OR ! $this->filter_manager->has_active_filters()) { // Pokud není žádný filtr aktivní
+			return $rows;                                                    // Vrácení nezměněného pole záznamů
+		}
+		if (method_exists($this->filter_manager, 'filter_rows')) {           // Primární metoda filtrace v PHP
+			return $this->filter_manager->filter_rows($rows);                // Vyfiltrování záznamů podle zadaných výrazů
+		}
+		if (method_exists($this->filter_manager, 'apply_to_rows')) {         // Alternativní název metody filtrace
+			return $this->filter_manager->apply_to_rows($rows);              // Vyfiltrování záznamů
+		}
+		return $rows;                                                        // Záložní vrácení původních řádků
+	}
+
+	/**
+	 * Vrátí víceřádkový čitelný souhrn aktivního filtru ve formátu "Label: výraz" (pro parametr info při exportu).
+	 */
+	protected function get_active_filter_info_text(): string {
+		$this->init_filter_manager();                                        // Pojistka inicializace správce filtrů
+		if ($this->filter_manager === null OR ! $this->filter_manager->has_active_filters()) { // Bez aktivního filtru
+			return '';                                                       // Prázdný popis filtru
+		}
+		if (method_exists($this->filter_manager, 'get_info_summary')) {      // Primární metoda pro víceřádkové info
+			return (string) $this->filter_manager->get_info_summary("\n");   // Řádky oddělené znakem LF
+		}
+		if (method_exists($this->filter_manager, 'build_info_text')) {       // Alternativní metoda pro info
+			return (string) $this->filter_manager->build_info_text("\n");    // Řádky oddělené znakem LF
+		}
+		return '';                                                           // Fallback
+	}
+
+	/**
+	 * Určí efektivní logickou třídu pro export/import simple_class (zohlední sekundární hierarchii).
+	 */
+	protected function get_export_class_code(): string {
+		if ($this->class_name === 'hierarchy_item') {                        // U položek sekundární hierarchie zjistíme builtin_code hierarchie
+			$hier_uuid = trim((string) getinput('hierarchy'));               // UUID vybrané sekundární hierarchie
+			if ($hier_uuid !== '' AND is_guid($hier_uuid)) {                 // Pokud máme platné UUID hierarchie
+				$h_row = sqlfirstrow("SELECT TOP 1 builtin_code FROM hierarchy WHERE original = " . guidliteral($hier_uuid) . " AND record_type = 'A' AND removed = 0"); // Dotaz na kód
+				if (! empty($h_row['builtin_code'])) {                       // Pokud byl kód hierarchie nalezen
+					return (string) $h_row['builtin_code'];                  // Vrátíme kód konkrétní sekundární hierarchie
+				}
+			}
+		}
+		return $this->class_name;                                            // Standardní název logické třídy
+	}
+
+	/**
+	 * Vykreslí ovládací lištu vyhledávání (pole #master-filter + tlačítko modálního filtru + tlačítko CSV)
+	 * a případný proužek aktivního filtru.
+	 */
+	protected function render_master_filter_controls(string $search_placeholder): void { // Vykreslení lišty filtrů a CSV
+		$this->init_filter_manager();                                        // Inicializace správce filtrů
+		$page_param = urlencode($this->get_current_page_name());             // Název aktuální stránky
+		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL
+		$base_url = "index.php?page={$page_param}{$url_suffix}";             // Základní URL pro odeslání nebo vymazání filtru
+
+		$has_adv = ($this->filter_manager !== null AND $this->filter_manager->has_active_filters()); // Zda je rozšířený filtr aktivní
+		$adv_cnt = ($this->filter_manager !== null) ? $this->filter_manager->get_active_count() : 0; // Počet aktivních podmínek
+		$flt_btn_bg = $has_adv ? '#2563eb' : '#f8fafc';                      // Barva pozadí tlačítka filtru
+		$flt_btn_col = $has_adv ? '#ffffff' : '#334155';                     // Barva textu a ikony tlačítka filtru
+		$flt_btn_brd = $has_adv ? '#1d4ed8' : '#cbd5e1';                     // Barva rámečku tlačítka filtru
+		$tip_adv_flt = htmlspecialchars($this->phrase('tip_open_adv_filter', [], 'Rozšířený filtr podle více položek')); // Tooltip filtru
+		$badge_cnt_html = ($adv_cnt > 0) ? "<span style=\"font-size: 11px; font-weight: bold; margin-left: 3px;\">({$adv_cnt})</span>" : ''; // Počet
+
+		// Tlačítko pro přímý přechod na CSV export/import aktuální třídy (simple_class)
+		$csv_btn_html = '';                                                  // Výchozí prázdný HTML kód tlačítka CSV
+		$storage_tab = ($this->em !== null) ? $this->em->get_storage_table() : ''; // Fyzická tabulka třídy
+		if ($this->class_name !== '' AND ! str_starts_with($storage_tab, 'meta_') AND $storage_tab !== 'organization') { // Pro věcné třídy tenanta
+			$exp_cls = $this->get_export_class_code();                       // Kód exportované třídy
+			$info_txt = $this->get_active_filter_info_text();                // Víceřádkový popis aktivního filtru
+			$csv_url = "index.php?page=page_csv_package&package_code=simple_class&class_name=" . urlencode($exp_cls); // URL CSV balíčku
+			if ($info_txt !== '') {                                          // Pokud je aktivní filtr, předáme jeho popis do parametru info
+				$csv_url .= "&info=" . urlencode($info_txt);                 // Připojení parametru info
+			}
+			$safe_csv_url = htmlspecialchars($csv_url);                      // Ošetřená URL pro HTML atribut
+			$tip_csv = htmlspecialchars($this->phrase('tip_csv_export_import', [], 'Export / Import dat této třídy (CSV balíček simple_class)')); // Tooltip CSV
+			$csv_btn_html = "<a href=\"{$safe_csv_url}\" id=\"btn-master-csv-link\" data-base-csv-url=\"" . htmlspecialchars("index.php?page=page_csv_package&package_code=simple_class&class_name=" . urlencode($exp_cls)) . "\" title=\"{$tip_csv}\" onclick=\"return openSimpleClassCsv(this);\" style=\"display: inline-flex; align-items: center; justify-content: center; padding: 0 8px; height: 31px; border: 1px solid #cbd5e1; border-radius: 3px; background-color: #f8fafc; color: #0f172a; text-decoration: none; font-size: 11px; font-weight: bold; white-space: nowrap; box-sizing: border-box;\">CSV ⇅</a>"; // Tlačítko CSV
+		}
+
+		$funnel_svg = '<svg viewBox="0 0 24 24" style="width:15px; height:15px; fill:currentColor;"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>'; // Ikona filtru
+
+		echo <<<HTML
+			<div style="display: flex; align-items: center; gap: 5px;">
+				<input type="text" id="master-filter" placeholder="{$search_placeholder}" style="flex: 1; padding: 6px; box-sizing: border-box; height: 31px;">
+				<button type="button" id="btn-open-adv-filter" title="{$tip_adv_flt}" onclick="if(window.bcmOpenFilterModal){window.bcmOpenFilterModal();}else{var m=document.getElementById('bcm-flt-modal-overlay');if(m)m.style.display='flex';}" style="display: inline-flex; align-items: center; justify-content: center; padding: 0 8px; height: 31px; border: 1px solid {$flt_btn_brd}; border-radius: 3px; background-color: {$flt_btn_bg}; color: {$flt_btn_col}; cursor: pointer; box-sizing: border-box;">
+					{$funnel_svg}{$badge_cnt_html}
+				</button>
+				{$csv_btn_html}
+			</div>
+HTML;
+
+		// Vykreslení proužku aktivního filtru a modálního okna z filter_manageru
+		if ($this->filter_manager !== null) {                                // Pokud je správce filtrů inicializován
+			if ($has_adv) {                                                  // Zobrazení proužku s aktivními podmínkami
+				$summary_line = str_replace("\n", " ; ", $this->get_active_filter_info_text()); // Jednořádkový souhrn do proužku
+				$safe_sum = htmlspecialchars($summary_line);                 // Ošetřený text souhrnu
+				$clear_url = htmlspecialchars($base_url . "&clear_adv_filter=1"); // URL pro zrušení filtru
+				$tip_clear = htmlspecialchars($this->phrase('tip_clear_adv_filter', [], 'Zrušit rozšířený filtr')); // Tooltip zrušení
+				echo <<<HTML
+			<div style="margin-top: 6px; padding: 4px 8px; background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 3px; font-size: 11px; color: #1e40af; display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+				<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{$safe_sum}"><strong>Filtr:</strong> {$safe_sum}</span>
+				<a href="{$clear_url}" title="{$tip_clear}" style="color: #b91c1c; font-weight: bold; text-decoration: none; font-size: 14px; line-height: 1; padding: 0 3px;">×</a>
+			</div>
+HTML;
+			}
+
+			$errs = $this->filter_manager->get_validation_errors();          // Kontrola validačních chyb ve výrazu filtru
+			if (! empty($errs)) {                                            // Výpis případné chyby syntaxe filtru
+				foreach ($errs as $e_msg) {                                  // Průchod chybami
+					echo "<div style=\"margin-top: 5px; padding: 4px 8px; background-color: #fef2f2; border-left: 3px solid #b91c1c; color: #991b1b; font-size: 11px;\">" . htmlspecialchars((string) $e_msg) . "</div>\n"; // Chyba
+				}
+			}
+
+			if (method_exists($this->filter_manager, 'render_modal')) {      // Vykreslení samotného modálního okna filtru
+				echo $this->filter_manager->render_modal($base_url);         // Modální okno filtru
+			} elseif (method_exists($this->filter_manager, 'render_filter_modal')) { // Alternativní metoda
+				echo $this->filter_manager->render_filter_modal($base_url);  // Modální okno filtru
+			}
+		}
+	}
+
+	/**
 	 * Hlavní bod vstupu životního cyklu stránky.
-	 * Ošetřuje inicializaci entity_manageru a AJAX požadavky pro levý i pravý panel.
+	 * Ošetřuje inicializaci entity_manageru, filter_manageru a AJAX požadavky pro levý i pravý panel.
 	 */
 	public function render(): void {
 		$this->init_phrases();                                               // Inicializace správce frází
@@ -111,6 +260,8 @@ abstract class abstract_page_master_detail extends abstract_page {
 		if ($this->class_name !== '' AND $this->em === null) {               // Kontrola potřeby inicializace správce
 			$this->em = new entity_manager($this->class_name);               // Vytvoření instance entity_manageru
 		}
+
+		$this->init_filter_manager();                                        // Inicializace správce filtrů
 
 		if (isset($_GET['ajax_panel'])) {                                    // Detekce asynchronního požadavku na jeden z panelů
 			$ajax_target = (string) $_GET['ajax_panel'];                     // Cílový panel ('master' nebo 'detail')
@@ -131,6 +282,14 @@ abstract class abstract_page_master_detail extends abstract_page {
 	 * Zajišťuje zpracování POST dat z formuláře (včetně SSC stavů, validace klíčů a mazání konceptu) a následný redirect.
 	 */
 	protected function process_save(): void {
+		if (isset($_POST['adv_filter']) AND ! isset($_POST['update_guid'])) { // Pokud byl POSTem odeslán modální filtr
+			$this->init_filter_manager();                                    // Načtení a uložení filtru do $_SESSION
+			$page_param = urlencode($this->get_current_page_name());         // Kanonický název aktuální stránky
+			$url_suffix = $this->get_context_url_suffix();                   // Kontextové parametry URL
+			autoredirect("index.php?page={$page_param}{$url_suffix}");       // PRG redirect po nastavení filtru
+			return;                                                          // Ukončení
+		}
+
 		$this->save_error_message = '';                                      // Vynulování chybové zprávy před uložením
 		if ($this->is_readonly OR $this->em === null) {                      // Kontrola readonly režimu a správce entit
 			return;                                                          // V readonly režimu nebo bez správce neukládáme
@@ -201,6 +360,7 @@ abstract class abstract_page_master_detail extends abstract_page {
 		$err_ajax_ref = addslashes($this->phrase('err_ajax_refresh', [], 'Chyba při obnově master panelu:')); // JS chybová hláška obnovy
 		$err_ajax_det = addslashes($this->phrase('err_ajax_detail', [], 'Chyba při načítání detailu:')); // JS chybová hláška detailu
 		$unsaved_confirm = addslashes($this->phrase('msg_unsaved_changes', [], 'Máte neuložené změny. Opravdu chcete stránku opustit?')); // Varování
+		$lbl_quick_flt = addslashes($this->phrase('lbl_quick_filter_info', [], 'Rychlý filtr')); // Popisek rychlého filtru pro CSV info
 
 		echo <<<HTML
 		<style>
@@ -257,19 +417,39 @@ HTML;
 				return 'bcm_mf_' + page + '_' + pCls + '_' + pObj + '_' + hier + '_' + scl + '_' + fCls;
 			}
 
-			// Aplikuje text filtru #master-filter na řádky v #master-list
+			// Aplikuje text filtru #master-filter na řádky v #master-list (na stromových stránkách zachová nadřízené uzly)
 			function applyMasterFilter(term) {
 				const list = document.getElementById('master-list');
 				if (!list) return;
-				const cleanTerm = (term || '').toLowerCase();
+				const cleanTerm = (term || '').trim().toLowerCase();
+				if (typeof window.applyTreeMasterFilter === 'function') {
+					window.applyTreeMasterFilter(cleanTerm);
+					return;
+				}
 				if (cleanTerm === '' && typeof window.applyMenuTreeVisibility === 'function') {
 					window.applyMenuTreeVisibility();
 					return;
 				}
 				list.querySelectorAll('tr').forEach(function(row) {
-					row.style.display = row.textContent.toLowerCase().includes(cleanTerm) ? '' : 'none';
+					row.style.display = (cleanTerm === '' || row.textContent.toLowerCase().includes(cleanTerm)) ? '' : 'none';
 				});
 			}
+
+			// Otevře stránku CSV exportu/importu (simple_class) s přenesením rychlého i rozšířeného filtru do parametru info
+			window.openSimpleClassCsv = function(linkEl) {
+				if (!linkEl) return true;
+				const u = new URL(linkEl.href, window.location.href);
+				const quickInp = document.getElementById('master-filter');
+				const quickVal = (quickInp && quickInp.value) ? quickInp.value.trim() : '';
+				if (quickVal !== '') {
+					const existingInfo = u.searchParams.get('info') || '';
+					const quickLine = '{$lbl_quick_flt}: ' + quickVal;
+					u.searchParams.set('info', existingInfo !== '' ? (existingInfo + '\n' + quickLine) : quickLine);
+					u.searchParams.set('quick_filter', quickVal);
+				}
+				window.location.href = u.toString();
+				return false;
+			};
 
 			// Obnoví uložený filtr ze sessionStorage (např. po uložení záznamu a PRG redirectu)
 			function restoreMasterFilterFromStorage() {
@@ -522,8 +702,12 @@ HTML;
 			return;                                                          // Ukončení vykreslování seznamu
 		}
 
+		$this->init_filter_manager();                                        // Inicializace správce filtrů
 		$update_guid = (string) getinput('update_guid');                     // Aktuálně vybraný záznam
 		$show_removed = ((string) getinput('show_removed') === '1');         // Příznak zobrazení zrušených záznamů
+		if (! $show_removed AND $this->filter_manager !== null AND method_exists($this->filter_manager, 'should_show_removed') AND $this->filter_manager->should_show_removed()) { // Filtr na koš
+			$show_removed = true;                                            // Automatické načtení záznamů v koši při filtru na zrušené
+		}
 		
 		$class_meta = $this->em->get_class_meta();                           // Metadata aktuální třídy
 		$caption_plural = (string) ($class_meta['caption_plural'] ?? '');    // Množné číslo názvu třídy
@@ -555,7 +739,11 @@ HTML;
 					<input type="checkbox" {$chk_show_rem} onchange="toggleShowRemoved(this.checked);"> {$lbl_show_rem}
 				</label>
 			</div>
-			<input type="text" id="master-filter" placeholder="{$search_placeholder}" style="width: 100%; padding: 6px; box-sizing: border-box;">
+HTML;
+
+		$this->render_master_filter_controls($search_placeholder);           // Vykreslení pole #master-filter, tlačítka filtru, CSV a modálu
+
+		echo <<<HTML
 		</div>
 		
 		<div class="md-master-content">
@@ -574,7 +762,8 @@ HTML;
 				<tbody id="master-list">
 HTML;
 
-		$rows = $this->em->fetch_rows($this->master_where, '', false, $show_removed); // Dvoupolové načtení záznamů s překlady v PHP
+		$raw_rows = $this->em->fetch_rows($this->master_where, '', false, $show_removed); // Dvoupolové načtení záznamů s překlady v PHP
+		$rows = $this->apply_active_filters_to_rows($raw_rows);              // Aplikace vícepoložkového filtru
 		
 		$page_param = urlencode($this->get_current_page_name());             // Kanonický název stránky do URL
 		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL

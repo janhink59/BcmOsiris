@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 00:20
+ * Verze: 2026-11-06 13:30
  * Soubor: menu_manager.php
  * Třída: menu_manager
  * Účel: Globální správce uživatelského menu. 
@@ -15,11 +15,9 @@
  * - Pro překlad nouzového odkazu využívá globální $phrase_manager.
  * 
  * Změny:
- * 2026-11-06 00:20 - Oprava sloučeného řádku ($match = false;) v resolve_active_node()
- *                    a doplnění mezer před znakem $ a diakritiky v komentářích.
+ * 2026-11-06 13:30 - Doplnění chybějících mezer před znakem $ v celém souboru (Anti-LaTeX).
+ * 2026-11-06 00:20 - Oprava sloučeného řádku ($match = false;) v resolve_active_node().
  * 2026-11-05 16:45 - Sjednocení CSS pravidel pro SVG ikony v menu (.bcm-menu-icon svg:not([fill])).
- * 2026-10-21 15:00 - Čtení procedury p_get_menu_hierarchy převedeno ze sqlrun/fetch
- *                    na sqlarray_simple() (ochrana globálního $dbquery).
  * =============================================================================
  */
 
@@ -47,18 +45,18 @@ class menu_manager {
 			return;                                                          // Ukončení při prázdném výsledku
 		}
 
-		foreach ($rows as$row) {                                            // Průchod načtenými položkami menu
-			$uuid = (string)$row['original'];                               // Originální UUID položky menu
-			$this->items[$uuid] =$row;                                      // Uložení dat položky
-			$this->by_code[(string) $row['builtin_code']] =$uuid;           // Indexace podle textového kódu
+		foreach ($rows as $row) {                                            // Průchod načtenými položkami menu
+			$uuid = (string) $row['original'];                               // Originální UUID položky menu
+			$this->items[$uuid] = $row;                                      // Uložení dat položky
+			$this->by_code[(string) $row['builtin_code']] = $uuid;           // Indexace podle textového kódu
 			
-			$page = (string)$row['target_page'];                            // Cílová stránka (např. page_meta_class)
+			$page = (string) $row['target_page'];                            // Cílová stránka (např. page_meta_class)
 			if ($page !== '') {                                              // Pokud položka směřuje na stránku
-				$this->by_page[$page][] =$uuid;                             // Indexace podle cílové stránky
+				$this->by_page[$page][] = $uuid;                             // Indexace podle cílové stránky
 			}
 			
-			$parent = (string)$row['parent_uuid'];                          // UUID nadřízené položky menu
-			$this->children_map[$parent][] =$uuid;                          // Zařazení do seznamu potomků rodiče
+			$parent = (string) $row['parent_uuid'];                          // UUID nadřízené položky menu
+			$this->children_map[$parent][] = $uuid;                          // Zařazení do seznamu potomků rodiče
 		}
 	}
 
@@ -82,40 +80,40 @@ class menu_manager {
 		} else {
 			$req_page = basename($req_page, '.php');                         // Očištění od cesty a přípony
 			if (! str_starts_with($req_page, 'page_')) {                     // Kontrola přítomnosti předpony page_
-				$req_page = 'page_' .$req_page;                             // Doplnění prefixu page_ pro kompatibilitu
+				$req_page = 'page_' . $req_page;                             // Doplnění prefixu page_ pro kompatibilitu
 			}
 		}
 
 		// 2. Fallback na vyhledání podle target_page s heuristikou pro best-match
 		if ($req_page !== '' AND isset($this->by_page[$req_page])) {         // Hledání položky podle cílové stránky
 			$candidates = $this->by_page[$req_page];                         // Seznam položek mířících na tuto stránku
-			$best_match =$candidates[0];                                    // Výchozí první nalezená shoda
+			$best_match = $candidates[0];                                    // Výchozí první nalezená shoda
 
-			foreach ($candidates as$uuid) {                                 // Průchod kandidátními položkami
+			foreach ($candidates as $uuid) {                                 // Průchod kandidátními položkami
 				$params_str = (string) $this->items[$uuid]['url_parameters']; // Dodatečné parametry URL u položky
 				if ($params_str !== '') {                                    // Pokud má položka definované parametry
-					parse_str(ltrim($params_str, '&?'),$parsed_params);     // Rozparsování parametrů z DB
+					parse_str(ltrim($params_str, '&?'), $parsed_params);     // Rozparsování parametrů z DB
 					$match = true;                                           // Příznak shody všech parametrů
-					foreach ($parsed_params as $k =>$v) {                   // Porovnání parametrů s aktuálním URL
-						if ((string) getinput($k) !== (string)$v) {         // Ověření shody hodnoty parametru v požadavku
+					foreach ($parsed_params as $k => $v) {                   // Porovnání parametrů s aktuálním URL
+						if ((string) getinput($k) !== (string) $v) {         // Ověření shody hodnoty parametru v požadavku
 							$match = false;                                  // Parametr v URL neodpovídá položce
 							break;                                           // Ukončení kontroly této položky
 						}
 					}
 					if ($match) {                                            // Pokud všechny parametry sedí
-						$best_match =$uuid;                                 // Nalezena přesná shoda parametrů
+						$best_match = $uuid;                                 // Nalezena přesná shoda parametrů
 						break;                                               // Ukončení hledání kandidátů
 					}
 				}
 			}
 			
-			$this->active_uuid =$best_match;                                // Nastavení nejlepší nalezené položky
+			$this->active_uuid = $best_match;                                // Nastavení nejlepší nalezené položky
 			return;                                                          // Ukončení vyhledávání
 		}
 
 		// 3. Totální fallback na domovskou stránku
 		if (isset($this->by_code['home'])) {                                 // Kontrola existence kořene Domů
-			$this->active_uuid =$this->by_code['home'];                     // Nouzové nastavení na kořen Domů
+			$this->active_uuid = $this->by_code['home'];                     // Nouzové nastavení na kořen Domů
 		}
 	}
 
@@ -131,7 +129,7 @@ class menu_manager {
 		if ((string) $item['target_page'] !== '') {                          // Pokud má položka cílovou stránku
 			$url = "index.php?page=" . urlencode((string) $item['target_page']) . "&menu_code=" . urlencode((string) $item['builtin_code']); // Základní URL
 			if ((string) $item['url_parameters'] !== '') {                   // Pokud jsou zadány další parametry
-				$url .=$item['url_parameters'];                             // Připojení dodatečných GET parametrů
+				$url .= $item['url_parameters'];                             // Připojení dodatečných GET parametrů
 			}
 			return htmlspecialchars($url);                                   // Vrácení ošetřené interní URL
 		}
@@ -165,11 +163,11 @@ class menu_manager {
 			return [];                                                       // Vrácení prázdného pole
 		}
 
-		$uuid = (string)$node['original'];                                  // UUID rodičovského uzlu
+		$uuid = (string) $node['original'];                                  // UUID rodičovského uzlu
 		$children = [];                                                      // Výsledné pole potomků
 		
 		if (isset($this->children_map[$uuid])) {                             // Pokud má uzel evidované potomky
-			foreach ($this->children_map[$uuid] as$child_uuid) {            // Průchod potomky uzlu
+			foreach ($this->children_map[$uuid] as $child_uuid) {            // Průchod potomky uzlu
 				$children[] = $this->items[$child_uuid];                     // Přidání potomka do výsledku
 			}
 		}
@@ -182,11 +180,11 @@ class menu_manager {
 	 */
 	public function get_active_path(): array {
 		$path = [];                                                          // Pole pro sestavení cesty od kořene
-		$curr =$this->active_uuid;                                          // Začínáme od aktivního uzlu
+		$curr = $this->active_uuid;                                          // Začínáme od aktivního uzlu
 		$visited = [];                                                       // Ochrana proti zacyklení v hierarchii
 		
 		while ($curr !== null AND isset($this->items[$curr]) AND ! isset($visited[$curr])) { // Průchod k rodičům
-			array_unshift($path,$curr);                                     // Vložení uzlu na začátek cesty
+			array_unshift($path, $curr);                                     // Vložení uzlu na začátek cesty
 			$visited[$curr] = true;                                          // Označení uzlu jako navštíveného
 			$curr = (string) $this->items[$curr]['parent_uuid'] !== '' ? (string) $this->items[$curr]['parent_uuid'] : null; // Posun na rodiče
 		}

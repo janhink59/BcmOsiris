@@ -23,6 +23,7 @@ final_scripts.sql
 
 # Doplnek kontextu pro AI
 output=BcmOsirisConcat.txt
+BuildDB.bat
 BuildListDb.txt
 ../BuildRelease.php
 

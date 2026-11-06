@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 11:45
+ * Verze: 2026-11-06 13:30
  * Soubor: entity_manager_read.php
  * Trait: entity_manager_read
  * Účel: Čtecí a překladová vrstva třídy entity_manager.
@@ -12,6 +12,11 @@
  * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
  * - Využívá databázovou funkci `dbo.f_language_list` (`fallback_order < 1000`)
  *   a funkci `dbo.f_get_user_info`.
+ *
+ * Změny:
+ * 2026-11-06 13:30 - Oprava řazení desetinných a záporných čísel ve fetch_rows():
+ *                    pokud jsou obě porovnávané hodnoty číselné (is_numeric), použije se
+ *                    přímé číselné porovnání (float)$vx <=> (float)$vy místo strnatcasecmp().
  * =============================================================================
  */
 
@@ -39,13 +44,13 @@ trait entity_manager_read {
 		}
 
 		// 0. Pokud je aktivní řádek rozpracovaným konceptem ('D') a má vyplněnou hodnotu, má přednost
-		if (($row['record_type'] ?? 'A') === 'D' AND (string)($row[$col] ?? '') !== '') { // Hodnota z konceptu
-			return (string)$row[$col];                                       // Vrácení hodnoty konceptu
+		if (($row['record_type'] ?? 'A') === 'D' AND (string) ($row[$col] ?? '') !== '') { // Hodnota z konceptu
+			return (string) $row[$col];                                      // Vrácení hodnoty konceptu
 		}
 
-		$a_lang = (string)($row['native_language'] ?? $row['language'] ?? 'cs'); // Mateřský jazyk hlavního 'A' záznamu
-		$a_val = (string)($row[$col] ?? '');                                 // Hodnota v hlavním 'A' záznamu
-		$has_tenant_l_curr = (! empty($l_rows[$orig][$curr_lang]['is_tenant_l']) AND (string)($l_rows[$orig][$curr_lang][$col] ?? '') !== ''); // Zda má tenant vlastní L
+		$a_lang = (string) ($row['native_language'] ?? $row['language'] ?? 'cs'); // Mateřský jazyk hlavního 'A' záznamu
+		$a_val = (string) ($row[$col] ?? '');                                // Hodnota v hlavním 'A' záznamu
+		$has_tenant_l_curr = (! empty($l_rows[$orig][$curr_lang]['is_tenant_l']) AND (string) ($l_rows[$orig][$curr_lang][$col] ?? '') !== ''); // Zda má tenant vlastní L
 
 		// 1. Je-li jazyk 'A' shodný s aktuálním jazykem (a tenant nemá vlastní L override), bereme rovnou 'A'
 		if ($a_lang === $curr_lang AND $a_val !== '' AND ! $has_tenant_l_curr) { // Shoda jazyka 'A' s aktuálním jazykem
@@ -55,7 +60,7 @@ trait entity_manager_read {
 		// 2. Průchod podřízeným polem 'L' seřazeným podle fallback_order (< 1000)
 		foreach ($lang_chain as $fl_lang) {                                  // Průchod jazyky dle fallback_order
 			if (isset($l_rows[$orig][$fl_lang])) {                           // Pokud existuje 'L' záznam pro daný jazyk
-				$l_val = (string)($l_rows[$orig][$fl_lang][$col] ?? '');     // Hodnota v 'L' záznamu
+				$l_val = (string) ($l_rows[$orig][$fl_lang][$col] ?? '');    // Hodnota v 'L' záznamu
 				$l_rem = ! empty($l_rows[$orig][$fl_lang]['removed']);       // Zda je 'L' záznam zrušený
 				if (! $l_rem AND $l_val !== '') {                            // Nalezena platná neprázdná hodnota v 'L'
 					return $l_val;                                           // Vrácení nalezeného překladu
@@ -72,7 +77,7 @@ trait entity_manager_read {
 		}
 
 		// 4. Dědičnost z předka (ancestor / ancestor_class), pokud je vazba vyplněna
-		$anc_orig = (string)($row[$anc_key] ?? '');                          // UUID předka
+		$anc_orig = (string) ($row[$anc_key] ?? '');                         // UUID předka
 		if ($anc_orig !== '' AND $anc_orig !== $orig) {                      // Ochrana proti zacyklení
 			return $this->resolve_field_from_arrays($anc_orig, $col, $a_rows, $anc_a_rows, $l_rows, $curr_lang, $lang_chain, $anc_key); // Rekurze na předka
 		}
@@ -167,12 +172,12 @@ trait entity_manager_read {
 			? "(rc.object_owner = @org_uuid OR (@org_uuid = 0x00 AND rc.object_owner = rc.original))"
 			: "rc.object_owner = @org_uuid";                                 // Podmínka vlastníka pro koncepty @dr
 
-		// Protlačení filtrů na klíčové NOT NULL sloupce přímo do @sy, @my, @dr pro okamžitý Index Seek (bez přímého svislítka v kódu)
+		// Protlačení filtrů na klíčové NOT NULL sloupce přímo do @sy, @my, @dr pro okamžitý Index Seek
 		$pushdown_rc_filter = '';                                            // Výchozí prázdný pushdown filtr
 		$trimmed_where = trim($where);                                       // Oříznutá vstupní podmínka WHERE
 		$m_push = [];                                                        // Pole zachycených skupin regulárního výrazu
 		$pipe = chr(124);                                                    // Znak svislítka pro sestavení regulárního výrazu
-		$push_regex = '/^m\.(original' . $pipe . 'parent_class' . $pipe . 'source_code' . $pipe . 'hierarchy)\s*=\s*(\'[0-9a-zA-Z_\-]+\'' . $pipe . '0x00)$/i'; // Vzorek klíčového filtru
+		$push_regex = '/^m\.(original' . $pipe . 'parent_class' . $pipe . 'source_code' . $pipe . 'hierarchy' . $pipe . 'scale)\s*=\s*(\'[0-9a-zA-Z_\-]+\'' . $pipe . '0x00)$/i'; // Vzorek klíčového filtru
 		if ($trimmed_where !== '' AND preg_match($push_regex, $trimmed_where, $m_push)) { // Detekce klíčového filtru
 			$push_col = $m_push[1];                                          // Filtrovaný klíčový sloupec
 			$push_val = $m_push[2];                                          // Hodnota filtru
@@ -441,20 +446,20 @@ trait entity_manager_read {
 		$l_rows = [];                                                        // Druhé 2D pole podřízené originálu s indexem jazyka
 
 		foreach ($raw_rows as $r) {                                          // Průchod načtenými řádky
-			$orig = (string)$r['original'];                                  // UUID originálu
-			$kind = (string)$r['row_kind'];                                  // Typ řádku ('A', 'ANC_A', 'L')
+			$orig = (string) $r['original'];                                 // UUID originálu
+			$kind = (string) $r['row_kind'];                                 // Typ řádku ('A', 'ANC_A', 'L')
 			if ($kind === 'A') {                                             // Hlavní záznam
 				$r['l_removed'] = 0;                                         // Výchozí stav zrušení překladu
 				$a_rows[$orig] = $r;                                         // Uložení do prvního pole pod klíčem original
 			} elseif ($kind === 'ANC_A') {                                   // Záznam předka
 				$anc_a_rows[$orig] = $r;                                     // Uložení předka
 			} else {
-				$lang = (string)$r['language'];                              // Kód jazyka 'L' záznamu
+				$lang = (string) $r['language'];                             // Kód jazyka 'L' záznamu
 				if (! isset($l_rows[$orig][$lang])) {                        // První záznam pro daný jazyk
 					$l_rows[$orig][$lang] = $r;                              // Uložení do 2D podřízeného pole
 				} else {
 					foreach ($trans_cols as $tc) {                           // Doplnění případných prázdných hodnot ze systémového 'L'
-						if ((string)($l_rows[$orig][$lang][$tc] ?? '') === '' AND (string)($r[$tc] ?? '') !== '') { // Fallback
+						if ((string) ($l_rows[$orig][$lang][$tc] ?? '') === '' AND (string) ($r[$tc] ?? '') !== '') { // Fallback
 							$l_rows[$orig][$lang][$tc] = $r[$tc];            // Převzetí hodnoty ze systémového 'L'
 						}
 					}
@@ -470,8 +475,8 @@ trait entity_manager_read {
 				}
 				if (($a_row['record_type'] ?? 'A') !== 'D') {                // U schválených záznamů zohledníme i změny v 'L'
 					foreach ($l_rows[$orig] as $l_item) {                    // Průchod podřízenými 'L' záznamy
-						$l_mod = (string)($l_item['date_modified'] ?? '');   // Datum změny 'L' záznamu
-						$a_mod = (string)($a_row['date_modified'] ?? '');    // Datum změny 'A' záznamu
+						$l_mod = (string) ($l_item['date_modified'] ?? '');  // Datum změny 'L' záznamu
+						$a_mod = (string) ($a_row['date_modified'] ?? '');   // Datum změny 'A' záznamu
 						if ($l_mod !== '' AND $l_mod > $a_mod) {             // Pokud je 'L' záznam novější než 'A'
 							$a_row['date_modified'] = $l_mod;                // Převzetí novějšího data úpravy
 							$a_row['who_modified'] = $l_item['who_modified']; // Převzetí autora úpravy
@@ -482,7 +487,7 @@ trait entity_manager_read {
 			}
 
 			if ($is_meta_tab AND $anc_col_name !== '') {                     // Pouze pokud jde o tabulku metadat s předkem
-				$anc_id = (string)($a_row[$anc_col_name] ?? '');             // UUID předka
+				$anc_id = (string) ($a_row[$anc_col_name] ?? '');            // UUID předka
 				$anc_rec = ($anc_id !== '') ? ($anc_a_rows[$anc_id] ?? $a_rows[$anc_id] ?? null) : null; // Záznam předka
 				if ($anc_rec !== null) {                                     // Pokud byl předek nalezen
 					foreach ($this->columns_meta as $cn => $cm) {            // Průchod sloupci
@@ -510,8 +515,8 @@ trait entity_manager_read {
 				$ob_clean = trim(str_replace(['[', ']', 'm.'], '', $ob_part)); // Očištění názvu sloupce
 				if ($ob_clean !== '') {                                      // Pokud část není prázdná
 					$tokens = preg_split('/\s+/', $ob_clean);               // Rozdělení na název a směr
-					$sc_name = (string)($tokens[0] ?? '');                   // Název sloupce
-					$sc_dir = strtoupper((string)($tokens[1] ?? 'ASC'));     // Směr řazení
+					$sc_name = (string) ($tokens[0] ?? '');                  // Název sloupce
+					$sc_dir = strtoupper((string) ($tokens[1] ?? 'ASC'));    // Směr řazení
 					if ($sc_name !== '') {                                   // Zařazení sloupce do řazení
 						$sort_cols[$sc_name] = ($sc_dir === 'DESC') ? 'DESC' : 'ASC'; // Uložení směru
 					}
@@ -524,11 +529,15 @@ trait entity_manager_read {
 		}
 
 		if (! empty($sort_cols) AND count($result) > 1) {                    // Seřazení výsledků v PHP
-			usort($result, function(array $x, array $y) use ($sort_cols): int { // Porovnávací funkce řazení
+			usort($result, function (array $x, array $y) use ($sort_cols): int { // Porovnávací funkce řazení
 				foreach ($sort_cols as $sc => $dir) {                        // Průchod řadicími sloupci
-					$vx = (string)($x[$sc] ?? '');                           // Hodnota prvního řádku
-					$vy = (string)($y[$sc] ?? '');                           // Hodnota druhého řádku
-					$cmp = strnatcasecmp($vx, $vy);                          // Přirozené porovnání řetězců
+					$vx = (string) ($x[$sc] ?? '');                          // Hodnota prvního řádku
+					$vy = (string) ($y[$sc] ?? '');                          // Hodnota druhého řádku
+					if ($sc !== 'sort_code' AND is_numeric($vx) AND is_numeric($vy)) { // Přesné porovnání desetinných čísel
+						$cmp = ((float) $vx <=> (float) $vy);                // Číselné porovnání
+					} else {
+						$cmp = strnatcasecmp($vx, $vy);                      // Přirozené lexikografické porovnání řetězců
+					}
 					if ($cmp !== 0) {                                        // Pokud se hodnoty liší
 						return ($dir === 'DESC') ? -$cmp : $cmp;             // Vrácení výsledku dle směru ASC/DESC
 					}
