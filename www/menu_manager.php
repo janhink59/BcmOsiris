@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 13:30
+ * Verze: 2026-11-07 16:20
  * Soubor: menu_manager.php
  * Třída: menu_manager
  * Účel: Globální správce uživatelského menu. 
@@ -15,6 +15,10 @@
  * - Pro překlad nouzového odkazu využívá globální $phrase_manager.
  * 
  * Změny:
+ * 2026-11-07 16:20 - U položek drobečkové navigace s rozbalovacím podmenu potlačen
+ *                    nativní atribut title na horním odkazu (.bcm-breadcrumb-link),
+ *                    aby systémová bublina prohlížeče nepřekrývala první položku
+ *                    rozbalené roletky a nerušila přechod myší do menu.
  * 2026-11-06 13:30 - Doplnění chybějících mezer před znakem $ v celém souboru (Anti-LaTeX).
  * 2026-11-06 00:20 - Oprava sloučeného řádku ($match = false;) v resolve_active_node().
  * 2026-11-05 16:45 - Sjednocení CSS pravidel pro SVG ikony v menu (.bcm-menu-icon svg:not([fill])).
@@ -248,9 +252,10 @@ HTML;
 				$target = $node['target_window'] ? ' target="' . htmlspecialchars((string) $node['target_window']) . '"' : ''; // Cílové okno
 				$disabled_attr = ! empty($node['is_disabled']) ? ' style="color:#94a3b8; cursor:default;" onclick="return false;"' : ''; // Deaktivace
 				$active_class = ($idx === $last_idx) ? ' active' : '';       // Zvýraznění posledního prvku cesty
+				$title_attr = (empty($children) AND $helptext !== '') ? " title=\"{$helptext}\"" : ''; // Tooltip jen u koncové položky bez roletky
 
 				$html .= '<li class="bcm-breadcrumb-item">';                 // Otevření položky drobečkové cesty
-				$html .= "<a href=\"{$link}\" class=\"bcm-breadcrumb-link{$active_class}\"{$target}{$disabled_attr} title=\"{$helptext}\">{$icon}{$caption}</a>"; // Odkaz uzlu
+				$html .= "<a href=\"{$link}\" class=\"bcm-breadcrumb-link{$active_class}\"{$target}{$disabled_attr}{$title_attr}>{$icon}{$caption}</a>"; // Odkaz uzlu
 				
 				// Sestavení roletky s POTOMKY tohoto uzlu
 				if (! empty($children)) {                                    // Pokud uzel obsahuje podpoložky

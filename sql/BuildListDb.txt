@@ -13,13 +13,15 @@ f_*.sql
 fillup_meta_original_keys.sql
 generate_trgo.sql
 v_*.sql
+p_fix_meta_column.sql
+fillup_meta_object.sql
+fillup_*.sql
 #output=BcmOsirisDb2.txt
 p_*.sql
 page_*.sql
 form_*.sql
 drop_abandoned_objects.sql
 final_scripts.sql
-fillup_*.sql
 
 # Doplnek kontextu pro AI
 output=BcmOsirisConcat.txt
@@ -30,5 +32,4 @@ BuildListDb.txt
 # Slepenec pro spusteni vcelku
 limit=0
 output=BcmOsirisDb.sql
-BcmOsirisDb00.txt
-BcmOsirisDb01.txt
+BcmOsirisDb*.txt

@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 22:40
+ * Verze: 2026-11-07 16:20
  * Soubor: language_manager.php
  * Třída: language_manager
  * Účel: Izolovaná služba pro správu aktuálního jazyka, generování UI prvku
@@ -14,6 +14,10 @@
  *   z knihovny `OsirisLib.php`.
  * 
  * Změny:
+ * 2026-11-07 16:20 - Oprava mizení rozbalovací nabídky jazyků při pomalém pohybu myší:
+ *                    odstraněna 2px mezera (margin-top) mezi tlačítkem a menu,
+ *                    odstraněn kolizní atribut title na tlačítku .bcm-lang-btn
+ *                    a doplněna podpora otevření/zavření kliknutím (.open).
  * 2026-10-22 22:40 - Oprava všech slepených mezer před znakem $ v celém souboru.
  * 2026-10-22 17:45 - Propojení s databázovou funkcí dbo.f_language_list().
  * 2026-10-19 23:40 - Čtení tabulky [language] v load_languages() převedeno ze
@@ -151,7 +155,7 @@ class language_manager {
 
 	/**
 	 * Vykreslí kompaktní HTML komponentu pro přepínání jazyka.
-	 * Nevyžaduje externí JS knihovny, využívá čisté CSS (hover menu).
+	 * Využívá plynulý CSS hover (bez mezery a bez rušivého nativního title tooltipu) i přepnutí kliknutím.
 	 * 
 	 * @param string $return_url URL aktuální stránky, na kterou se uživatel po přepnutí vrátí.
 	 */
@@ -164,16 +168,19 @@ class language_manager {
 <style>
 	.bcm-lang-selector { position: relative; display: inline-block; font-family: Arial, sans-serif; font-size: 13px; }
 	.bcm-lang-btn { display: flex; align-items: center; gap: 8px; background: none; border: 1px solid transparent; cursor: pointer; padding: 4px 8px; border-radius: 4px; color: inherit; font-size: 10px; }
-	.bcm-lang-btn:hover { background-color: rgba(0,0,0,0.05); }
-	.bcm-lang-btn svg { width: 20px; height: 20px; }
-	.bcm-lang-menu { display: none; position: absolute; right: 0; top: 100%; background: #fff; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border: 1px solid #ccc; border-radius: 4px; min-width: 140px; z-index: 1000; overflow: hidden; margin-top: 2px; }
-	.bcm-lang-selector:hover .bcm-lang-menu { display: block; }
-	.bcm-lang-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; text-decoration: none; color: #333; transition: background 0.2s; font-size: 13px;}
-	.bcm-lang-item:hover { background: #f4f4f4; }
-	.bcm-lang-item svg { width: 16px; height: 16px; }
+	.bcm-lang-btn:hover, .bcm-lang-selector:hover .bcm-lang-btn, .bcm-lang-selector.open .bcm-lang-btn { background-color: rgba(0,0,0,0.05); }
+	.bcm-lang-btn svg { width: 20px; height: 20px; display: block; flex-shrink: 0; }
+	.bcm-lang-menu { display: none; position: absolute; right: 0; top: 100%; margin-top: 0; background: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.15); border: 1px solid #cbd5e1; border-radius: 4px; min-width: 145px; z-index: 10000; overflow: visible; }
+	.bcm-lang-menu::before { content: ''; position: absolute; left: 0; right: 0; top: -6px; height: 6px; background: transparent; }
+	.bcm-lang-selector:hover .bcm-lang-menu, .bcm-lang-selector.open .bcm-lang-menu { display: block; }
+	.bcm-lang-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; text-decoration: none; color: #333; transition: background 0.15s; font-size: 13px; white-space: nowrap; }
+	.bcm-lang-item:first-child { border-radius: 3px 3px 0 0; }
+	.bcm-lang-item:last-child { border-radius: 0 0 3px 3px; }
+	.bcm-lang-item:hover { background: #f1f5f9; }
+	.bcm-lang-item svg { width: 16px; height: 16px; display: block; flex-shrink: 0; }
 </style>
 <div class="bcm-lang-selector">
-	<button type="button" class="bcm-lang-btn" title="{$current_caption}">
+	<button type="button" class="bcm-lang-btn" aria-label="{$current_caption}" onclick="this.parentElement.classList.toggle('open'); event.stopPropagation();">
 		{$current_svg} <span>▼</span>
 	</button>
 	<div class="bcm-lang-menu">
@@ -195,7 +202,7 @@ HTML;
 			}
 		}
 
-		$html .= "\t</div>\n</div>";                                         // Uzavření HTML přepínače jazyků
+		$html .= "\t</div>\n</div>\n<script>if(!window.bcmLangCloseBound){window.bcmLangCloseBound=true;document.addEventListener('click',function(){document.querySelectorAll('.bcm-lang-selector.open').forEach(function(el){el.classList.remove('open');});});}</script>"; // Uzavření HTML přepínače jazyků
 		return $html;                                                        // Vrácení výsledného HTML kódu
 	}
 }
