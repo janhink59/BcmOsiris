@@ -11,7 +11,6 @@ table_user_session.sql
 table_*.sql
 f_*.sql
 fillup_meta_original_keys.sql
-fillup_*.sql
 generate_trgo.sql
 v_*.sql
 #output=BcmOsirisDb2.txt
@@ -20,6 +19,7 @@ page_*.sql
 form_*.sql
 drop_abandoned_objects.sql
 final_scripts.sql
+fillup_*.sql
 
 # Doplnek kontextu pro AI
 output=BcmOsirisConcat.txt
