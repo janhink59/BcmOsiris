@@ -10,7 +10,7 @@
  *                                      starší než days_in_trash dnů dle meta_class
  * ============================================================================= */
 
-EXECUTE p_create_standard_views;
+--EXECUTE p_create_standard_views;
 EXECUTE p_fix_meta_column;
 EXECUTE p_empty_trash;
 GO

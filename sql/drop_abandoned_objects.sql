@@ -9,4 +9,6 @@
 EXECUTE dropni 'p_generate_primitive_classes', 'P'
 EXECUTE dropni 'password_reset_request'
 EXECUTE dropni 'organization_settings'
+EXECUTE dropni 'p_create_standard_views'
+
 GO

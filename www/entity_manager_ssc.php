@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 14:00
+ * Verze: 2026-11-09 16:30
  * Soubor: entity_manager_ssc.php
  * Trait: entity_manager_ssc
  * Účel: Schvalovací cyklus (SSC: approve_draft, reject_draft, delete_draft),
@@ -15,6 +15,7 @@
  * - Spolupracuje s traitem `entity_manager_write` (`clone_with_map`, `unquote_sql_literal`).
  * - Volán z `entity_manager_write::save_post_data()`, `abstract_page_master_detail::process_save()`
  *   a `page_approval::process_save()`.
+ * - V `run_post_save_hooks()` volá `dbo.p_crmm_recalculate` při uložení entit CRMM.
  * =============================================================================
  */
 
@@ -135,6 +136,7 @@ trait entity_manager_ssc {
 	 * 1. U tabulky `link` zmaterializuje odvozené vazby (`dbo.p_sync_derived_links`).
 	 * 2. U číselníků a škál se zaškrtnutým `is_default = 1` vynuluje `is_default` na ostatních sourozencích.
 	 * 3. U nově založené hodnotící škály (`scale`) vygeneruje $n$ výchozích stupňů v `scale_value` (`0..100 %`).
+	 * 4. U tabulek modulu CRMM spustí přepočet rizik a faktorů (`dbo.p_crmm_recalculate`).
 	 */
 	private function run_post_save_hooks(string $orig_guid_sql, string $rec_owner_sql = '0x00', string $lang_sql = "'cs'", string $user_uuid_sql = '0x00'): void { // Návazné operace
 		if ($orig_guid_sql === '' OR $orig_guid_sql === 'NULL') { // Kontrola platného SQL literálu originálu
@@ -148,7 +150,6 @@ trait entity_manager_ssc {
 			if (! empty($p_row['pid'])) { // Pokud procedura v DB existuje
 				sqlrun("EXEC dbo.p_sync_derived_links @root_link_original = {$orig_guid_sql}"); // Přepočet odvozených vazeb
 			}
-			return; // Konec pro tabulku link
 		}
 
 		if (in_array('is_default', $this->physical_cols, true)) { // Zajištění jednoznačnosti výchozí položky (is_default = 1)
@@ -219,6 +220,13 @@ trait entity_manager_ssc {
 						);
 					"); // Vložení 'A' i symetrického 'L' záznamu stupně škály
 				}
+			}
+		}
+
+		if (in_array($table, ['asset', 'link', 'countermeasure_implementation', 'scenario_assessment', 'countermeasure', 'countermeasure_state', 'scenario', 'threat'], true)) { // Přepočet CRMM
+			$crmm_proc = sqlfirstrow("SELECT OBJECT_ID('p_crmm_recalculate', 'P') AS pid"); // Kontrola existence výpočetní procedury
+			if (! empty($crmm_proc['pid'])) { // Pokud procedura v DB existuje
+				sqlrun("EXEC dbo.p_crmm_recalculate @org_uuid = {$rec_owner_sql}"); // Automatický přepočet faktorů a rizik organizace
 			}
 		}
 	}

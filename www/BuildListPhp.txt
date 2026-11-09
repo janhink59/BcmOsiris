@@ -1,3 +1,4 @@
 limit=380000
 exclude=config_*.php
+exclude=htmLawed.php 
 *.php

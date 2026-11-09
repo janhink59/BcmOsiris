@@ -3,7 +3,7 @@
 #
 
 F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
-
+exclude=p_create_standard_views.sql 
 changes_*.sql
 
 system_constant.sql

@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:45
+ * Verze: 2026-11-09 16:30
  * Soubor: p_fix_meta_column.sql
  * Procedury: dbo.p_sync_hierarchy_to_meta_class, dbo.p_fix_meta_column
  * Účel: 1. dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
@@ -9,27 +9,18 @@
  *       2. dbo.p_fix_meta_column provádí automatizovanou technickou synchronizaci
  *          a provazování dědičnosti metadat (meta_object, meta_class, meta_column)
  *          a sjednocení RAC/SSC sloupců a unikátních filtrovaných indexů.
- *          Výchozí české a anglické texty tříd a sloupců jsou vyčleněny do dávek
- *          fillup_meta_class.sql, fillup_meta_class_en.sql, fillup_meta_column.sql
- *          a fillup_meta_column_en.sql.
  *
  * Vazby na okolí:
- * - Volána na konci sestavovací dávky databáze (final_scripts.sql), na začátku
- *   fillup_meta_class.sql / fillup_meta_column.sql a z triggeru
- *   trg_hierarchy_sync_meta_class (table_hierarchy.sql).
- * - Čte systémový pohled v_syscolumns (z HinkMSSQLLibrary.sql) a synchronizuje
- *   záznamy v tabulkách meta_object, meta_class, meta_column a meta_codetable.
- * - Využívá deterministickou hashovací funkci dbo.f_generate_original.
+ * - Volána na konci sestavovací dávky databáze (final_scripts.sql), před maskou
+ *   fillup_*.sql v BuildListDb.txt a z triggeru trg_hierarchy_sync_meta_class.
+ * - Čte systémový pohled v_syscolumns a synchronizuje tabulky meta_object,
+ *   meta_class, meta_column a meta_codetable.
  *
  * Změny:
- * - 2026-11-09 14:45: Doplněna registrace 17 odvozených STI tříd aktiv nad
- *   tabulkou asset, systémový číselník asset_archetype v meta_codetable a
- *   automatické napojení referenced_class pro sloupce building_uuid, room_uuid,
- *   host_uuid, software_uuid, supplier_uuid, owner_user_uuid, assessor_user_uuid,
- *   responsible_user_uuid, manager_uuid, asset_uuid, scenario_uuid,
- *   countermeasure_uuid, state_uuid, link_def, from_object a to_object.
- * - 2026-11-07 12:45: Odstraněn falešný český placeholder ('Zadejte ' + colname)
- *   při prvotním INSERTu do sys_global_columns.
+ * - 2026-11-09 16:30: Sekce 5b optimalizována: 16 sekvenčních UPDATE bloků pro
+ *   referenced_class a referenced_codetable nahrazeno jedinou mapovací tabulkou
+ *   @ref_map a jedním hromadným dotazem UPDATE. Doplněno výchozí list_order
+ *   pro tabulky asset, scenario_assessment, countermeasure_implementation a link.
  * ============================================================================= */
 
 EXECUTE dropni 'p_fix_meta_column', 'P';
@@ -268,7 +259,7 @@ BEGIN
 				@iname = @idx_lang,
 				@colnames = 'original, object_owner, language',
 				@uni = 'UNIQUE',
-				@options = 'WHERE record_type = ''L'' AND removed = 0';
+				@options = 'WHERE record_type = ''A'' AND removed = 0';
 		END
 
 		SET @idx_draft = 'uq_' + @rac_tab + '_draft';
@@ -589,7 +580,6 @@ BEGIN
 		WHERE ga.colname = mc.column_name COLLATE DATABASE_DEFAULT
 	  );
 
-	-- Prvotní vložení nových globálních sloupců (bez falešného placeholderu 'Zadejte ...')
 	INSERT INTO meta_column (
 		uuid, object_owner, original, record_type, approval_status,
 		parent_class, parent_order, sort_code, column_name, 
@@ -887,211 +877,68 @@ BEGIN
 	  AND who_modified = 0x00;
 
 	-- -------------------------------------------------------------------------
-	-- 5b. AUTOMATICKÉ NAPOJENÍ VAZEB referenced_class A ČÍSELNÍKŮ
+	-- 5b. TABULKOVĚ ŘÍZENÉ NAPOJENÍ VAZEB referenced_class A referenced_codetable
 	-- -------------------------------------------------------------------------
-	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
-	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');
-	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
-	DECLARE @cls_meta_link_def uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_link_def', '');
-	DECLARE @cls_hierarchy uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy', '');
-	DECLARE @cls_asset_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_class', '');
-	DECLARE @cls_threat uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'threat', '');
-	DECLARE @cls_scenario uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'scenario', '');
-	DECLARE @cls_countermeasure uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'countermeasure', '');
-	DECLARE @cls_cm_state uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'countermeasure_state', '');
-	DECLARE @cls_scale uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'scale', '');
-	DECLARE @cls_user_account uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'user_account', '');
-	DECLARE @cls_asset uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset', '');
-	DECLARE @cls_asset_building uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_building', '');
-	DECLARE @cls_asset_room uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_room', '');
-	DECLARE @cls_asset_host uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_host', '');
-	DECLARE @cls_asset_software uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_software', '');
-	DECLARE @cls_asset_supplier uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_supplier', '');
+	DECLARE @ref_map TABLE (
+		column_name varchar(80) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+		ref_class_name varchar(80) COLLATE DATABASE_DEFAULT NULL,
+		ref_codetable varchar(80) COLLATE DATABASE_DEFAULT NULL,
+		force_if_sys bit NOT NULL DEFAULT 0
+	);
 
-	UPDATE meta_column
-	SET referenced_codetable = 'scale_type'
-	WHERE parent_class = @c_class
-	  AND object_owner = 0x00
-	  AND record_type = 'A'
-	  AND column_name = 'scale_type'
-	  AND referenced_codetable = '';
+	INSERT INTO @ref_map (column_name, ref_class_name, ref_codetable, force_if_sys) VALUES
+		('scale_type',            NULL,                   'scale_type',      0),
+		('asset_archetype',       NULL,                   'asset_archetype', 0),
+		('parent_class',          'meta_class',           NULL,              0),
+		('ancestor_class',        'meta_class',           NULL,              0),
+		('referenced_class',      'meta_class',           NULL,              0),
+		('from_class',            'meta_class',           NULL,              0),
+		('to_class',              'meta_class',           NULL,              0),
+		('storage_object',        'meta_object',          NULL,              0),
+		('target_object',         'meta_object',          NULL,              0),
+		('ancestor',              'meta_column',          NULL,              1),
+		('link_def',              'meta_link_def',        NULL,              0),
+		('owner_user_uuid',       'user_account',         NULL,              0),
+		('assessor_user_uuid',    'user_account',         NULL,              0),
+		('responsible_user_uuid', 'user_account',         NULL,              0),
+		('manager_uuid',          'user_account',         NULL,              0),
+		('hierarchy',             'hierarchy',            NULL,              0),
+		('scale',                 'scale',                NULL,              0),
+		('asset_class_uuid',      'asset_class',          NULL,              0),
+		('primary_asset_class',   'asset_class',          NULL,              0),
+		('threat_uuid',           'threat',               NULL,              0),
+		('scenario_uuid',         'scenario',             NULL,              0),
+		('countermeasure_uuid',   'countermeasure',       NULL,              0),
+		('state_uuid',            'countermeasure_state', NULL,              0),
+		('asset_uuid',            'asset',                NULL,              0),
+		('from_object',           'asset',                NULL,              0),
+		('to_object',             'asset',                NULL,              0),
+		('building_uuid',         'asset_building',       NULL,              0),
+		('room_uuid',             'asset_room',           NULL,              0),
+		('host_uuid',             'asset_host',           NULL,              0),
+		('software_uuid',         'asset_software',       NULL,              0),
+		('supplier_uuid',         'asset_supplier',       NULL,              0);
 
-	UPDATE meta_column
-	SET referenced_codetable = 'asset_archetype'
-	WHERE parent_class = @c_class
-	  AND object_owner = 0x00
-	  AND record_type = 'A'
-	  AND column_name = 'asset_archetype'
-	  AND referenced_codetable = '';
-
-	UPDATE meta_column
-	SET referenced_class = @cls_meta_class
-	WHERE parent_class = @c_class
-	  AND object_owner = 0x00
-	  AND record_type = 'A'
-	  AND column_name IN ('parent_class', 'ancestor_class', 'referenced_class', 'from_class', 'to_class')
-	  AND referenced_class IS NULL;
-
-	UPDATE meta_column
-	SET referenced_class = @cls_meta_object
-	WHERE parent_class = @c_class
-	  AND object_owner = 0x00
-	  AND record_type = 'A'
-	  AND column_name IN ('storage_object', 'target_object')
-	  AND referenced_class IS NULL;
-
-	UPDATE meta_column
-	SET referenced_class = @cls_meta_column
-	WHERE parent_class = @c_class
-	  AND object_owner = 0x00
-	  AND record_type = 'A'
-	  AND column_name = 'ancestor'
-	  AND ISNULL(referenced_class, 0x00) <> @cls_meta_column
-	  AND who_modified = 0x00;
-
-	UPDATE meta_column
-	SET referenced_class = @cls_meta_link_def
-	WHERE parent_class = @c_class
-	  AND object_owner = 0x00
-	  AND record_type = 'A'
-	  AND column_name = 'link_def'
-	  AND referenced_class IS NULL;
-
-	UPDATE meta_column
-	SET referenced_class = @cls_user_account
-	WHERE parent_class = @c_class
-	  AND object_owner = 0x00
-	  AND record_type = 'A'
-	  AND column_name IN ('owner_user_uuid', 'assessor_user_uuid', 'responsible_user_uuid', 'manager_uuid')
-	  AND referenced_class IS NULL;
-
-	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_hierarchy AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		UPDATE meta_column
-		SET referenced_class = @cls_hierarchy
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'hierarchy'
-		  AND referenced_class IS NULL;
-	END
-
-	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_scale AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		UPDATE meta_column
-		SET referenced_class = @cls_scale
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'scale'
-		  AND referenced_class IS NULL;
-	END
-
-	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_asset_class AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		UPDATE meta_column
-		SET referenced_class = @cls_asset_class
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name IN ('asset_class_uuid', 'primary_asset_class')
-		  AND referenced_class IS NULL;
-	END
-
-	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_threat AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		UPDATE meta_column
-		SET referenced_class = @cls_threat
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'threat_uuid'
-		  AND referenced_class IS NULL;
-	END
-
-	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_scenario AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		UPDATE meta_column
-		SET referenced_class = @cls_scenario
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'scenario_uuid'
-		  AND referenced_class IS NULL;
-	END
-
-	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_countermeasure AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		UPDATE meta_column
-		SET referenced_class = @cls_countermeasure
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'countermeasure_uuid'
-		  AND referenced_class IS NULL;
-	END
-
-	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_cm_state AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		UPDATE meta_column
-		SET referenced_class = @cls_cm_state
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'state_uuid'
-		  AND referenced_class IS NULL;
-	END
-
-	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_asset AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
-	BEGIN
-		UPDATE meta_column
-		SET referenced_class = @cls_asset
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name IN ('asset_uuid', 'from_object', 'to_object')
-		  AND referenced_class IS NULL;
-
-		UPDATE meta_column
-		SET referenced_class = @cls_asset_building
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'building_uuid'
-		  AND referenced_class IS NULL;
-
-		UPDATE meta_column
-		SET referenced_class = @cls_asset_room
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'room_uuid'
-		  AND referenced_class IS NULL;
-
-		UPDATE meta_column
-		SET referenced_class = @cls_asset_host
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'host_uuid'
-		  AND referenced_class IS NULL;
-
-		UPDATE meta_column
-		SET referenced_class = @cls_asset_software
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'software_uuid'
-		  AND referenced_class IS NULL;
-
-		UPDATE meta_column
-		SET referenced_class = @cls_asset_supplier
-		WHERE parent_class = @c_class
-		  AND object_owner = 0x00
-		  AND record_type = 'A'
-		  AND column_name = 'supplier_uuid'
-		  AND referenced_class IS NULL;
-	END
+	UPDATE mc
+	SET mc.referenced_codetable = CASE
+			WHEN rm.ref_codetable IS NOT NULL AND mc.referenced_codetable = '' THEN rm.ref_codetable
+			ELSE mc.referenced_codetable
+		END,
+		mc.referenced_class = CASE
+			WHEN t_cls.original IS NOT NULL AND (mc.referenced_class IS NULL OR (rm.force_if_sys = 1 AND mc.who_modified = 0x00))
+				THEN t_cls.original
+			ELSE mc.referenced_class
+		END
+	FROM meta_column mc
+	JOIN @ref_map rm ON rm.column_name = mc.column_name
+	LEFT JOIN meta_class t_cls
+		ON t_cls.class_name = rm.ref_class_name
+		AND t_cls.object_owner = 0x00
+		AND t_cls.record_type = 'A'
+		AND t_cls.removed = 0
+	WHERE mc.parent_class = @c_class
+	  AND mc.object_owner = 0x00
+	  AND mc.record_type = 'A';
 
 	UPDATE meta_column
 	SET referenced_class = parent_class

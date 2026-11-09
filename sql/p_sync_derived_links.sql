@@ -1,24 +1,26 @@
 /* =============================================================================
- * Verze: 2026-11-05 10:15
+ * Verze: 2026-11-09 16:30
  * Soubor: p_sync_derived_links.sql
  * Funkce:    dbo.f_is_hierarchy_node_locked
  * Procedura: dbo.p_sync_derived_links
  * Účel:   1. Funkce f_is_hierarchy_node_locked ověří, zda je daný uzel hierarchie
  *            (nebo libovolný podřízený uzel v jeho podstromu) již navázán na jiné
- *            entity v tabulce link (příp. scenario nebo asset), což uzamyká uzel
- *            proti změně nadřízeného uzlu (parent_uuid) nebo smazání.
+ *            entity v tabulkách link, scenario, asset, scenario_assessment nebo
+ *            countermeasure_implementation, což uzamyká uzel proti přepodřízení
+ *            (změně parent_uuid), změně is_leaf z 1 na 0 nebo smazání.
  *         2. Procedura p_sync_derived_links provádí materializaci (a výmaz)
  *            zděděných vazeb v tabulce link pomocí sloupce ancestor_link.
  * Vazby:  - Čte tabulky link, meta_link_def, meta_class, meta_object, asset_class,
- *           threat, impact, scenario, countermeasure, hierarchy, hierarchy_item
- *           a v_syscolumns.
+ *           threat, impact, scenario, countermeasure, hierarchy, hierarchy_item,
+ *           asset, scenario_assessment, countermeasure_implementation a v_syscolumns.
  *         - Využívá deterministickou funkci dbo.f_link_original.
- *         - Volána z entity_manager_ui.php a entity_manager_write.php.
- * Změny:  - 2026-11-05 10:15: Do funkce dbo.f_is_hierarchy_node_locked doplněn
- *           průchod podstromem pro katalog protiopatření (countermeasure).
- *         - 2026-11-01 18:00: Do funkce dbo.f_is_hierarchy_node_locked doplněn
- *           průchod podstromem pro katalogové tabulky threat, impact a scenario
- *           a kontrola přímých odkazů ze scenario (threat_uuid, asset_class_uuid).
+ *         - Volána z entity_manager_ui.php a entity_manager_ssc.php.
+ * Změny:  - 2026-11-09 16:30: Do funkce dbo.f_is_hierarchy_node_locked doplněn
+ *           průchod podstromem pro tabulku asset a kontrola vazeb v tabulkách
+ *           asset (primary_asset_class, building_uuid, room_uuid, host_uuid,
+ *           software_uuid, supplier_uuid), scenario_assessment (asset_uuid,
+ *           scenario_uuid) a countermeasure_implementation (asset_uuid,
+ *           countermeasure_uuid).
  * ============================================================================= */
 
 EXECUTE dropni 'p_sync_derived_links', 'P';
@@ -27,9 +29,6 @@ GO
 
 /* =============================================================================
  * Funkce: dbo.f_is_hierarchy_node_locked
- * Účel:   Vrátí 1, pokud na zadaném uzlu (@node_original) nebo jeho podřízených
- *         uzlech v tabulce @table_name již existují platné vazby v tabulce link
- *         (nebo odkazy ze scenario / hierarchy_item). Jinak vrátí 0.
  * ============================================================================= */
 CREATE FUNCTION dbo.f_is_hierarchy_node_locked(
 	@table_name varchar(128),
@@ -45,8 +44,8 @@ BEGIN
 	DECLARE @subtree TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
 	INSERT INTO @subtree (original) VALUES (@node_original);
 
-	-- Sběr podstromu pro hierarchické tabulky CRMM
-	IF @table_name = 'asset_class' AND OBJECT_ID('asset_class') IS NOT NULL
+	-- 1. Sběr podstromu a specifické relační kontroly podle tabulky
+	IF @table_name = 'asset_class' AND OBJECT_ID('asset_class', 'U') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
 		BEGIN
@@ -54,23 +53,19 @@ BEGIN
 			SELECT DISTINCT c.original
 			FROM asset_class c
 			JOIN @subtree s ON c.parent_uuid = s.original
-			WHERE c.record_type = 'A'
-			  AND c.removed = 0
-			  AND c.object_owner IN (0x00, @object_owner)
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
 
-		IF OBJECT_ID('scenario') IS NOT NULL
-		BEGIN
-			IF EXISTS (
-				SELECT 1 FROM scenario sc
-				JOIN @subtree s ON s.original = sc.asset_class_uuid
-				WHERE sc.record_type = 'A' AND sc.removed = 0
-			)
+		IF OBJECT_ID('scenario', 'U') IS NOT NULL
+			IF EXISTS (SELECT 1 FROM scenario sc JOIN @subtree s ON s.original = sc.asset_class_uuid WHERE sc.record_type = 'A' AND sc.removed = 0)
 				RETURN 1;
-		END
+
+		IF OBJECT_ID('asset', 'U') IS NOT NULL
+			IF EXISTS (SELECT 1 FROM asset a JOIN @subtree s ON s.original = a.primary_asset_class WHERE a.record_type = 'A' AND a.removed = 0)
+				RETURN 1;
 	END
-	ELSE IF @table_name = 'threat' AND OBJECT_ID('threat') IS NOT NULL
+	ELSE IF @table_name = 'threat' AND OBJECT_ID('threat', 'U') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
 		BEGIN
@@ -78,23 +73,15 @@ BEGIN
 			SELECT DISTINCT c.original
 			FROM threat c
 			JOIN @subtree s ON c.parent_uuid = s.original
-			WHERE c.record_type = 'A'
-			  AND c.removed = 0
-			  AND c.object_owner IN (0x00, @object_owner)
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
 
-		IF OBJECT_ID('scenario') IS NOT NULL
-		BEGIN
-			IF EXISTS (
-				SELECT 1 FROM scenario sc
-				JOIN @subtree s ON s.original = sc.threat_uuid
-				WHERE sc.record_type = 'A' AND sc.removed = 0
-			)
+		IF OBJECT_ID('scenario', 'U') IS NOT NULL
+			IF EXISTS (SELECT 1 FROM scenario sc JOIN @subtree s ON s.original = sc.threat_uuid WHERE sc.record_type = 'A' AND sc.removed = 0)
 				RETURN 1;
-		END
 	END
-	ELSE IF @table_name = 'impact' AND OBJECT_ID('impact') IS NOT NULL
+	ELSE IF @table_name = 'impact' AND OBJECT_ID('impact', 'U') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
 		BEGIN
@@ -102,13 +89,11 @@ BEGIN
 			SELECT DISTINCT c.original
 			FROM impact c
 			JOIN @subtree s ON c.parent_uuid = s.original
-			WHERE c.record_type = 'A'
-			  AND c.removed = 0
-			  AND c.object_owner IN (0x00, @object_owner)
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
 	END
-	ELSE IF @table_name = 'scenario' AND OBJECT_ID('scenario') IS NOT NULL
+	ELSE IF @table_name = 'scenario' AND OBJECT_ID('scenario', 'U') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
 		BEGIN
@@ -116,13 +101,15 @@ BEGIN
 			SELECT DISTINCT c.original
 			FROM scenario c
 			JOIN @subtree s ON c.parent_uuid = s.original
-			WHERE c.record_type = 'A'
-			  AND c.removed = 0
-			  AND c.object_owner IN (0x00, @object_owner)
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
+
+		IF OBJECT_ID('scenario_assessment', 'U') IS NOT NULL
+			IF EXISTS (SELECT 1 FROM scenario_assessment sa JOIN @subtree s ON s.original = sa.scenario_uuid WHERE sa.record_type = 'A' AND sa.removed = 0)
+				RETURN 1;
 	END
-	ELSE IF @table_name = 'countermeasure' AND OBJECT_ID('countermeasure') IS NOT NULL
+	ELSE IF @table_name = 'countermeasure' AND OBJECT_ID('countermeasure', 'U') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
 		BEGIN
@@ -130,13 +117,46 @@ BEGIN
 			SELECT DISTINCT c.original
 			FROM countermeasure c
 			JOIN @subtree s ON c.parent_uuid = s.original
-			WHERE c.record_type = 'A'
-			  AND c.removed = 0
-			  AND c.object_owner IN (0x00, @object_owner)
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
+
+		IF OBJECT_ID('countermeasure_implementation', 'U') IS NOT NULL
+			IF EXISTS (SELECT 1 FROM countermeasure_implementation ci JOIN @subtree s ON s.original = ci.countermeasure_uuid WHERE ci.record_type = 'A' AND ci.removed = 0)
+				RETURN 1;
 	END
-	ELSE IF @table_name = 'hierarchy' AND OBJECT_ID('hierarchy') IS NOT NULL
+	ELSE IF @table_name = 'asset' AND OBJECT_ID('asset', 'U') IS NOT NULL
+	BEGIN
+		WHILE @@ROWCOUNT > 0
+		BEGIN
+			INSERT INTO @subtree (original)
+			SELECT DISTINCT c.original
+			FROM asset c
+			JOIN @subtree s ON c.parent_uuid = s.original
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
+			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
+		END
+
+		IF EXISTS (
+			SELECT 1
+			FROM asset a
+			JOIN @subtree s
+				ON s.original IN (a.building_uuid, a.room_uuid, a.host_uuid, a.software_uuid, a.supplier_uuid)
+			WHERE a.record_type = 'A'
+			  AND a.removed = 0
+			  AND NOT EXISTS (SELECT 1 FROM @subtree self_s WHERE self_s.original = a.original)
+		)
+			RETURN 1;
+
+		IF OBJECT_ID('scenario_assessment', 'U') IS NOT NULL
+			IF EXISTS (SELECT 1 FROM scenario_assessment sa JOIN @subtree s ON s.original = sa.asset_uuid WHERE sa.record_type = 'A' AND sa.removed = 0)
+				RETURN 1;
+
+		IF OBJECT_ID('countermeasure_implementation', 'U') IS NOT NULL
+			IF EXISTS (SELECT 1 FROM countermeasure_implementation ci JOIN @subtree s ON s.original = ci.asset_uuid WHERE ci.record_type = 'A' AND ci.removed = 0)
+				RETURN 1;
+	END
+	ELSE IF @table_name = 'hierarchy' AND OBJECT_ID('hierarchy', 'U') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
 		BEGIN
@@ -144,30 +164,21 @@ BEGIN
 			SELECT DISTINCT c.original
 			FROM hierarchy c
 			JOIN @subtree s ON c.parent_uuid = s.original
-			WHERE c.record_type = 'A'
-			  AND c.removed = 0
-			  AND c.object_owner IN (0x00, @object_owner)
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
 
-		IF OBJECT_ID('hierarchy_item') IS NOT NULL
-		BEGIN
+		IF OBJECT_ID('hierarchy_item', 'U') IS NOT NULL
 			IF EXISTS (
 				SELECT 1
 				FROM hierarchy_item hi
 				JOIN @subtree s ON s.original = hi.hierarchy
 				JOIN link l ON (l.from_object = hi.original OR l.to_object = hi.original)
-				WHERE hi.record_type = 'A'
-				  AND hi.removed = 0
-				  AND l.record_type = 'A'
-				  AND l.removed = 0
+				WHERE hi.record_type = 'A' AND hi.removed = 0 AND l.record_type = 'A' AND l.removed = 0
 			)
-			BEGIN
 				RETURN 1;
-			END
-		END
 	END
-	ELSE IF @table_name = 'hierarchy_item' AND OBJECT_ID('hierarchy_item') IS NOT NULL
+	ELSE IF @table_name = 'hierarchy_item' AND OBJECT_ID('hierarchy_item', 'U') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
 		BEGIN
@@ -175,14 +186,12 @@ BEGIN
 			SELECT DISTINCT c.original
 			FROM hierarchy_item c
 			JOIN @subtree s ON c.parent_uuid = s.original
-			WHERE c.record_type = 'A'
-			  AND c.removed = 0
-			  AND c.object_owner IN (0x00, @object_owner)
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
 	END
 
-	-- Kontrola platných vazeb v tabulce link na libovolný uzel podstromu
+	-- 2. Společná kontrola platných vazeb v tabulce link na libovolný uzel podstromu
 	IF EXISTS (
 		SELECT 1
 		FROM link l
@@ -190,9 +199,7 @@ BEGIN
 		WHERE l.record_type = 'A'
 		  AND l.removed = 0
 	)
-	BEGIN
 		RETURN 1;
-	END
 
 	RETURN 0;
 END
@@ -200,10 +207,6 @@ GO
 
 /* =============================================================================
  * Procedura: dbo.p_sync_derived_links
- * Účel:      Pro zadanou kořenovou vazbu (@root_link_original) nebo pro všechny
- *            kořenové vazby (pokud je @root_link_original NULL) zmaterializuje
- *            nebo odstraní odvozené vazby (ancestor_link = root_link.original)
- *            pro všechny podřízené uzly v hierarchii.
  * ============================================================================= */
 CREATE PROCEDURE dbo.p_sync_derived_links
 	@root_link_original uniqueidentifier = NULL
