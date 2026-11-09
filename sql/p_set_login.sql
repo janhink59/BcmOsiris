@@ -2,7 +2,7 @@ EXECUTE dropni 'p_set_login', 'P'
 GO
 
 /* =============================================================================
- * Verze: 2026-10-29 16:00
+ * Verze: 2026-11-09 13:00
  * Soubor: p_set_login.sql
  * Procedura: p_set_login
  * Účel: Založení uživatelské relace a inicializace kontextu (tenant, práva,
@@ -16,6 +16,9 @@ GO
  *   do aplikační relace (wwwsession -> dbsession).
  *
  * Změny:
+ * - 2026-11-09 13:00: Před smazáním předchozího záznamu z wwwsession se v tabulce
+ *   audit_login_session řádně nastaví logout_time (ukončení předchozí relace
+ *   při přepnutí kontextu nebo novém přihlášení).
  * - 2026-10-29 16:00: Doplněno načítání a ukládání licence_level (pro 0x00 vždy 255)
  *   a osobního pracovního data working_date z v_user_organization_access do wwwsession.
  *   Opravena kontrola dostupných organizací pro @change_context_allowed (kontrola
@@ -50,6 +53,19 @@ BEGIN
 	DECLARE @login_session_uuid uniqueidentifier = NEWID();
 
 	BEGIN TRAN;
+
+	-- Uzavření případné předchozí neukončené relace téhož prohlížeče v audit_login_session
+	UPDATE a
+	SET a.logout_time = CASE
+		WHEN DATEADD(mi, c.session_timeout, w.request_date) < GETDATE()
+			THEN DATEADD(mi, c.session_timeout, w.request_date)
+		ELSE GETDATE()
+	END
+	FROM audit_login_session a
+	JOIN wwwsession w ON w.login_session_uuid = a.uuid
+	CROSS JOIN system_constant c
+	WHERE w.wwwsession = @wwwsession
+	  AND a.logout_time IS NULL;
 
 	-- Vyčištění případné staré neukončené webové relace se stejným session_id
 	DELETE FROM wwwsession WHERE wwwsession = @wwwsession;

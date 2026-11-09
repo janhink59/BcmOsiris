@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-16 09:55
+ * Verze: 2026-11-09 13:00
  * Stránka: index.php
  * Účel: Centrální rozcestník (router) aplikace RAMSES.
  *
@@ -16,6 +16,7 @@
  * - Pokud požadovaný soubor neexistuje, volá fatal_error().
  * 
  * Změny:
+ * 2026-11-09 13:00 - Nahrazeny operátory && za slovní AND dle Anti-LaTeX pravidla.
  * 2026-10-16 09:55 - Oprava součinnosti s initsession() v OsirisLib.php pro stavy
  *                    'page_logout' -> 'logout' a opětovnou normalizaci prefixu 'page_'
  *                    po návratu z initsession() (zamezení chyby 404 pro 'login.php').
@@ -55,7 +56,7 @@ if (!str_starts_with($page, 'page_')) {                                  // Kont
 // 4. Inicializace session a ověření uživatele
 // Funkce initsession() je definována v OsirisLib.php a plní pole $dbsession.
 // Výjimka byla rozšířena o 'google_callback', protože při návratu z IdP ještě lokální session neexistuje.
-if ($page !== 'page_login' && $page !== 'page_password_reset' && $page !== 'page_google_callback') { // Stránky vyžadující relaci
+if ($page !== 'page_login' AND $page !== 'page_password_reset' AND $page !== 'page_google_callback') { // Stránky vyžadující relaci
 	if ($page === 'page_logout') {                                       // Překlad názvu odhlášení pro initsession()
 		$page = 'logout';                                                // OsirisLib.php testuje hodnotu 'logout'
 	}
@@ -86,7 +87,7 @@ if (file_exists($page_file)) {                                           // Ově
 	
 	// Dynamická detekce objektové stránky
 	$class_name = $page;                                                 // Název třídy odpovídá plnému kódu stránky
-	if (class_exists($class_name) && is_subclass_of($class_name, 'abstract_page')) { // Kontrola dědičnosti z abstract_page
+	if (class_exists($class_name) AND is_subclass_of($class_name, 'abstract_page')) { // Kontrola dědičnosti z abstract_page
 		$page_instance = new $class_name();                              // Instancování objektu stránky
 		$page_instance->render();                                        // Spuštění zpracování a vykreslení stránky
 	}

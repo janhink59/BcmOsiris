@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-29 16:00
+ * Verze: 2026-11-09 13:00
  * Soubor: page_audit_login_session.php
  * Třída: page_audit_login_session
  * Účel: Přehledová stránka pro zobrazení aktivity uživatelů z forenzní tabulky
@@ -21,6 +21,10 @@
  *   právě aktivních (neukončených) relací.
  *
  * Změny:
+ * 2026-11-09 13:00 - Doplněno automatické uzavření expirovaných a osiřelých relací
+ *                    v audit_login_session před načtením přehledu, zobrazení štítku
+ *                    Expirováno u relací ukončených vypršením timeoutu a zpřesnění
+ *                    filtru Pouze aktivní relace (only_open = 1).
  * 2026-10-29 16:00 - Doplněn sloupec s názvem cílové organizace při přihlášení
  *                    v systémové organizaci (0x00) a přepínač pro zobrazení pouze
  *                    právě aktivních (neukončených) relací.
@@ -81,6 +85,37 @@ class page_audit_login_session extends abstract_page {
 		echo "<h1 class=\"page-heading\">{$heading}</h1>\n";                 // Výpis hlavního nadpisu stránky
 		echo "<p style=\"margin-bottom: 18px; color: #475569; font-size: 13px;\">{$intro}</p>\n"; // Výpis úvodního popisu
 
+		// Dodatečné ukončení expirovaných a osiřelých relací před čtením přehledu
+		sqlrun("
+			UPDATE a
+			SET a.logout_time = DATEADD(minute, c.session_timeout, u.request_date)
+			FROM audit_login_session a
+			JOIN wwwsession u ON u.login_session_uuid = a.uuid
+			CROSS JOIN system_constant c
+			WHERE a.logout_time IS NULL
+			  AND DATEADD(minute, c.session_timeout, u.request_date) < GETDATE();
+
+			DELETE u
+			FROM wwwsession u
+			CROSS JOIN system_constant c
+			WHERE DATEADD(minute, c.session_timeout, u.request_date) < GETDATE();
+
+			UPDATE a
+			SET a.logout_time = CASE
+				WHEN DATEADD(minute, c.session_timeout, a.last_request_time) < GETDATE()
+					THEN DATEADD(minute, c.session_timeout, a.last_request_time)
+				ELSE a.last_request_time
+			END
+			FROM audit_login_session a
+			CROSS JOIN system_constant c
+			LEFT JOIN wwwsession w ON w.login_session_uuid = a.uuid
+			WHERE a.logout_time IS NULL
+			  AND (
+				w.wwwsession IS NULL
+				OR DATEADD(minute, c.session_timeout, a.last_request_time) < GETDATE()
+			  );
+		");                                                                  // Uzavření expirovaných relací v databázi
+
 		// Sestavení filtračního formuláře (GET)
 		$menu_code = trim((string)getinput('menu_code'));                    // Kód položky menu pro zachování drobečkové navigace
 		$safe_menu_code = htmlspecialchars($menu_code);                      // Ošetřený kód menu pro skryté pole
@@ -133,7 +168,7 @@ class page_audit_login_session extends abstract_page {
 		}
 
 		if ($this->only_open) {                                              // Pokud chce uživatel vidět jen právě otevřené relace
-			$where_parts[] = "a.logout_time IS NULL";                        // Podmínka neukončené relace
+			$where_parts[] = "a.logout_time IS NULL AND EXISTS (SELECT 1 FROM wwwsession w WHERE w.login_session_uuid = a.uuid)"; // Pouze skutečně aktivní relace
 		}
 
 		if ($this->user_filter !== '') {                                     // Pokud uživatel zadal filtr na jméno/login
@@ -161,6 +196,11 @@ class page_audit_login_session extends abstract_page {
 			a.login_time,
 			a.last_request_time,
 			a.logout_time,
+			CASE
+				WHEN a.logout_time IS NOT NULL AND DATEDIFF(second, a.last_request_time, a.logout_time) >= ISNULL(c.session_timeout, 20) * 60
+					THEN 1
+				ELSE 0
+			END AS is_expired,
 			a.ip_address,
 			DATEDIFF(minute, a.login_time, COALESCE(a.logout_time, a.last_request_time)) AS duration_minutes,
 			CASE
@@ -181,6 +221,7 @@ class page_audit_login_session extends abstract_page {
 			END AS org_display,
 			ISNULL(o.caption, '') AS org_full_caption
 		FROM audit_login_session a
+		CROSS JOIN system_constant c
 		LEFT JOIN user_account u
 			ON u.original = a.user_account_uuid
 			AND u.record_type = 'A'
@@ -218,6 +259,7 @@ class page_audit_login_session extends abstract_page {
 		$th_ip        = htmlspecialchars($this->phrase('th_ip_address', [], 'IP adresa'));             // Záhlaví IP adresy
 
 		$txt_open_sess = htmlspecialchars($this->phrase('txt_session_open', [], 'Neukončeno'));        // Text pro dosud neukončenou relaci
+		$txt_expired   = htmlspecialchars($this->phrase('badge_session_expired', [], 'Expirováno'));   // Štítek expirované relace
 		$txt_inactive  = htmlspecialchars($this->phrase('badge_user_inactive', [], 'Neaktivní účet')); // Štítek neaktivního účtu
 		$unit_min      = htmlspecialchars($this->phrase('unit_minutes', [], 'min'));                   // Jednotka minut
 
@@ -229,6 +271,7 @@ class page_audit_login_session extends abstract_page {
 			.role-badge-sys { background-color: #b91c1c; }
 			.role-badge-org { background-color: #2563eb; }
 			.role-badge-usr { background-color: #64748b; }
+			.exp-badge { display: inline-block; font-size: 10px; font-weight: bold; padding: 1px 5px; border-radius: 3px; margin-left: 5px; background-color: #fef3c7; color: #92400e; border: 1px solid #f59e0b; font-family: Arial, sans-serif; }
 		</style>
 		<div style="margin-bottom: 8px; font-size: 12px; color: #64748b; font-weight: bold;">{$lbl_found}</div>
 		<table class="md-table">
@@ -236,7 +279,7 @@ class page_audit_login_session extends abstract_page {
 				<tr>
 					<th style="width: 135px;">{$th_login_tm}</th>
 					<th style="width: 135px;">{$th_last_req}</th>
-					<th style="width: 135px;">{$th_logout_tm}</th>
+					<th style="width: 185px;">{$th_logout_tm}</th>
 					<th style="width: 70px; text-align: right;">{$th_duration}</th>
 					{$th_org_html}
 					<th style="width: 130px;">{$th_login}</th>
@@ -254,6 +297,7 @@ HTML;
 			$login_tm_raw = (string)($row['login_time'] ?? '');              // Surový čas přihlášení
 			$last_req_raw = (string)($row['last_request_time'] ?? '');       // Surový čas poslední aktivity
 			$logout_raw   = (string)($row['logout_time'] ?? '');             // Surový čas odhlášení nebo expirace
+			$is_expired   = !empty($row['is_expired']);                      // Zda relace skončila expirací timeoutu
 
 			$login_tm_val = htmlspecialchars(date_format4($login_tm_raw, 16)); // Zformátovaný čas přihlášení (d.m.Y H:i)
 			$login_tm_tip = htmlspecialchars($login_tm_raw);                 // Přesný čas přihlášení včetně sekund do tooltipu
@@ -263,7 +307,8 @@ HTML;
 			if ($logout_raw !== '') {                                        // Pokud má relace zaznamenaný čas odhlášení/expirace
 				$logout_val = htmlspecialchars(date_format4($logout_raw, 16)); // Zformátovaný čas odhlášení
 				$logout_tip = htmlspecialchars($logout_raw);                 // Přesný čas odhlášení do tooltipu
-				$logout_html = "<span title=\"{$logout_tip}\">{$logout_val}</span>"; // Výpis času odhlášení
+				$exp_html = $is_expired ? "<span class=\"exp-badge\">{$txt_expired}</span>" : ''; // Štítek expirace
+				$logout_html = "<span title=\"{$logout_tip}\">{$logout_val}</span>{$exp_html}"; // Výpis času odhlášení a případné expirace
 			} else {
 				$logout_html = "<span style=\"color: #15803d; font-style: italic; font-size: 12px; font-weight: bold;\">{$txt_open_sess}</span>"; // Relace bez logout_time
 			}

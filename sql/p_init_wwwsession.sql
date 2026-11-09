@@ -2,10 +2,15 @@
 GO
 
 /* =============================================================================
+ * Verze: 2026-11-09 13:00
+ * Soubor: p_init_wwwsession.sql
  * Procedura: p_init_wwwsession
  * Účel: Zajišťuje přenos platné relace uživatele z wwwsession do dbsession
  *       pro aktuální @@SPID a provádí garbage collection starých relací.
  * Změny:
+ * - 2026-11-09 13:00: Doplněno dodatečné uzavření všech neukončených záznamů
+ *   v audit_login_session, kterým vypršel čas expirace (session_timeout)
+ *   nebo které již nemají aktivní záznam v tabulce wwwsession.
  * - Nahrazení right_sysadmin/right_orgadmin za active_role.
  * - Aktualizuje last_request_time ve forenzním logu audit_login_session.
  * - Vyznačí logout_time u expirovaných relací před jejich odstraněním.
@@ -19,7 +24,7 @@ AS
 BEGIN
 	SET NOCOUNT ON;
 
-	-- 1. Zaznamenání expirace (timeoutu) do logu před fyzickým odstraněním relace
+	-- 1. Zaznamenání expirace (timeoutu) do logu před fyzickým odstraněním relace z wwwsession
 	UPDATE a
 	SET logout_time = DATEADD(mi, c.session_timeout, u.request_date) -- Uložení přesného času vypršení
 	FROM audit_login_session a
@@ -27,10 +32,26 @@ BEGIN
 	CROSS JOIN system_constant c
 	WHERE DATEADD(mi, c.session_timeout, u.request_date) < GETDATE() AND a.logout_time IS NULL;
 
-	-- 2. Garbage collection expirovaných relací
+	-- 2. Garbage collection expirovaných relací z wwwsession
 	DELETE FROM wwwsession
 	FROM wwwsession u, system_constant c
 	WHERE DATEADD(mi, c.session_timeout, u.request_date) < GETDATE();
+
+	-- 2b. Dodatečné ukončení osiřelých a expirovaných relací přímo v audit_login_session
+	UPDATE a
+	SET a.logout_time = CASE
+		WHEN DATEADD(mi, c.session_timeout, a.last_request_time) < GETDATE()
+			THEN DATEADD(mi, c.session_timeout, a.last_request_time)
+		ELSE a.last_request_time
+	END
+	FROM audit_login_session a
+	CROSS JOIN system_constant c
+	LEFT JOIN wwwsession w ON w.login_session_uuid = a.uuid
+	WHERE a.logout_time IS NULL
+	  AND (
+		w.wwwsession IS NULL
+		OR DATEADD(mi, c.session_timeout, a.last_request_time) < GETDATE()
+	  );
 
 	-- 3. Aktualizace parametrů aktuální relace a napojení na proces (SPID)
 	UPDATE wwwsession SET

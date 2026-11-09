@@ -1,12 +1,17 @@
-/*
-	Tento script obsahuje DDL příkazy pro vytvoření dvou tabulek s identickou strukturou
-	wwwsession - obsahuje záznam o přihlášeném uživateli s primárním klíčem na session_id prohlížeče
-	dbsession - obsahuje záznam o běžícím requestu s primárním klíčem na "spid"
-
-	Změny v architektuře:
-	- Sloupec user_access_uuid přejmenován na login_session_uuid (odkazuje do audit_login_session).
-	- Bitová práva right_sysadmin a right_orgadmin sloučena do active_role (U, A, S, D).
-*/
+/* =============================================================================
+ * Verze: 2026-11-09 13:00
+ * Soubor: table_user_session.sql
+ * Popis:  Tento script obsahuje DDL příkazy pro vytvoření dvou tabulek
+ *         s identickou strukturou:
+ *         wwwsession - záznam o přihlášeném uživateli (PK na session_id prohlížeče)
+ *         dbsession  - záznam o běžícím requestu (PK na @@spid)
+ * Vazby:  Trigger trg_wwwsession_audit_logout automaticky zapisuje logout_time
+ *         do tabulky audit_login_session při každém smazání relace z wwwsession.
+ * Změny:
+ * - 2026-11-09 13:00: Doplněn AFTER DELETE trigger trg_wwwsession_audit_logout
+ *   pro automatické uzavření záznamu v audit_login_session při odhlášení,
+ *   přepnutí kontextu nebo expiraci relace.
+ * ============================================================================= */
 
 drop table if exists session_import_data
 drop table if exists session_import_column
@@ -74,4 +79,27 @@ CREATE TABLE [dbo].[dbsession](
 	[permanent] [bit] default 0 NOT NULL,
 	[change_context_allowed] [bit] default 0 NOT NULL
 ) ON [PRIMARY]
+GO
+
+CREATE TRIGGER trg_wwwsession_audit_logout
+ON [dbo].[wwwsession]
+AFTER DELETE
+AS
+BEGIN
+	SET NOCOUNT ON;
+
+	IF OBJECT_ID('audit_login_session', 'U') IS NOT NULL AND OBJECT_ID('system_constant', 'U') IS NOT NULL
+	BEGIN
+		UPDATE a
+		SET a.logout_time = CASE
+			WHEN DATEADD(minute, c.session_timeout, d.request_date) < GETDATE()
+				THEN DATEADD(minute, c.session_timeout, d.request_date)
+			ELSE GETDATE()
+		END
+		FROM audit_login_session a
+		JOIN deleted d ON d.login_session_uuid = a.uuid
+		CROSS JOIN system_constant c
+		WHERE a.logout_time IS NULL;
+	END
+END
 GO

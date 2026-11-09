@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-07 12:45
+ * Verze: 2026-11-09 14:45
  * Soubor: p_fix_meta_column.sql
  * Procedury: dbo.p_sync_hierarchy_to_meta_class, dbo.p_fix_meta_column
  * Účel: 1. dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
@@ -22,16 +22,14 @@
  * - Využívá deterministickou hashovací funkci dbo.f_generate_original.
  *
  * Změny:
+ * - 2026-11-09 14:45: Doplněna registrace 17 odvozených STI tříd aktiv nad
+ *   tabulkou asset, systémový číselník asset_archetype v meta_codetable a
+ *   automatické napojení referenced_class pro sloupce building_uuid, room_uuid,
+ *   host_uuid, software_uuid, supplier_uuid, owner_user_uuid, assessor_user_uuid,
+ *   responsible_user_uuid, manager_uuid, asset_uuid, scenario_uuid,
+ *   countermeasure_uuid, state_uuid, link_def, from_object a to_object.
  * - 2026-11-07 12:45: Odstraněn falešný český placeholder ('Zadejte ' + colname)
- *   při prvotním INSERTu do sys_global_columns (ponecháno NULL, vyčištěny staré
- *   hodnoty 'Zadejte %' a 'Nápověda pro %'). Sloupec placeholder zařazen mezi
- *   překládané (translate = 1). Jednotlivé textové UPDATE příkazy přesunuty do
- *   samostatných dávek fillup_meta_column*.sql a fillup_meta_class*.sql.
- * - 2026-11-04 15:15: Doplněno idempotentní naplnění systémového číselníku
- *   scale_type v meta_codetable, nastavení referenced_codetable = 'scale_type'
- *   pro sloupec scale_type, napojení referenced_class pro sloupec scale,
- *   odemčení svg_icon (is_protected = 0) pro modální editor SVG ikon a sjednocení
- *   povinnosti builtin_code (is_mandatory = 1 s automatickým odvozením z názvu).
+ *   při prvotním INSERTu do sys_global_columns.
  * ============================================================================= */
 
 EXECUTE dropni 'p_fix_meta_column', 'P';
@@ -414,7 +412,7 @@ BEGIN
 	);
 
 	-- -------------------------------------------------------------------------
-	-- 2. SYNCHRONIZACE LOGICKÝCH TŘÍD V meta_class
+	-- 2. SYNCHRONIZACE LOGICKÝCH TŘÍD V meta_class (včetně STI tříd nad asset)
 	-- -------------------------------------------------------------------------
 	UPDATE mc
 	SET mc.removed = 0,
@@ -428,7 +426,7 @@ BEGIN
 		AND mo.object_type IN ('T', 'V', 'F')
 	WHERE mc.object_owner = 0x00
 	  AND mc.removed = 1
-	  AND mc.class_name = mo.builtin_code;
+	  AND (mc.class_name = mo.builtin_code OR mo.builtin_code = 'asset');
 
 	INSERT INTO meta_class (
 		uuid, object_owner, original, record_type, approval_status,
@@ -458,6 +456,55 @@ BEGIN
 				AND mc.object_owner = 0x00 
 				AND mc.record_type = 'A'
 		);
+
+	-- 2c. Synchronizace 17 odvozených STI tříd aktiv nad tabulkou asset
+	IF OBJECT_ID('asset', 'U') IS NOT NULL
+	BEGIN
+		DECLARE @stg_asset_obj uuid = dbo.f_generate_original('meta_object', @sys_owner, 'T', 'asset');
+		DECLARE @sti_asset TABLE (
+			class_name varchar(80) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+			ancestor_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			sort_code varchar(20) NOT NULL,
+			caption varchar(200) NOT NULL
+		);
+		INSERT INTO @sti_asset (class_name, ancestor_code, sort_code, caption) VALUES
+			('asset_district',    'asset',          '010', 'Okres / region'),
+			('asset_city',        'asset',          '020', 'Město / obec'),
+			('asset_site',        'asset',          '030', 'Lokalita / areál'),
+			('asset_building',    'asset',          '040', 'Budova'),
+			('asset_room',        'asset',          '050', 'Místnost'),
+			('asset_physical',    'asset',          '060', 'Fyzické aktivum (HW / zařízení)'),
+			('asset_host',        'asset_physical', '070', 'Hostitelský počítač / server'),
+			('asset_cabling',     'asset',          '080', 'Kabeláž a rozvody'),
+			('asset_document',    'asset',          '090', 'Dokument'),
+			('asset_media',       'asset',          '100', 'Médium / nosič dat'),
+			('asset_data',        'asset',          '110', 'Datové aktivum'),
+			('asset_software',    'asset',          '120', 'Software (vyvíjený / pořizovaný)'),
+			('asset_application', 'asset',          '130', 'Aplikace (instalovaná)'),
+			('asset_service',     'asset',          '140', 'Služba'),
+			('asset_interface',   'asset',          '150', 'Služba typu Interface'),
+			('asset_personnel',   'asset',          '160', 'Personál / klíčová role'),
+			('asset_supplier',    'asset',          '170', 'Dodavatel / partner');
+
+		INSERT INTO meta_class (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			class_name, storage_object, ancestor_class, sort_code,
+			caption, caption_plural, is_final, is_protected,
+			date_created, who_created, date_modified, who_modified
+		)
+		SELECT
+			x.orig, 0x00, x.orig, 'A', 'A', 'cs',
+			s.class_name, @stg_asset_obj, p.anc_orig, s.sort_code,
+			s.caption, s.caption, 0, 1,
+			@batch_time, @sys_owner, @batch_time, @sys_owner
+		FROM @sti_asset s
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), s.class_name, '') AS orig) x
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), s.ancestor_code, '') AS anc_orig) p
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_class mc
+			WHERE mc.original = x.orig AND mc.object_owner = 0x00 AND mc.record_type = 'A'
+		);
+	END
 
 	-- 2d. Promítnutí registrovaných koncových hierarchií (is_leaf = 1) z tabulky hierarchy do meta_class
 	EXEC dbo.p_sync_hierarchy_to_meta_class @fix_childless_folders = 1;
@@ -574,7 +621,6 @@ BEGIN
 		  AND mc.object_owner = 0x00
 	);
 
-	-- Vyčištění dřívějších automaticky generovaných placeholderů ('Zadejte %') a nápověd ('Nápověda pro %')
 	UPDATE meta_column
 	SET placeholder = NULL
 	WHERE object_owner = 0x00
@@ -750,7 +796,7 @@ BEGIN
 
 	CREATE TABLE #list_order(column_name varchar(80) COLLATE DATABASE_DEFAULT, list_order int IDENTITY PRIMARY KEY);
 	INSERT INTO #list_order(column_name)
-	VALUES('source_code'), ('builtin_code'), ('column_name'), ('class_name'), ('caption'), ('shortname'), ('title');
+	VALUES('source_code'), ('builtin_code'), ('link_code'), ('column_name'), ('class_name'), ('caption'), ('caption_forward'), ('shortname'), ('title');
 
 	UPDATE meta_column
 	SET list_order = lc.list_order
@@ -767,7 +813,6 @@ BEGIN
 		'caption_forward', 'caption_backward', 'note', 'placeholder'
 	  );
 
-	-- Klíčové sloupce jsou vždy povinné (builtin_code se u nových záznamů automaticky předvyplňuje z názvu)
 	UPDATE meta_column
 	SET is_mandatory = 1
 	WHERE parent_class = @c_class
@@ -775,7 +820,8 @@ BEGIN
 	  AND column_name IN (
 		'builtin_code', 'class_name', 'column_name', 'source_code',
 		'codetable_name', 'value_code', 'link_code', 'hierarchy', 'scale',
-		'caption', 'login_name', 'link_def', 'from_object', 'to_object'
+		'caption', 'login_name', 'link_def', 'from_object', 'to_object',
+		'asset_uuid', 'scenario_uuid', 'countermeasure_uuid'
 	  )
 	  AND ISNULL(is_mandatory, 0) = 0;
 
@@ -802,7 +848,6 @@ BEGIN
 		  AND ISNULL(mc.is_mandatory, 0) = 0;
 	END
 
-	-- Vynucení podpory formátovaného textu (Markdown / HTML: is_html = 1)
 	UPDATE meta_column
 	SET is_html = 1
 	WHERE parent_class = @c_class
@@ -831,7 +876,6 @@ BEGIN
 		'ancestor_link', 'is_derived'
 	  );
 
-	-- Sloupec svg_icon je viditelný a editovatelný přes modální editor SVG ikon
 	UPDATE meta_column
 	SET hidden = 0,
 		is_protected = 0
@@ -848,10 +892,21 @@ BEGIN
 	DECLARE @cls_meta_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_class', '');
 	DECLARE @cls_meta_object uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_object', '');
 	DECLARE @cls_meta_column uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_column', '');
+	DECLARE @cls_meta_link_def uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'meta_link_def', '');
 	DECLARE @cls_hierarchy uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'hierarchy', '');
 	DECLARE @cls_asset_class uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_class', '');
 	DECLARE @cls_threat uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'threat', '');
+	DECLARE @cls_scenario uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'scenario', '');
+	DECLARE @cls_countermeasure uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'countermeasure', '');
+	DECLARE @cls_cm_state uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'countermeasure_state', '');
 	DECLARE @cls_scale uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'scale', '');
+	DECLARE @cls_user_account uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'user_account', '');
+	DECLARE @cls_asset uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset', '');
+	DECLARE @cls_asset_building uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_building', '');
+	DECLARE @cls_asset_room uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_room', '');
+	DECLARE @cls_asset_host uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_host', '');
+	DECLARE @cls_asset_software uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_software', '');
+	DECLARE @cls_asset_supplier uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_supplier', '');
 
 	UPDATE meta_column
 	SET referenced_codetable = 'scale_type'
@@ -859,6 +914,14 @@ BEGIN
 	  AND object_owner = 0x00
 	  AND record_type = 'A'
 	  AND column_name = 'scale_type'
+	  AND referenced_codetable = '';
+
+	UPDATE meta_column
+	SET referenced_codetable = 'asset_archetype'
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name = 'asset_archetype'
 	  AND referenced_codetable = '';
 
 	UPDATE meta_column
@@ -885,6 +948,22 @@ BEGIN
 	  AND column_name = 'ancestor'
 	  AND ISNULL(referenced_class, 0x00) <> @cls_meta_column
 	  AND who_modified = 0x00;
+
+	UPDATE meta_column
+	SET referenced_class = @cls_meta_link_def
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name = 'link_def'
+	  AND referenced_class IS NULL;
+
+	UPDATE meta_column
+	SET referenced_class = @cls_user_account
+	WHERE parent_class = @c_class
+	  AND object_owner = 0x00
+	  AND record_type = 'A'
+	  AND column_name IN ('owner_user_uuid', 'assessor_user_uuid', 'responsible_user_uuid', 'manager_uuid')
+	  AND referenced_class IS NULL;
 
 	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_hierarchy AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
 	BEGIN
@@ -930,6 +1009,90 @@ BEGIN
 		  AND referenced_class IS NULL;
 	END
 
+	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_scenario AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
+	BEGIN
+		UPDATE meta_column
+		SET referenced_class = @cls_scenario
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'scenario_uuid'
+		  AND referenced_class IS NULL;
+	END
+
+	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_countermeasure AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
+	BEGIN
+		UPDATE meta_column
+		SET referenced_class = @cls_countermeasure
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'countermeasure_uuid'
+		  AND referenced_class IS NULL;
+	END
+
+	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_cm_state AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
+	BEGIN
+		UPDATE meta_column
+		SET referenced_class = @cls_cm_state
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'state_uuid'
+		  AND referenced_class IS NULL;
+	END
+
+	IF EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_asset AND object_owner = 0x00 AND record_type = 'A' AND removed = 0)
+	BEGIN
+		UPDATE meta_column
+		SET referenced_class = @cls_asset
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name IN ('asset_uuid', 'from_object', 'to_object')
+		  AND referenced_class IS NULL;
+
+		UPDATE meta_column
+		SET referenced_class = @cls_asset_building
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'building_uuid'
+		  AND referenced_class IS NULL;
+
+		UPDATE meta_column
+		SET referenced_class = @cls_asset_room
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'room_uuid'
+		  AND referenced_class IS NULL;
+
+		UPDATE meta_column
+		SET referenced_class = @cls_asset_host
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'host_uuid'
+		  AND referenced_class IS NULL;
+
+		UPDATE meta_column
+		SET referenced_class = @cls_asset_software
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'software_uuid'
+		  AND referenced_class IS NULL;
+
+		UPDATE meta_column
+		SET referenced_class = @cls_asset_supplier
+		WHERE parent_class = @c_class
+		  AND object_owner = 0x00
+		  AND record_type = 'A'
+		  AND column_name = 'supplier_uuid'
+		  AND referenced_class IS NULL;
+	END
+
 	UPDATE meta_column
 	SET referenced_class = parent_class
 	WHERE parent_class <> @c_class
@@ -938,20 +1101,38 @@ BEGIN
 	  AND column_name = 'parent_uuid'
 	  AND referenced_class IS NULL;
 
-	-- Naplnění systémového číselníku scale_type v tabulce meta_codetable (A + symetrické L)
+	-- Naplnění systémových číselníků scale_type a asset_archetype v tabulce meta_codetable (A + symetrické L)
 	IF OBJECT_ID('meta_codetable', 'U') IS NOT NULL
 	BEGIN
-		DECLARE @st_items TABLE (
+		DECLARE @ct_items TABLE (
+			codetable_name varchar(80),
 			value_code varchar(80),
 			sort_code varchar(20),
 			caption_cs varchar(200),
 			caption_en varchar(200)
 		);
-		INSERT INTO @st_items VALUES
-			('THREAT',        '010', 'Hrozba / Pravděpodobnost',          'Threat / Probability'),
-			('VULNERABILITY', '020', 'Zranitelnost',                      'Vulnerability'),
-			('IMPACT',        '030', 'Dopad / Kritičnost aktiv',          'Impact / Asset Criticality'),
-			('RISK',          '040', 'Výsledné riziko / Míra ohrožení',   'Resulting Risk / Threat Level');
+		INSERT INTO @ct_items VALUES
+			('scale_type',      'THREAT',        '010', 'Hrozba / Pravděpodobnost',                'Threat / Probability'),
+			('scale_type',      'VULNERABILITY', '020', 'Zranitelnost',                            'Vulnerability'),
+			('scale_type',      'IMPACT',        '030', 'Dopad / Kritičnost aktiv',                'Impact / Asset Criticality'),
+			('scale_type',      'RISK',          '040', 'Výsledné riziko / Míra ohrožení',         'Resulting Risk / Threat Level'),
+			('asset_archetype', 'DISTRICT',      '010', 'Okres / region (prostor)',                'District / Region (Space)'),
+			('asset_archetype', 'CITY',          '020', 'Město / obec (prostor)',                  'City / Municipality (Space)'),
+			('asset_archetype', 'SITE',          '030', 'Lokalita / areál (prostor)',              'Site / Campus (Space)'),
+			('asset_archetype', 'BUILDING',      '040', 'Budova (povinný prostor)',                'Building (Mandatory Space)'),
+			('asset_archetype', 'ROOM',          '050', 'Místnost / sál (prostor v budově)',       'Room / Hall (Space in Building)'),
+			('asset_archetype', 'PHYSICAL',      '060', 'Fyzické aktivum / hardware (v místnosti)','Physical Asset / Hardware (in Room)'),
+			('asset_archetype', 'HOST',          '070', 'Hostitelský počítač / server (v místnosti)','Host Computer / Server (in Room)'),
+			('asset_archetype', 'CABLING',       '080', 'Kabeláž a rozvody (v budově)',            'Cabling & Wiring (in Building)'),
+			('asset_archetype', 'DOCUMENT',      '090', 'Dokument (uložený v místnosti)',          'Document (Stored in Room)'),
+			('asset_archetype', 'MEDIA',         '100', 'Médium / nosič dat (uložený v místnosti)','Storage Media / Carrier (in Room)'),
+			('asset_archetype', 'DATA',          '110', 'Datové aktivum (informace / databáze)',   'Data Asset (Information / Database)'),
+			('asset_archetype', 'SOFTWARE',      '120', 'Software (vyvíjený / pořizovaný)',        'Software (Developed / Procured)'),
+			('asset_archetype', 'APPLICATION',   '130', 'Aplikace (instalovaná instance)',         'Application (Installed Instance)'),
+			('asset_archetype', 'SERVICE',       '140', 'Služba (interní / zákaznická)',           'Service (Internal / Customer-Facing)'),
+			('asset_archetype', 'INTERFACE',     '150', 'Služba typu Interface (internet/hlas/video)','Interface Service (Internet/Voice/Video)'),
+			('asset_archetype', 'PERSONNEL',     '160', 'Personál / klíčová role',                 'Personnel / Key Role'),
+			('asset_archetype', 'SUPPLIER',      '170', 'Dodavatel / externí partner',             'Supplier / External Partner');
 
 		INSERT INTO meta_codetable (
 			uuid, object_owner, original, record_type, approval_status, [language],
@@ -959,9 +1140,9 @@ BEGIN
 		)
 		SELECT
 			x.orig, 0x00, x.orig, 'A', 'A', 'cs',
-			'scale_type', s.value_code, s.caption_cs, s.sort_code, 1, 1
-		FROM @st_items s
-		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, 'scale_type', s.value_code) AS orig) x
+			s.codetable_name, s.value_code, s.caption_cs, s.sort_code, 1, 1
+		FROM @ct_items s
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, s.codetable_name, s.value_code) AS orig) x
 		WHERE NOT EXISTS (
 			SELECT 1 FROM meta_codetable mc
 			WHERE mc.original = x.orig AND mc.object_owner = 0x00 AND mc.record_type = 'A'
@@ -973,9 +1154,9 @@ BEGIN
 		)
 		SELECT
 			NEWID(), 0x00, x.orig, 'L', 'A', 'cs',
-			'scale_type', s.value_code, s.caption_cs, s.sort_code, 1, 1
-		FROM @st_items s
-		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, 'scale_type', s.value_code) AS orig) x
+			s.codetable_name, s.value_code, s.caption_cs, s.sort_code, 1, 1
+		FROM @ct_items s
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, s.codetable_name, s.value_code) AS orig) x
 		WHERE NOT EXISTS (
 			SELECT 1 FROM meta_codetable mc
 			WHERE mc.original = x.orig AND mc.object_owner = 0x00 AND mc.record_type = 'L' AND mc.[language] = 'cs'
@@ -987,9 +1168,9 @@ BEGIN
 		)
 		SELECT
 			NEWID(), 0x00, x.orig, 'L', 'A', 'en',
-			'scale_type', s.value_code, s.caption_en, s.sort_code, 1, 1
-		FROM @st_items s
-		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, 'scale_type', s.value_code) AS orig) x
+			s.codetable_name, s.value_code, s.caption_en, s.sort_code, 1, 1
+		FROM @ct_items s
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_codetable', @sys_owner, s.codetable_name, s.value_code) AS orig) x
 		WHERE NOT EXISTS (
 			SELECT 1 FROM meta_codetable mc
 			WHERE mc.original = x.orig AND mc.object_owner = 0x00 AND mc.record_type = 'L' AND mc.[language] = 'en'

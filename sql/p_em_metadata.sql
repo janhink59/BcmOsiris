@@ -1,20 +1,25 @@
 /* =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-09 14:45
  * Soubor: p_em_metadata.sql
  * Procedury: dbo.p_em_get_class_meta, dbo.p_em_get_columns_meta,
  *            dbo.p_em_get_select_options
  * Účel:   1. dbo.p_em_get_class_meta načte definici logické třídy ('A' a 'L'
  *            záznamy ve fallback řetězci < 1000), úložnou fyzickou tabulku
  *            a efektivní nadřazenou třídu pro načtení sloupců (s podporou STI
- *            dědění u odvozených hierarchií).
+ *            dědění u odvozených hierarchií a STI tříd aktiv nad tabulkou asset).
  *         2. dbo.p_em_get_columns_meta načte definici sloupců ('A'), jejich
  *            předků v sys_global_columns ('ANC_A') a překladů ('L').
  *         3. dbo.p_em_get_select_options načte lokalizované položky pro <select>
- *            roletky v UI (source_code, meta_codetable, referenced_class a
- *            rekurzivní stromové vazby parent_uuid s vyloučením vlastního podstromu).
+ *            roletky v UI (source_code, meta_codetable, referenced_class včetně
+ *            STI filtrování podle asset_archetype u tabulky asset a rekurzivní
+ *            stromové vazby parent_uuid s vyloučením vlastního podstromu).
  * Vazby:  - Voláno z PHP třídy entity_manager (entity_manager.php, entity_manager_ui.php),
  *           page_hierarchy_item.php, page_scale_value.php a page_approval.php.
- * Změny:  - 2026-11-04 15:15: V p_em_get_select_options (@mode = 'ref_class')
+ * Změny:  - 2026-11-09 14:45: V p_em_get_class_meta doplněno rekurzivní dohledání
+ *           kořenové třídy sloupců (např. asset_host -> asset_physical -> asset)
+ *           a v p_em_get_select_options (@mode = 'ref_class') doplněno STI
+ *           filtrování podle asset_archetype u odvozených tříd aktiv (asset_*).
+ *         - 2026-11-04 15:15: V p_em_get_select_options (@mode = 'ref_class')
  *           doplněna podpora řazení podle threshold_value u tabulky scale_value.
  * ============================================================================= */
 
@@ -76,12 +81,21 @@ BEGIN
 	IF @cls_orig IS NULL
 		RETURN;
 
+	-- Dohledání nejbližší nadřazené třídy v hierarchii dědičnosti (ancestor_class), která má definované sloupce v meta_column
 	SET @col_parent_cls = @cls_orig;
-	IF @anc_cls IS NOT NULL AND NOT EXISTS (
-		SELECT 1 FROM meta_column WHERE parent_class = @cls_orig AND record_type = 'A' AND removed = 0
+	DECLARE @walk_anc uniqueidentifier = @anc_cls;
+	DECLARE @guard int = 0;
+
+	WHILE @walk_anc IS NOT NULL AND @guard < 10 AND NOT EXISTS (
+		SELECT 1 FROM meta_column WHERE parent_class = @col_parent_cls AND record_type = 'A' AND removed = 0
 	)
 	BEGIN
-		SET @col_parent_cls = @anc_cls;
+		SET @col_parent_cls = @walk_anc;
+		SET @walk_anc = NULL;
+		SELECT TOP 1 @walk_anc = ancestor_class
+		FROM meta_class
+		WHERE original = @col_parent_cls AND record_type = 'A' AND removed = 0;
+		SET @guard = @guard + 1;
 	END
 
 	SELECT
@@ -328,7 +342,11 @@ BEGIN
 
 		DECLARE @code_expr nvarchar(100) = CASE WHEN @has_code = 1 THEN N'a.builtin_code' WHEN @has_short = 1 THEN N'a.shortname' ELSE N'''''' END;
 		DECLARE @sort_expr nvarchar(100) = CASE WHEN @has_sort = 1 THEN N'a.sort_code' ELSE N'''''' END;
-		DECLARE @leaf_cond nvarchar(200) = CASE WHEN @has_leaf = 1 AND @storage_table <> 'meta_menu' THEN N'AND (a.is_leaf = 0 OR a.original = @p_cur_val)' ELSE N'' END;
+		DECLARE @leaf_cond nvarchar(200) = CASE
+			WHEN @storage_table IN ('meta_menu', 'asset') THEN N''
+			WHEN @has_leaf = 1 THEN N'AND (a.is_leaf = 0 OR a.original = @p_cur_val)'
+			ELSE N''
+		END;
 		DECLARE @hier_cond nvarchar(200) = CASE WHEN @has_hier = 1 AND @hier_uuid IS NOT NULL THEN N'AND a.hierarchy = @p_hier' ELSE N'' END;
 
 		DECLARE @sql_tree nvarchar(max) = N'
@@ -404,7 +422,11 @@ BEGIN
 	IF @mode = 'ref_class' AND @ref_class_uuid IS NOT NULL
 	BEGIN
 		DECLARE @ref_table varchar(128) = '';
-		SELECT TOP 1 @ref_table = mo.builtin_code
+		DECLARE @ref_class_name varchar(80) = '';
+
+		SELECT TOP 1
+			@ref_table = mo.builtin_code,
+			@ref_class_name = mc.class_name
 		FROM meta_class mc
 		JOIN meta_object mo ON mo.original = mc.storage_object AND mo.record_type = 'A' AND mo.removed = 0
 		WHERE mc.original = @ref_class_uuid
@@ -470,18 +492,43 @@ BEGIN
 			RETURN;
 		END
 
-		-- Obecná cílová tabulka (např. hierarchy, scale, scale_value, organization, asset_class...)
+		IF @ref_table = 'meta_link_def'
+		BEGIN
+			SELECT a.original, a.link_code AS code_col, COALESCE(tr.caption_forward, a.caption_forward, a.link_code) AS caption
+			FROM meta_link_def a
+			OUTER APPLY (
+				SELECT TOP 1 l.caption_forward
+				FROM meta_link_def l
+				JOIN @fl fl ON fl.[language] = l.[language]
+				WHERE l.original = a.original AND l.record_type = 'L' AND l.removed = 0 AND l.object_owner IN (@org_sql, 0x00)
+				  AND NULLIF(CAST(l.caption_forward AS VARCHAR(MAX)), '') IS NOT NULL
+				ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org_sql THEN 0 ELSE 1 END ASC
+			) tr
+			WHERE a.object_owner IN (0x00, @org_sql) AND a.record_type = 'A' AND a.removed = 0 AND a.inactive = 0
+			ORDER BY a.link_code;
+			RETURN;
+		END
+
+		-- Obecná cílová tabulka (hierarchy, scale, scale_value, organization, asset_class, asset...)
 		DECLARE @ref_has_code bit = CASE WHEN COL_LENGTH(@ref_table, 'builtin_code') IS NOT NULL THEN 1 ELSE 0 END;
+		DECLARE @ref_has_login bit = CASE WHEN COL_LENGTH(@ref_table, 'login_name') IS NOT NULL THEN 1 ELSE 0 END;
 		DECLARE @ref_has_sort bit = CASE WHEN COL_LENGTH(@ref_table, 'sort_code') IS NOT NULL THEN 1 ELSE 0 END;
 		DECLARE @ref_has_thresh bit = CASE WHEN COL_LENGTH(@ref_table, 'threshold_value') IS NOT NULL THEN 1 ELSE 0 END;
-		DECLARE @ref_code_sql nvarchar(100) = CASE WHEN @ref_has_code = 1 THEN N'a.builtin_code' ELSE N'''''' END;
+		DECLARE @ref_code_sql nvarchar(100) = CASE
+			WHEN @ref_has_code = 1 THEN N'a.builtin_code'
+			WHEN @ref_has_login = 1 THEN N'a.login_name'
+			ELSE N''''''
+		END;
 		DECLARE @ref_sort_sql nvarchar(200) = CASE
 			WHEN @ref_has_sort = 1 THEN N'a.sort_code'
 			WHEN @ref_has_thresh = 1 THEN N'RIGHT(''0000000000'' + CAST(CAST(a.threshold_value * 10000 AS bigint) AS varchar(20)), 10)'
 			ELSE N''''''
 		END;
-		DECLARE @extra_ref_cond nvarchar(200) = CASE
+		DECLARE @extra_ref_cond nvarchar(400) = CASE
 			WHEN @ref_table = 'hierarchy' AND @param_code = 'hierarchy' THEN N'AND (a.is_leaf = 1 OR a.original = @p_cur_val)'
+			WHEN @ref_table = 'asset_class' AND @param_code = 'primary_asset_class' THEN N'AND (a.is_leaf = 1 OR a.original = @p_cur_val)'
+			WHEN @ref_table = 'asset' AND @ref_class_name LIKE 'asset[_]%' THEN
+				N'AND (a.asset_archetype = ''' + UPPER(SUBSTRING(@ref_class_name, 7, 40)) + N''' OR a.original = @p_cur_val)'
 			ELSE N''
 		END;
 		DECLARE @excl_self_cond nvarchar(200) = CASE
