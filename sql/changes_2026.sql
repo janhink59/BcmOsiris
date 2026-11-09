@@ -1,12 +1,12 @@
 /* =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-09 18:30
  * Soubor: changes_2026.sql
  * Účel:   Jednorázové změny struktury a dat databáze v kalendářním roce 2026.
  *         Spouští se samostatně PŘED hlavním slepeným skriptem BcmOsirisDb.sql.
  *
  * Pravidla pro údržbu a přidávání změn:
  * - Verze databáze (system_constant.database_version) má formát 'RR.MM.DD.N'
- *   (např. '26.11.04.1', kde poslední číslice N je intradenní pořadí změny).
+ *   (např. '26.11.09.0', kde poslední číslice N je intradenní pořadí změny).
  * - Všechny změnové bloky běží v transakci zahájené příkazem BEGIN TRAN.
  * - Příkaz COMMIT musí být uveden VÝHRADNĚ na konci posledního odladěného bloku
  *   (předchozí příkazy COMMIT při přidání nového bloku odstraň).
@@ -22,6 +22,8 @@
  *   databází neprovede žádné změny a nezpůsobí žádnou škodu.
  *
  * Změny:
+ * - 2026-11-09 18:30 (26.11.09.0): Sjednocení builtin_code a link_code na
+ *   striktní snake_case a odstranění starých záznamů porušujících snake_case.
  * - 2026-11-04 15:15 (26.11.04.1): Doplnění sloupce is_default do hierarchy_item,
  *   sjednocení povinnosti builtin_code (s automatickým odvozením z názvu v UI)
  *   a zpřístupnění sloupce svg_icon pro modální editor ikon.
@@ -333,6 +335,150 @@ BEGIN
 		'26.11.04.1',
 		'Doplnění sloupce is_default do hierarchy_item, sjednocení povinnosti builtin_code a zpřístupnění svg_icon pro modální editor'
 	);
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Verze 26.11.09.0: Sjednocení builtin_code a link_code na snake_case a
+--                   odstranění starých dat porušujících snake_case
+-- -----------------------------------------------------------------------------
+IF EXISTS (
+	SELECT 1
+	FROM system_constant
+	WHERE database_version < '26.11.09.0'
+)
+BEGIN
+	PRINT '09.11.2026 (26.11.09.0): Sjednocení builtin_code a link_code na snake_case a vyčištění starých dat';
+
+	-- 1. Oprava builtin_code v organization_licence ('SYS' -> 'sys' a převod na snake_case)
+	IF OBJECT_ID('organization_licence', 'U') IS NOT NULL
+	BEGIN
+		UPDATE organization_licence
+		SET builtin_code = 'sys'
+		WHERE organization_uuid = 0x00
+		  AND builtin_code <> 'sys' COLLATE Latin1_General_BIN;
+
+		UPDATE organization_licence
+		SET builtin_code = LOWER(REPLACE(REPLACE(LTRIM(RTRIM(builtin_code)), ' ', '_'), '-', '_'))
+		WHERE builtin_code LIKE '%[^a-z0-9_]%' COLLATE Latin1_General_BIN;
+	END
+
+	-- 2. Oprava link_code v meta_link_def (např. 'asset_Additional_class' -> 'asset_additional_class')
+	IF OBJECT_ID('meta_link_def', 'U') IS NOT NULL
+	BEGIN
+		UPDATE meta_link_def
+		SET link_code = LOWER(link_code)
+		WHERE link_code <> LOWER(link_code) COLLATE Latin1_General_BIN;
+
+		DELETE FROM meta_link_def
+		WHERE link_code = ''
+		   OR link_code LIKE '%[^a-z0-9_]%' COLLATE Latin1_General_BIN;
+	END
+
+	-- 3. Odstranění starých a testovacích dat v katalogových a CRMM tabulkách,
+	--    jejichž builtin_code nedodržuje pravidlo snake_case ([a-z0-9_])
+	DECLARE @clean_tabs TABLE (tabname varchar(128) NOT NULL PRIMARY KEY);
+	INSERT INTO @clean_tabs (tabname) VALUES
+		('asset'),
+		('asset_class'),
+		('threat'),
+		('impact'),
+		('scenario'),
+		('countermeasure'),
+		('countermeasure_state'),
+		('scale'),
+		('scale_value'),
+		('hierarchy'),
+		('hierarchy_item'),
+		('meta_menu'),
+		('meta_phrase');
+
+	DECLARE @t_clean varchar(128);
+	DECLARE cur_clean CURSOR LOCAL FAST_FORWARD FOR
+		SELECT tabname FROM @clean_tabs;
+
+	OPEN cur_clean;
+	FETCH NEXT FROM cur_clean INTO @t_clean;
+
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+		IF OBJECT_ID(@t_clean, 'U') IS NOT NULL AND COL_LENGTH(@t_clean, 'builtin_code') IS NOT NULL
+		BEGIN
+			DECLARE @sql_del nvarchar(max) = N'
+			DECLARE @bad_origs TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
+
+			INSERT INTO @bad_origs (original)
+			SELECT DISTINCT original
+			FROM [' + @t_clean + N']
+			WHERE LTRIM(RTRIM(ISNULL(builtin_code, ''''))) = ''''
+			   OR builtin_code LIKE ''%[^a-z0-9_]%'' COLLATE Latin1_General_BIN
+			   OR LEFT(builtin_code, 1) = ''_''
+			   OR RIGHT(builtin_code, 1) = ''_'';
+
+			DELETE t
+			FROM [' + @t_clean + N'] t
+			JOIN @bad_origs b ON b.original = t.original;
+
+			DELETE FROM [' + @t_clean + N']
+			WHERE LTRIM(RTRIM(ISNULL(builtin_code, ''''))) = ''''
+			   OR builtin_code LIKE ''%[^a-z0-9_]%'' COLLATE Latin1_General_BIN;';
+
+			EXEC sp_executesql @sql_del;
+		END
+
+		FETCH NEXT FROM cur_clean INTO @t_clean;
+	END
+
+	CLOSE cur_clean;
+	DEALLOCATE cur_clean;
+
+	-- 4. Vyčištění případných osiřelých záznamů v navazujících tabulkách CRMM
+	IF OBJECT_ID('scenario_assessment', 'U') IS NOT NULL AND OBJECT_ID('asset', 'U') IS NOT NULL
+	BEGIN
+		DELETE sa
+		FROM scenario_assessment sa
+		WHERE NOT EXISTS (SELECT 1 FROM asset a WHERE a.original = sa.asset_uuid)
+		   OR (OBJECT_ID('scenario', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM scenario s WHERE s.original = sa.scenario_uuid));
+
+		UPDATE scenario_assessment
+		SET builtin_code = LOWER(REPLACE(REPLACE(LTRIM(RTRIM(builtin_code)), ' ', '_'), '-', '_'))
+		WHERE builtin_code <> ''
+		  AND builtin_code LIKE '%[^a-z0-9_]%' COLLATE Latin1_General_BIN;
+	END
+
+	IF OBJECT_ID('countermeasure_implementation', 'U') IS NOT NULL AND OBJECT_ID('asset', 'U') IS NOT NULL
+	BEGIN
+		DELETE ci
+		FROM countermeasure_implementation ci
+		WHERE NOT EXISTS (SELECT 1 FROM asset a WHERE a.original = ci.asset_uuid)
+		   OR (OBJECT_ID('countermeasure', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM countermeasure c WHERE c.original = ci.countermeasure_uuid));
+
+		UPDATE countermeasure_implementation
+		SET builtin_code = LOWER(REPLACE(REPLACE(LTRIM(RTRIM(builtin_code)), ' ', '_'), '-', '_'))
+		WHERE builtin_code <> ''
+		  AND builtin_code LIKE '%[^a-z0-9_]%' COLLATE Latin1_General_BIN;
+	END
+
+	IF OBJECT_ID('dbo.p_sync_hierarchy_to_meta_class', 'P') IS NOT NULL
+	BEGIN
+		EXEC dbo.p_sync_hierarchy_to_meta_class @fix_childless_folders = 1;
+	END
+
+	EXEC sp_drop_default 'system_constant', 'database_version';
+
+	ALTER TABLE system_constant
+		ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.11.09.0' FOR database_version;
+
+	UPDATE system_constant
+	SET database_version = '26.11.09.0',
+		date_modified = GETDATE();
+
+	INSERT INTO service_logbook ([name], [version], content)
+	VALUES (
+		'changes_2026.sql',
+		'26.11.09.0',
+		'Sjednocení builtin_code a link_code na snake_case a odstranění starých nekonformních dat'
+	);
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
 	COMMIT;
@@ -352,7 +498,7 @@ GO
 -- =============================================================================
 IF @@TRANCOUNT > 0 ROLLBACK;
 
-DECLARE @expected_version varchar(20) = '26.11.04.1';                          -- Požadovaná cílová verze tohoto skriptu
+DECLARE @expected_version varchar(20) = '26.11.09.0';                          -- Požadovaná cílová verze tohoto skriptu
 DECLARE @current_version varchar(20) = '';                                     -- Skutečná verze zjištěná v system_constant
 DECLARE @msg varchar(800) = '';                                                -- Text výsledné zprávy pro operátora
 DECLARE @severity int = 16;                                                    -- Závažnost (1 = OK/Info, 16 = Červená chyba)

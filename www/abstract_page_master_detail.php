@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 15:30
+ * Verze: 2026-11-09 18:30
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  * Účel: Abstraktní třída rozšiřující základní stránku o dvoupanelový layout.
@@ -19,15 +19,11 @@
  *   (`filter_manager.php`) a přímý přechod na export/import CSV využívá balíček `simple_class`.
  *
  * Změny:
+ * 2026-11-09 18:30 - Sjednoceno klientské odvozování a normalizace builtin_code
+ *                    (v snake_case) z polí shortname / caption do jediného
+ *                    delegovaného posluchače v render_body().
  * 2026-11-06 15:30 - Oprava JS SyntaxError v metodě openSimpleClassCsv (použití
  *                    String.fromCharCode(10) uvnitř PHP heredocu a odstranění svislítek).
- *                  - Zachování otevřeného detailu (update_guid) při použití a zrušení
- *                    rozšířeného filtru.
- * 2026-11-06 14:15 - Integrace třídy filter_manager (modální vícepoložkový filtr,
- *                    vlastnost $filter_basic_columns, proužek aktivního filtru),
- *                    tlačítko pro přímý CSV export/import třídy (simple_class)
- *                    a delegování applyMasterFilter() na stromový filtr applyTreeMasterFilter().
- * 2026-11-05 10:15 - Do přenosu kontextových parametrů doplněn parametr 'scale'.
  * =============================================================================
  */
 
@@ -492,7 +488,20 @@ HTML;
 				window.location.href = url.toString();
 			}
 
-			// Centrální klientské filtrování tabulky #master-list přes #master-filter s uložením do sessionStorage
+			// Jednotný převod názvu/zkratky na platný snake_case identifikátor (builtin_code / link_code)
+			window.bcmToSnakeCase = function(str) {
+				const s = str ? String(str) : '';
+				return s
+					.normalize('NFD')
+					.replace(/[\u0300-\u036f]/g, '')
+					.toLowerCase()
+					.replace(/[^a-z0-9]+/g, '_')
+					.replace(/^_+/g, '')
+					.replace(/_+$/g, '')
+					.substring(0, 60);
+			};
+
+			// Centrální klientské filtrování #master-list a automatické odvozování builtin_code v detailu
 			document.addEventListener('input', function(e) {
 				if (e.target && e.target.id === 'master-filter') {
 					const val = e.target.value;
@@ -500,6 +509,39 @@ HTML;
 						sessionStorage.setItem(getMasterFilterStorageKey(), val);
 					} catch (err) {}
 					applyMasterFilter(val);
+					return;
+				}
+
+				const form = e.target ? e.target.closest('.md-detail form') : null;
+				if (!form) return;
+				const updInp = form.querySelector('input[name="update_guid"]');
+				if (!updInp ? true : updInp.value !== 'NEW') return;
+
+				const codeInp = form.querySelector('input[name="builtin_code"]:not([readonly])');
+				if (!codeInp) return;
+
+				if (e.target.name === 'builtin_code') {
+					codeInp.dataset.manualEdit = (codeInp.value.trim() !== '') ? '1' : '0';
+					return;
+				}
+
+				if (e.target.name === 'caption' ? true : e.target.name === 'shortname') {
+					if (codeInp.dataset.manualEdit === '1') return;
+					const shInp  = form.querySelector('input[name="shortname"]');
+					const capInp = form.querySelector('input[name="caption"], textarea[name="caption"]');
+					const rawSrc = (shInp && shInp.value.trim() !== '') ? shInp.value : (capInp ? capInp.value : '');
+					codeInp.value = window.bcmToSnakeCase(rawSrc);
+				}
+			});
+
+			// Normalizace ručně zadaného builtin_code / link_code na snake_case při opuštění pole
+			document.addEventListener('change', function(e) {
+				if (!e.target ? true : e.target.readOnly) return;
+				if (e.target.name === 'builtin_code' ? true : e.target.name === 'link_code') {
+					const form = e.target.closest('.md-detail form');
+					if (form && e.target.value.trim() !== '') {
+						e.target.value = window.bcmToSnakeCase(e.target.value);
+					}
 				}
 			});
 

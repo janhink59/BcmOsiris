@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-10-30 23:35
+ * Verze: 2026-11-09 18:30
  * Soubor: table_organization_licence.sql
  * Tabulka: organization_licence
  * Popis:   Evidence licencí organizací. Každá organizace (včetně systémové 0x00)
@@ -18,13 +18,9 @@
  *          - Zpracováváno procedurou p_process_organization_licence a čteno
  *            při přihlášení v p_set_login a v_user_organization_access.
  * Změny:
+ * - 2026-11-09 18:30: Sjednocen builtin_code systémové licence na 'sys' (snake_case).
  * - 2026-10-30 23:35: Při vkládání výchozího záznamu systémové organizace (0x00)
  *   se admin_email načítá ze system_constant.sysadmin_email.
- * - 2026-10-29 15:30: Přesunut sloupec login_disabled z tabulky organization.
- *   Odstraněny duplicitní sloupce is_developer (nahrazeno licence_level = 255)
- *   a organization_name (používá se caption). Doplněny SSC sloupce draft_author,
- *   approval_note, import_origin, index uq_organization_licence_draft a výchozí
- *   licenční záznam pro systémovou organizaci 0x00.
  * ============================================================================= */
 
 -- Kontrola a odstranění tabulky, pokud pochází ze starého systému
@@ -128,9 +124,9 @@ BEGIN
 END
 GO
 
--- Doplnění chybějícího builtin_code u existujících licencí
+-- Doplnění chybějícího builtin_code u existujících licencí v snake_case
 UPDATE organization_licence 
-SET builtin_code = SUBSTRING(caption, 1, 80) 
+SET builtin_code = LOWER(REPLACE(REPLACE(LTRIM(RTRIM(SUBSTRING(caption, 1, 60))), ' ', '_'), '-', '_'))
 WHERE builtin_code = '' AND caption <> '';
 GO
 
@@ -194,7 +190,7 @@ BEGIN
 		admin_login, admin_first_name, admin_last_name, admin_email, activation_date
 	) VALUES (
 		@sys_lic, 0x00, @sys_lic, 'A', 'A', 'cs',
-		'SYS', 'System', 'SYS', 'Licence systémové master organizace.',
+		'sys', 'System', 'SYS', 'Licence systémové master organizace.',
 		'PROCESSED', 255, 0x00, 0,
 		'sysadmin', 'System', 'Administrator', @sysadmin_email, CAST(GETDATE() AS date)
 	);

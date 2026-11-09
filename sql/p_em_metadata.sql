@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:45
+ * Verze: 2026-11-09 18:30
  * Soubor: p_em_metadata.sql
  * Procedury: dbo.p_em_get_class_meta, dbo.p_em_get_columns_meta,
  *            dbo.p_em_get_select_options
@@ -11,16 +11,15 @@
  *            předků v sys_global_columns ('ANC_A') a překladů ('L').
  *         3. dbo.p_em_get_select_options načte lokalizované položky pro <select>
  *            roletky v UI (source_code, meta_codetable, referenced_class včetně
- *            STI filtrování podle asset_archetype u tabulky asset a rekurzivní
- *            stromové vazby parent_uuid s vyloučením vlastního podstromu).
+ *            STI filtrování podle asset_archetype, asset_class_by_archetype a
+ *            rekurzivní stromové vazby parent_uuid s vyloučením vlastního podstromu).
  * Vazby:  - Voláno z PHP třídy entity_manager (entity_manager.php, entity_manager_ui.php),
- *           page_hierarchy_item.php, page_scale_value.php a page_approval.php.
- * Změny:  - 2026-11-09 14:45: V p_em_get_class_meta doplněno rekurzivní dohledání
- *           kořenové třídy sloupců (např. asset_host -> asset_physical -> asset)
- *           a v p_em_get_select_options (@mode = 'ref_class') doplněno STI
- *           filtrování podle asset_archetype u odvozených tříd aktiv (asset_*).
- *         - 2026-11-04 15:15: V p_em_get_select_options (@mode = 'ref_class')
- *           doplněna podpora řazení podle threshold_value u tabulky scale_value.
+ *           page_asset.php, page_link.php, page_hierarchy_item.php,
+ *           page_scale_value.php a page_approval.php.
+ * Změny:  - 2026-11-09 18:30: V p_em_get_select_options doplněn režim
+ *           @mode = 'asset_class_by_archetype' pro filtrování koncových tříd
+ *           aktiv podle zvoleného archetypu a v @mode = 'parent_tree' povolen
+ *           výběr uzlu pro automatické rozčlenění listu na složku (+ _oth).
  * ============================================================================= */
 
 EXECUTE dropni 'p_em_get_class_meta', 'P';
@@ -331,7 +330,76 @@ BEGIN
 		RETURN;
 	END
 
+	-- 2b. Koncové třídy aktiv (asset_class s is_leaf = 1) podřízené zadanému archetypu (nebo mapa všech archetypů)
+	IF @mode = 'asset_class_by_archetype' AND OBJECT_ID('asset_class', 'U') IS NOT NULL
+	BEGIN
+		DECLARE @ac_nodes TABLE (
+			original uniqueidentifier NOT NULL PRIMARY KEY,
+			parent_uuid uniqueidentifier NULL,
+			builtin_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			instance_class_name varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			sort_code varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			is_leaf bit NOT NULL,
+			caption varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			root_archetype varchar(30) COLLATE DATABASE_DEFAULT NULL
+		);
+
+		INSERT INTO @ac_nodes (original, parent_uuid, builtin_code, instance_class_name, sort_code, is_leaf, caption, root_archetype)
+		SELECT
+			x.original, x.parent_uuid, x.builtin_code, x.instance_class_name, x.sort_code, x.is_leaf,
+			COALESCE(tr.caption, x.caption, x.builtin_code),
+			CASE
+				WHEN x.instance_class_name LIKE 'asset[_]%' THEN UPPER(SUBSTRING(x.instance_class_name, 7, 30))
+				WHEN x.builtin_code LIKE 'ac[_]%' AND x.builtin_code NOT LIKE 'ac[_]grp[_]%' THEN UPPER(SUBSTRING(x.builtin_code, 4, 30))
+				ELSE NULL
+			END
+		FROM (
+			SELECT a.original, a.parent_uuid, a.builtin_code, a.instance_class_name, a.sort_code, a.is_leaf, a.caption,
+				ROW_NUMBER() OVER (PARTITION BY a.original ORDER BY CASE WHEN a.object_owner = @org_sql THEN 0 ELSE 1 END) AS rn
+			FROM asset_class a
+			WHERE a.object_owner IN (@org_sql, 0x00)
+			  AND a.record_type = 'A'
+			  AND a.removed = 0
+			  AND a.inactive = 0
+		) x
+		OUTER APPLY (
+			SELECT TOP 1 l.caption
+			FROM asset_class l
+			JOIN @fl fl ON fl.[language] = l.[language]
+			WHERE l.original = x.original
+			  AND l.record_type = 'L'
+			  AND l.removed = 0
+			  AND l.object_owner IN (@org_sql, 0x00)
+			  AND NULLIF(CAST(l.caption AS VARCHAR(MAX)), '') IS NOT NULL
+			ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org_sql THEN 0 ELSE 1 END ASC
+		) tr
+		WHERE x.rn = 1;
+
+		-- Propagace root_archetype z kořenové třídy archetypu (např. ac_site -> SITE) na všechny její podřízené podtřídy
+		WHILE @@ROWCOUNT > 0
+		BEGIN
+			UPDATE ch
+			SET ch.root_archetype = par.root_archetype
+			FROM @ac_nodes ch
+			JOIN @ac_nodes par ON par.original = ch.parent_uuid
+			WHERE ch.root_archetype IS NULL
+			  AND par.root_archetype IS NOT NULL;
+		END
+
+		SELECT
+			original,
+			builtin_code AS code_col,
+			caption,
+			ISNULL(root_archetype, '') AS archetype_code
+		FROM @ac_nodes
+		WHERE (is_leaf = 1 OR original = @current_val)
+		  AND (@param_code = '' OR root_archetype = UPPER(@param_code) OR original = @current_val)
+		ORDER BY root_archetype, sort_code, caption, builtin_code;
+		RETURN;
+	END
+
 	-- 3. Stromový výběr nadřízeného uzlu (parent_uuid) s ochranou proti zacyklení
+	--    (Umožňuje vybrat i dosavadní koncový uzel, který se při uložení nového potomka automaticky rozčlení přes _oth)
 	IF @mode = 'parent_tree' AND @storage_table <> '' AND OBJECT_ID(@storage_table, 'U') IS NOT NULL
 	BEGIN
 		DECLARE @has_code bit = CASE WHEN COL_LENGTH(@storage_table, 'builtin_code') IS NOT NULL THEN 1 ELSE 0 END;
@@ -343,6 +411,7 @@ BEGIN
 		DECLARE @code_expr nvarchar(100) = CASE WHEN @has_code = 1 THEN N'a.builtin_code' WHEN @has_short = 1 THEN N'a.shortname' ELSE N'''''' END;
 		DECLARE @sort_expr nvarchar(100) = CASE WHEN @has_sort = 1 THEN N'a.sort_code' ELSE N'''''' END;
 		DECLARE @leaf_cond nvarchar(200) = CASE
+			WHEN @storage_table IN ('meta_menu', 'asset', 'asset_class', 'threat', 'impact', 'scenario', 'countermeasure', 'hierarchy_item') AND @curr_guid IS NULL THEN N''
 			WHEN @storage_table IN ('meta_menu', 'asset') THEN N''
 			WHEN @has_leaf = 1 THEN N'AND (a.is_leaf = 0 OR a.original = @p_cur_val)'
 			ELSE N''

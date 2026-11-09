@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-09 16:30
+ * Verze: 2026-11-09 18:30
  * Soubor: page_link.php
  * Třída: page_link
  * Účel: Správa provozních, katalogových a prostorových vazeb M:N v tabulce link
@@ -11,8 +11,8 @@
  * ARCHITEKTONICKÉ VAZBY:
  * - Instancována dynamicky z routeru `index.php` při `?page=page_link`.
  * - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou `'link'`.
- * - Při otevření z detailu aktiva (`&from_object=<uuid>`) zobrazuje návratové
- *   tlačítko zpět na aktivum a předvyplňuje zdrojový objekt u nové vazby.
+ * - Podle zvoleného typu vazby `link_def` dynamicky naplní roletky `from_object`
+ *   a `to_object` záznamy odpovídajících logických tříd (`from_class` a `to_class`).
  * =============================================================================
  */
 
@@ -55,12 +55,12 @@ class page_link extends abstract_page_master_detail {
 			$this->master_where = implode(' AND ', $where_parts);            // Spojení podmínek přes AND
 		}
 
-		$grp_rel  = $this->phrase('grp_link_endpoints', [], 'Typ vazby, zdrojový a cílový objekt'); // Sekce koncových bodů
+		$grp_rel  = $this->phrase('grp_link_endpoints', [], 'Typ vazby, zdrojový a cílový objekt'); // Sekce koncových bodů vazby
 		$grp_meta = $this->phrase('grp_weight_note', [], 'Váha přenosu rizika, poznámka a platnost'); // Sekce váhy a poznámky
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_rel  => ['link_def', 'from_object', 'to_object'],           // Klíčové složky vazby
-			$grp_meta => ['link_weight', 'note', 'valid_from', 'valid_to', 'inactive'] // Váha, poznámka a platnost
+			$grp_meta => ['link_weight', 'note', 'valid_from', 'valid_to', 'inactive'] // Váha, poznámka a platnost záznamu
 		];                                                                   // Konec definice skupin formuláře
 	}
 
@@ -268,11 +268,13 @@ HTML;
 	}
 
 	/**
-	 * Předvyplní kontextové hodnoty u nové vazby a uzamkne zděděné vazby (`is_derived = 1`).
+	 * Předvyplní kontextové hodnoty u nové vazby, uzamkne zděděné vazby (`is_derived = 1`)
+	 * a vloží JS obsluhu pro dynamické přepínání cílových tříd u `from_object` a `to_object` podle `link_def`.
 	 */
 	protected function render_detail_top(): void {
 		global $datarow;                                                     // Aktuálně načtený řádek detailu
 		$update_guid = trim((string) getinput('update_guid'));               // Identifikátor záznamu v detailu
+		$org_sql = guidliteral(get_session_org());                           // SQL literál aktivní organizace
 
 		if ($update_guid === 'NEW' AND is_array($datarow) AND ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') { // Nová vazba
 			if ($this->filter_link_def !== '') {                             // Předvyplnění typu vazby z filtru
@@ -288,5 +290,127 @@ HTML;
 			$msg_der = htmlspecialchars($this->phrase('msg_derived_link_readonly', [], 'Tato vazba vznikla automatickým děděním z nadřízeného uzlu hierarchie (is_derived = 1). Zděděnou vazbu nelze ručně přepisovat; upravte ji na zdrojovém nadřízeném uzlu.')); // Info
 			echo "<div class=\"msg-info\" style=\"margin-bottom: 12px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e;\">{$msg_der}</div>\n"; // Žlutý pruh
 		}
+
+		// Načtení mapy definic vazeb [link_def_orig => [from_class, to_class]] a položek jednotlivých tříd
+		$mld_rows = sqlarray_simple("
+			SELECT original, from_class, to_class, link_weight_enabled
+			FROM meta_link_def
+			WHERE object_owner IN ({$org_sql}, 0x00)
+			  AND record_type = 'A'
+			  AND removed = 0
+			  AND inactive = 0
+		");                                                                  // Načtení definic typů vazeb
+		$link_def_map = [];                                                  // Mapa definic vazeb pro JS
+		$distinct_classes = [];                                              // Unikátní UUID odkazovaných tříd
+		if (is_array($mld_rows)) {                                           // Zpracování definic vazeb
+			foreach ($mld_rows as $mr) {                                     // Průchod definicemi
+				$ld_orig = strtolower((string) $mr['original']);             // Klíč definice vazby
+				$fc_orig = strtolower((string) $mr['from_class']);           // Klíč zdrojové třídy
+				$tc_orig = strtolower((string) $mr['to_class']);             // Klíč cílové třídy
+				$link_def_map[$ld_orig] = [                                  // Uložení pravidla definice vazby
+					'from_class' => $fc_orig,
+					'to_class'   => $tc_orig,
+					'weight'     => ! empty($mr['link_weight_enabled']) ? 1 : 0
+				];
+				$distinct_classes[$fc_orig] = (string) $mr['from_class'];    // Evidence zdrojové třídy
+				$distinct_classes[$tc_orig] = (string) $mr['to_class'];      // Evidence cílové třídy
+			}
+		}
+
+		$class_options_map = [];                                             // Mapa položek roletek: [class_orig => [[uuid, label], ...]]
+		foreach ($distinct_classes as $cls_key => $cls_raw) {                // Načtení položek pro každou zapojenou třídu
+			$cls_lit = guidliteral($cls_raw);                                // SQL literál třídy
+			$opts = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'ref_class', @param_code = 'link_endpoint', @ref_class_uuid = {$cls_lit}"); // Položky třídy
+			$class_options_map[$cls_key] = [];                               // Inicializace pole voleb třídy
+			if (is_array($opts)) {                                           // Naplnění voleb třídy
+				foreach ($opts as $o_row) {                                  // Průchod záznamy třídy
+					$u_str = (string) $o_row['original'];                    // UUID záznamu
+					$c_str = (string) $o_row['code_col'];                    // Kód záznamu
+					$cp_str = (string) $o_row['caption'];                    // Název záznamu
+					$lbl = ($c_str !== '' AND $cp_str !== '' AND $cp_str !== $c_str) ? "{$c_str} ({$cp_str})" : ($cp_str ?: $c_str ?: $u_str); // Popisek
+					$class_options_map[$cls_key][] = [                       // Uložení volby
+						'uuid'  => $u_str,
+						'label' => $lbl
+					];
+				}
+			}
+		}
+
+		$json_defs = json_encode($link_def_map);                             // JSON mapa definic vazeb
+		$json_opts = json_encode($class_options_map);                        // JSON mapa záznamů tříd
+		$lbl_sel_def = addslashes($this->phrase('opt_select_default', [], '--- Vyberte ---')); // Výchozí volba roletky
+
+		echo <<<HTML
+		<script>
+			(function() {
+				const linkDefMap = {$json_defs};
+				const classOptsMap = {$json_opts};
+				const defaultOptLabel = '{$lbl_sel_def}';
+				const form = document.querySelector('.md-detail form');
+				if (!form) return;
+
+				const defSel  = form.querySelector('select[name="link_def"]');
+				const defHid  = form.querySelector('input[type="hidden"][name="link_def"]');
+				const fromSel = form.querySelector('select[name="from_object"]');
+				const toSel   = form.querySelector('select[name="to_object"]');
+
+				function populateEndpointSelect(selEl, classKey, preserveVal) {
+					if (!selEl) return;
+					const prev = preserveVal && selEl.value ? selEl.value.toLowerCase() : '';
+					const items = (classKey && classOptsMap[classKey]) ? classOptsMap[classKey] : [];
+
+					while (selEl.options.length > 0) {
+						selEl.remove(0);
+					}
+
+					const emptyOpt = document.createElement('option');
+					emptyOpt.value = '';
+					emptyOpt.textContent = defaultOptLabel;
+					selEl.appendChild(emptyOpt);
+
+					let matched = '';
+					items.forEach(function(it) {
+						const opt = document.createElement('option');
+						opt.value = it.uuid;
+						opt.textContent = it.label;
+						if (prev !== '' && it.uuid.toLowerCase() === prev) {
+							matched = it.uuid;
+						}
+						selEl.appendChild(opt);
+					});
+
+					if (matched !== '') {
+						selEl.value = matched;
+					}
+				}
+
+				function applyLinkDefEndpoints(preserveCurrent) {
+					const rawDef = defSel ? defSel.value : (defHid ? defHid.value : '');
+					const defKey = (rawDef ? rawDef : '').toLowerCase();
+					const cfg = linkDefMap[defKey] ? linkDefMap[defKey] : null;
+					if (!cfg) return;
+
+					populateEndpointSelect(fromSel, cfg.from_class, preserveCurrent);
+					populateEndpointSelect(toSel, cfg.to_class, preserveCurrent);
+
+					const wInp = form.querySelector('[name="link_weight"]');
+					if (wInp) {
+						const wTr = wInp.closest('tr');
+						if (wTr) {
+							wTr.style.display = cfg.weight === 1 ? '' : 'none';
+						}
+					}
+				}
+
+				if (defSel) {
+					defSel.addEventListener('change', function() {
+						applyLinkDefEndpoints(false);
+					});
+				}
+
+				applyLinkDefEndpoints(true);
+			})();
+		</script>
+HTML;
 	}
 }

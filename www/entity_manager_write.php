@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 14:00
+ * Verze: 2026-11-09 18:30
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  * Účel: Zápisová, validační a klonovací část třídy entity_manager.
@@ -13,8 +13,9 @@
  * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
  * - Spolupracuje s traitem `entity_manager_ssc` (`validate_scale_value_monotonicity`,
  *   `run_post_save_hooks`).
- * - Využívá třídy `rich_text` (`rich_text.php`), `svg_icon_editor` (`svg_icon_editor.php`)
- *   a funkci `generate_builtin_code()` (`new_functions.php`).
+ * - Využívá třídy `rich_text` (`rich_text.php`), `svg_icon_editor` (`svg_icon_editor.php`),
+ *   funkci `generate_builtin_code()` (`new_functions.php`) a proceduru
+ *   `dbo.p_split_hierarchy_node_to_folder` (`p_sync_derived_links.sql`).
  * =============================================================================
  */
 
@@ -45,7 +46,7 @@ trait entity_manager_write {
 	}
 
 	/**
-	 * Odvodí bezpečný ASCII identifikátor `builtin_code` ze zkratky nebo názvu.
+	 * Odvodí bezpečný ASCII identifikátor `builtin_code` (v `snake_case`) ze zkratky nebo názvu.
 	 */
 	private function derive_builtin_code_from_post(): string { // Automatické odvození builtin_code z názvu/zkratky
 		$src = trim((string) ($_POST['shortname'] ?? '')); // Přednost má vyplněná zkratka (shortname)
@@ -55,15 +56,8 @@ trait entity_manager_write {
 		if ($src === '') { // Pokud není vyplněn ani název
 			return ''; // Nelze odvodit
 		}
-		if (function_exists('generate_builtin_code')) { // Primární konverzní funkce z new_functions.php
-			$code = generate_builtin_code($src, 60); // Převod diakritiky a sestavení snake_case kódu
-			return ($code !== '') ? $code : 'item'; // Vrácení neprázdného identifikátoru
-		}
-		$ascii = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $src); // Nouzový převod diakritiky na ASCII
-		$clean = strtolower((string) ($ascii !== false ? $ascii : $src)); // Převod na malá písmena
-		$clean = (string) preg_replace('/[^a-z0-9]+/', '_', $clean); // Nahrazení nečíselných a nepísmenných znaků podtržítkem
-		$clean = trim($clean, '_'); // Oříznutí okrajových podtržítek
-		return substr($clean !== '' ? $clean : 'item', 0, 60); // Vrácení neprázdného kódu (max 60 znaků)
+		$code = generate_builtin_code($src, 60); // Převod diakritiky a sestavení snake_case kódu
+		return ($code !== '') ? $code : 'item'; // Vrácení neprázdného identifikátoru
 	}
 
 	/**
@@ -129,6 +123,9 @@ trait entity_manager_write {
 			$raw_val = (string) $_POST[$colname]; // Surová hodnota z formuláře
 			if (in_array($colname, $trim_cols, true)) { // Pokud jde o klíčový nebo kódový sloupec
 				$raw_val = trim($raw_val); // Vždy odstraníme počáteční a koncové mezery
+				if (in_array($colname, ['builtin_code', 'link_code'], true) AND $raw_val !== '' AND $this->storage_table !== 'meta_object') { // Vynucení snake_case
+					$raw_val = generate_builtin_code($raw_val, 80); // Normalizace na čistý snake_case
+				}
 				$_POST[$colname] = $raw_val; // Propíšeme očištěnou hodnotu zpět do $_POST
 			}
 
@@ -523,6 +520,13 @@ trait entity_manager_write {
 		}
 
 		sqlrun("BEGIN TRAN"); // Zahájení databázové transakce
+
+		// Automatické rozčlenění nadřízeného koncového uzlu (is_leaf = 1 -> 0 + uzel _oth), pokud pod něj ukládáme položku
+		if ($target_status === 'A' AND isset($a_post_data['parent_uuid']) AND $a_post_data['parent_uuid'] !== 'NULL' AND $a_post_data['parent_uuid'] !== '0x00' AND in_array('is_leaf', $this->physical_cols, true)) { // Kontrola rodiče
+			$par_split_sql = (string) $a_post_data['parent_uuid']; // SQL literál nadřízeného uzlu
+			$safe_split_tab = charliteral($table, 128); // SQL literál tabulky
+			sqlrun("IF OBJECT_ID('dbo.p_split_hierarchy_node_to_folder', 'P') IS NOT NULL EXEC dbo.p_split_hierarchy_node_to_folder @table_name = {$safe_split_tab}, @node_original = {$par_split_sql}, @org_uuid = {$rec_owner_sql}, @user_session = {$user_uuid_sql};"); // Rozčlenění
+		}
 
 		$audit_base_map = ['date_created' => 'GETDATE()', 'date_modified' => 'GETDATE()', 'who_created' => $user_uuid_sql, 'who_modified' => $user_uuid_sql]; // Základní auditní mapa
 

@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 00:20
+ * Verze: 2026-11-09 18:30
  * Soubor: entity_manager_ui.php
  * Trait: entity_manager_ui
  * Účel: Prezentační a UI vrstva třídy entity_manager.
@@ -20,11 +20,10 @@
  *   a třídu `svg_icon_editor` (`svg_icon_editor.php`) pro sloupec `svg_icon`.
  *
  * Změny:
+ * 2026-11-09 18:30 - Klientské odvozování builtin_code z caption (v snake_case)
+ *                    soustředěno centrálně do abstract_page_master_detail.php.
  * 2026-11-06 00:20 - Propojení readonly režimu sloupce svg_icon na metodu
  *                    svg_icon_editor::render_readonly($value) a oprava mezer před $.
- * 2026-11-04 15:15 - Napojení sloupce svg_icon na modální editor svg_icon_editor,
- *                    automatické klientské předvyplňování builtin_code z názvu/zkratky
- *                    u nových záznamů (NEW) a podpora desetinných čísel (step="any").
  * =============================================================================
  */
 
@@ -461,45 +460,6 @@ HTML;
 			return rich_text::render_editor($column_name, $value, $meta);    // Preview box s tlačítkem Upravit a modálním editorem na popředí
 		}
 
-		// 5b. Automatické klientské předvyplňování builtin_code ze shortname / caption u nových záznamů (NEW)
-		$auto_code_script = '';                                              // Volitelný JS skript pro automatické odvození builtin_code
-		if ($column_name === 'builtin_code' AND $curr_guid === 'NEW' AND ! $is_readonly) { // Pouze u nového záznamu
-			$auto_code_script = <<<'HTML'
-<script>
-(function() {
-	const form = document.querySelector('.md-detail form');
-	if (!form) return;
-	const codeInp = form.querySelector('input[name="builtin_code"]');
-	const capInp  = form.querySelector('input[name="caption"], textarea[name="caption"]');
-	const shInp   = form.querySelector('input[name="shortname"]');
-	if (!codeInp) return;
-	if (codeInp.value.trim() !== '') {
-		codeInp.dataset.manualEdit = '1';
-	}
-	codeInp.addEventListener('input', function() {
-		this.dataset.manualEdit = (this.value.trim() !== '') ? '1' : '0';
-	});
-	function toSlug(str) {
-		return (str || '')
-			.normalize('NFD')
-			.replace(/[\u0300-\u036f]/g, '')
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, '_')
-			.replace(/^_+|_+$/g, '')
-			.substring(0, 60);
-	}
-	function syncAutoCode() {
-		if (codeInp.dataset.manualEdit === '1') return;
-		const srcText = (shInp && shInp.value.trim() !== '') ? shInp.value : (capInp ? capInp.value : '');
-		codeInp.value = toSlug(srcText);
-	}
-	if (capInp) capInp.addEventListener('input', syncAutoCode);
-	if (shInp) shInp.addEventListener('input', syncAutoCode);
-})();
-</script>
-HTML;
-		}
-
 		// 6. Standardní HTML prvky podle 'input_type'
 		switch ($type) {                                                     // Rozlišení podle typu vstupního prvku
 			case 'textarea':
@@ -525,7 +485,7 @@ HTML;
 			case 'text':
 			default:
 				$inputType = ! empty($meta['is_url']) ? 'url' : 'text';      // Rozlišení URL a běžného textu
-				return "<input type=\"{$inputType}\" name=\"{$safe_name}\" value=\"{$safe_val}\" {$attr_string}>" . $auto_code_script; // Jednořádkové pole
+				return "<input type=\"{$inputType}\" name=\"{$safe_name}\" value=\"{$safe_val}\" {$attr_string}>"; // Jednořádkové pole
 		}
 	}
 }

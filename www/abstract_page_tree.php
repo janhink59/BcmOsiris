@@ -1,33 +1,27 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 14:15
+ * Verze: 2026-11-09 18:30
  * Soubor: abstract_page_tree.php
  * Třída: abstract_page_tree
  * Účel: Znovupoužitelná abstraktní šablona pro všechny stromové (hierarchické)
  *       stránky v systému BCM Osiris (page_meta_menu, page_hierarchy,
  *       page_hierarchy_item, page_asset_class, page_threat, page_impact,
- *       page_scenario, page_countermeasure).
+ *       page_scenario, page_countermeasure, page_asset).
  *
  * ARCHITEKTONICKÉ VAZBY:
  * - Dědí z `abstract_page_master_detail` (`abstract_page_master_detail.php`).
  * - Využívá `entity_manager` (`entity_manager.php`) pro načtení záznamů
  *   (`fetch_rows()`) a vyhodnocení uzamčení větví hierarchie (`is_hierarchy_node_locked()`).
- * - V levém panelu (`render_master()`) sestaví strom v paměti podle `parent_uuid`
- *   a `sort_code` a vykreslí stromovou tabulku s:
- *   1. Klientským i serverovým filtrováním se zachováním všech nadřízených uzlů
- *      (`window.applyTreeMasterFilter` + zachování předků při aktivním `filter_manager`),
- *      aby byla vždy vidět celá cesta od kořene k vyhovujícímu záznamu.
- *   2. Klientským sbalováním a rozbalováním větví (Collapse / Expand) v `sessionStorage`.
- *   3. Vizuálním rozlišením složek (`is_leaf = 0`, ikona 📁), koncových listů (`is_leaf = 1`)
- *      a uzamčených uzlů (🔒).
- *   4. Podporou Drag & Drop (Varianta 1: předvyplnění `parent_uuid` a `sort_code` do detailu).
+ * - Podporuje automatické i tlačítkové rozčlenění koncového uzlu (`is_leaf = 1`)
+ *   na složku (`is_leaf = 0`) se založením podřízeného uzlu `*_oth` („... – ostatní“)
+ *   přes proceduru `dbo.p_split_hierarchy_node_to_folder`.
  *
  * Změny:
- * 2026-11-06 14:15 - Doplněna klientská funkce window.applyTreeMasterFilter(term) a serverové
- *                    doplnění předků při aktivním modálním filtru (filter_manager), které
- *                    vždy zachovají všechny nadřízené uzly až ke kořeni stromu.
- * 2026-11-05 16:45 - Sjednoceno CSS pravidlo .dnd-grip svg:not([fill]) pro zachování barev SVG ikon.
+ * 2026-11-09 18:30 - Doplněno tlačítko a obsluha rozčlenění uzamčeného koncového
+ *                    uzlu na složku a podtřídu *_oth (p_split_hierarchy_node_to_folder)
+ *                    a předvyplnění vybraného uzlu jako rodiče u + Nová položka.
+ * 2026-11-06 14:15 - Doplněna klientská funkce window.applyTreeMasterFilter(term).
  * =============================================================================
  */
 
@@ -95,9 +89,69 @@ abstract class abstract_page_tree extends abstract_page_master_detail {
 	}
 
 	/**
+	 * Zpracuje případný požadavek na rozčlenění koncového uzlu na složku (`btn_split_node_oth`)
+	 * a následně zavolá standardní `parent::process_save()`.
+	 */
+	protected function process_save(): void {
+		if (! $this->is_readonly AND $this->em !== null AND isset($_POST['btn_split_node_oth'])) { // Stisk tlačítka rozčlenění uzlu
+			$upd_guid = trim((string) getinput('update_guid'));              // UUID uzlu k rozčlenění
+			if ($upd_guid !== '' AND $upd_guid !== 'NEW' AND is_guid($upd_guid)) { // Platné UUID existujícího uzlu
+				$safe_tab = charliteral($this->em->get_storage_table(), 128); // SQL literál fyzické tabulky
+				$safe_orig = guidliteral($upd_guid);                         // SQL literál originálu uzlu
+				sqlrun("BEGIN TRAN; EXEC dbo.p_split_hierarchy_node_to_folder @table_name = {$safe_tab}, @node_original = {$safe_orig}; COMMIT;"); // Rozčlenění uzlu
+				$page_param = urlencode($this->get_current_page_name());     // Název aktuální stránky
+				$url_suffix = $this->get_context_url_suffix();               // Kontextové parametry URL
+				autoredirect("index.php?page={$page_param}{$url_suffix}&update_guid=" . urlencode($upd_guid)); // PRG redirect
+				return;                                                      // Ukončení zpracování
+			}
+		}
+
+		parent::process_save();                                              // Standardní uložení záznamu v předkovi
+	}
+
+	/**
+	 * Vloží do hlavičky detailu tlačítko pro rozčlenění koncového uzlu (`is_leaf = 1`)
+	 * na složku a podřízený uzel `*_oth` („... – ostatní“), pokud je uzel uzamčen vazbami.
+	 */
+	protected function render_detail_header_buttons(string $update_guid): string { // Tlačítko rozčlenění uzamčeného listu
+		$parent_btns = parent::render_detail_header_buttons($update_guid);   // Případná tlačítka z předka
+		if ($this->is_readonly OR $this->em === null OR $update_guid === '' OR $update_guid === 'NEW') { // Mimo existující záznam
+			return $parent_btns;                                             // Vrácení výchozích tlačítek
+		}
+		if (! $this->em->has_physical_column($this->leaf_column) OR $this->em->get_storage_table() === 'hierarchy') { // Mimo věcné stromy
+			return $parent_btns;                                             // Registr hierarchií se nedělí přes _oth
+		}
+
+		global $datarow;                                                     // Aktuálně načtený řádek detailu
+		if (empty($datarow[$this->leaf_column]) OR ! $this->em->is_hierarchy_node_locked($update_guid)) { // Pouze pro uzamčený list
+			return $parent_btns;                                             // Uzel je již složkou nebo není uzamčen
+		}
+
+		$confirm_split = $this->phrase(
+			'confirm_split_node_oth',
+			[],
+			'Tento koncový uzel má již navázané záznamy. Chcete jej proměnit na složku (is_leaf = 0) a stávající záznamy automaticky převést na nový podřízený uzel s příponou „_oth“ (… – ostatní)?'
+		);                                                                   // Text potvrzovacího dialogu
+
+		$btn_split = new abstract_button(                                    // Tlačítko rozčlenění uzlu přes abstract_button
+			'btn_split_node_oth',                                            // Kód fráze tlačítka
+			'Rozčlenit na podtřídy (+ _oth)',                                // Výchozí český popisek tlačítka
+			'abstract_page_tree',                                            // Zdrojová třída fráze
+			'',                                                              // Bez ikony
+			'btn-secondary'                                                  // Sekundární šedý styl tlačítka
+		);
+		$btn_split->set_type('submit')                                       // Odeslání formuláře metodou POST
+			->set_name_value('btn_split_node_oth', '1')                      // Jméno a hodnota pro process_save()
+			->set_onclick('isFormDirty = false;')                            // Vypnutí varování před opuštěním formuláře
+			->set_confirm($confirm_split);                                   // Potvrzovací dialog před rozčleněním
+
+		return ($parent_btns !== '') ? ($parent_btns . "\n\t\t\t\t\t" . $btn_split->render()) : $btn_split->render(); // Spojení tlačítek
+	}
+
+	/**
 	 * Vykreslí tlačítko pro založení nové položky v horní části levého panelu.
-	 * Pokud je v levém stromu právě vybrána složka (`is_leaf = 0`), tlačítko předá její UUID
-	 * v parametru `dnd_parent`, aby se v novém záznamu rovnou předvyplnila jako nadřízený uzel.
+	 * Pokud je v levém stromu vybrán uzel (složka nebo koncový uzel, který chce uživatel rozčlenit),
+	 * tlačítko předá jeho UUID v parametru `dnd_parent`, aby se v novém záznamu předvyplnil jako rodič.
 	 */
 	protected function render_master_top(): void {
 		if (! $this->allow_insert) {                                         // Pokud zakládání nových záznamů není povoleno
@@ -112,7 +166,7 @@ abstract class abstract_page_tree extends abstract_page_master_detail {
 		$js_onclick = "
 			var targetUrl = '{$js_new_url}';
 			var actRow = document.getElementById('active-row');
-			if (actRow && actRow.getAttribute('data-is-folder') === '1' && actRow.getAttribute('data-uuid')) {
+			if (actRow && actRow.getAttribute('data-prot-root') !== '1' && actRow.getAttribute('data-uuid')) {
 				targetUrl += '&dnd_parent=' + encodeURIComponent(actRow.getAttribute('data-uuid'));
 			}
 			if (window.loadDetailPanel) {
@@ -121,7 +175,7 @@ abstract class abstract_page_tree extends abstract_page_master_detail {
 			}
 			window.location.href = targetUrl;
 			return false;
-		";                                                                   // JS pro převzetí vybrané složky jako rodiče nového záznamu
+		";                                                                   // JS pro převzetí vybraného uzlu jako rodiče nového záznamu
 		$js_onclick_inline = trim((string) preg_replace('/\s+/', ' ', $js_onclick)); // Zploštění JS na jeden řádek
 
 		$btn_new = new abstract_button(                                      // Vytvoření tlačítka přes abstract_button
@@ -144,13 +198,29 @@ abstract class abstract_page_tree extends abstract_page_master_detail {
 		global $datarow;                                                     // Aktuálně načtený datový řádek detailu
 		$update_guid = trim((string) getinput('update_guid'));               // Identifikátor záznamu v detailu
 
-		// 1. Při založení nového záznamu (NEW) pod vybranou složkou předvyplníme parent_uuid a další volný sort_code
+		// 1. Při založení nového záznamu (NEW) pod vybraným uzlem předvyplníme parent_uuid a další volný sort_code
 		if ($update_guid === 'NEW' AND is_array($datarow)) {                 // Režim zakládání nového uzlu
-			if ($this->dnd_parent !== '' AND ($datarow[$this->parent_column] ?? '') === '') { // Pokud byla předána nadřazená složka
+			if ($this->dnd_parent !== '' AND ($datarow[$this->parent_column] ?? '') === '') { // Pokud byl předán nadřazený uzel
 				$datarow[$this->parent_column] = $this->dnd_parent;          // Předvyplnění nadřízeného uzlu
 			}
 			if ($this->dnd_sort !== '' AND ($datarow[$this->sort_column] ?? '') === '') { // Pokud byl předán řadicí kód
 				$datarow[$this->sort_column] = $this->dnd_sort;              // Předvyplnění řadicího kódu
+			}
+
+			// Pokud je vybraný rodič dosud koncovým listem (is_leaf = 1), zobrazíme informaci o automatickém rozčlenění přes _oth
+			$sel_par = trim((string) ($datarow[$this->parent_column] ?? '')); // Zvolený nadřízený uzel
+			if ($sel_par !== '' AND is_guid($sel_par) AND $this->em !== null AND $this->em->has_physical_column($this->leaf_column)) { // Kontrola rodiče
+				$tab = $this->em->get_storage_table();                       // Fyzická tabulka
+				$p_row = sqlfirstrow("SELECT TOP 1 is_leaf, caption, builtin_code FROM [{$tab}] WHERE original = " . guidliteral($sel_par) . " AND record_type = 'A' AND removed = 0"); // Rodič
+				if (! empty($p_row) AND ! empty($p_row['is_leaf'])) {        // Rodič je dosud koncovým uzlem (is_leaf = 1)
+					$p_name = (string) ($p_row['caption'] ?: $p_row['builtin_code']); // Název rodiče
+					$msg_auto_split = htmlspecialchars($this->phrase(
+						'msg_auto_split_parent_info',
+						['parent' => $p_name],
+						'Nadřízená položka „{' . chr(36) . 'parent}“ je dosud koncovým listem. Při uložení této nové podpoložky se nadřízená položka automaticky promění na složku (is_leaf = 0) a případné stávající záznamy na ní navázané se převedou na podřízený uzel s příponou „_oth“ (… – ostatní).'
+					));                                                      // Informační zpráva o automatickém rozčlenění
+					echo "<div class=\"msg-info\" style=\"margin-bottom: 12px; font-weight: normal; font-size: 12px;\">{$msg_auto_split}</div>\n"; // Modrý pruh
+				}
 			}
 		}
 
@@ -168,9 +238,9 @@ abstract class abstract_page_tree extends abstract_page_master_detail {
 		$disp_dnd = ($this->has_dnd_preview AND $this->can_edit_structure) ? 'block' : 'none'; // Viditelnost pruhu
 		echo "<div id=\"tree-dnd-banner\" class=\"msg-info\" style=\"display: {$disp_dnd}; margin-bottom: 12px; background-color: #f0fdf4; border-left-color: #16a34a; color: #166534;\">{$msg_dnd}</div>\n"; // Zelený informační pruh
 
-		// 4. Informační pruh u uzlu, který je uzamčen platnými vazbami v tabulce link
+		// 4. Informační pruh u uzlu, který je uzamčen platnými vazbami
 		if ($this->em !== null AND $update_guid !== '' AND $update_guid !== 'NEW' AND $this->em->is_hierarchy_node_locked($update_guid)) { // Pokud je větev uzamčena
-			$msg_lck = htmlspecialchars($this->phrase('msg_node_locked_notice', [], '🔒 Tento uzel (nebo jeho podřízený uzel) má již navázané platné záznamy. Změna nadřízeného uzlu (přepodřízení) a smazání jsou uzamčeny; měnit lze pouze pořadí v rámci sourozenců a textové popisky.')); // Text uzamčení
+			$msg_lck = htmlspecialchars($this->phrase('msg_node_locked_notice', [], '🔒 Tento uzel (nebo jeho podřízený uzel) má již navázané platné záznamy. Změna nadřízeného uzlu (přepodřízení) a smazání jsou uzamčeny; pokud potřebujete tento koncový uzel dále členit na podtřídy, použijte tlačítko „Rozčlenit na podtřídy (+ _oth)“ v záhlaví detailu (nebo pod něj rovnou přidejte novou položku).')); // Text uzamčení
 			echo "<div class=\"msg-info\" style=\"margin-bottom: 12px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e; font-weight: normal; font-size: 12px;\">{$msg_lck}</div>\n"; // Žlutý pruh uzamčení
 		}
 
@@ -570,7 +640,7 @@ HTML;
 			$safe_code = htmlspecialchars($b_code);                          // Ošetřený technický kód
 			$safe_sort = htmlspecialchars((string) ($row[$this->sort_column] ?? '')); // Ošetřený řadicí kód
 			$folder_flag = $is_folder ? '1' : '0';                           // Příznak složky pro Drag & Drop
-			$prot_flag = $is_prot_root ? '1' : '0';                          // Příznak chráněného kořene pro Drag & Drop
+			$prot_flag = $is_prot_root ? '1' : '0';                          // Příznak chráněného kořenového uzlu pro Drag & Drop
 			$lock_flag = $is_locked ? '1' : '0';                             // Příznak uzamčení změny rodiče
 			$srv_anc_flag = ! empty($row['_is_filter_ancestor']) ? '1' : '0'; // Příznak nadřízeného uzlu ze serverového filtru
 
