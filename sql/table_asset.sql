@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:15
+ * Verze: 2026-11-11 21:30
  * Soubor: table_asset.sql
  * Tabulka: asset (Evidence aktiv organizace – STI úložiště všech archetypů)
  * Popis:   Společná fyzická tabulka pro evidenci všech tříd a archetypů aktiv
@@ -9,17 +9,17 @@
  *          Interface, Personál a Dodavatelé).
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus) + STI
  * Vazby:   - primary_asset_class ukazuje na koncový uzel asset_class.original.
- *          - parent_uuid umožňuje stromovou hierarchii (zejména pro Prostory:
- *            Okres -> Město -> Lokalita -> Budova -> Místnost, příp. podsystémy).
- *          - building_uuid ukazuje na asset.original (archetyp BUILDING).
- *          - room_uuid ukazuje na asset.original (archetyp ROOM).
- *          - host_uuid ukazuje na asset.original (archetyp HOST).
- *          - software_uuid ukazuje na asset.original (archetyp SOFTWARE).
- *          - supplier_uuid ukazuje na asset.original (archetyp SUPPLIER).
+ *          - parent_uuid umožňuje exkluzivní stromovou hierarchii (zejména pro
+ *            Prostory: Okres -> Město -> Lokalita -> Budova -> Místnost, příp.
+ *            podsystémy aktiv) a automaticky se promítá do tabulky link.
  *          - owner_user_uuid ukazuje na user_account.original (vlastník/garant).
- *          - Vícenásobné vazby M:N (aplikace -> data, služba -> aplikace,
- *            aplikace -> personál atd.) jsou uloženy v tabulce link podle
- *            definic v meta_link_def.
+ *          - Veškeré umístění aktiv v prostorech a provozní vazby M:N
+ *            (aplikace -> host, aplikace -> data, služba -> aplikace atd.)
+ *            jsou uloženy v tabulce link podle definic v meta_link_def.
+ * Změny:
+ * - 2026-11-11 21:30: Odstraněny duplicitní 1:N sloupce building_uuid, room_uuid,
+ *   host_uuid, software_uuid a supplier_uuid (nahrazeno přímým parent_uuid a
+ *   univerzálními vazbami v tabulce link).
  * ============================================================================= */
 
 IF OBJECT_ID('asset') IS NULL
@@ -66,22 +66,13 @@ BEGIN
 		svg_icon varchar(max) NOT NULL DEFAULT '',                           -- Vektorová ikona SVG
 
 		-- ---------------------------------------------------------------------
-		-- Klasifikace STI archetypu, primární třída a stromová struktura
+		-- Klasifikace STI archetypu, primární třída, strom a vlastník
 		-- ---------------------------------------------------------------------
 		asset_archetype varchar(30) NOT NULL DEFAULT 'PHYSICAL',             -- Archetyp STI (DISTRICT, CITY, SITE, BUILDING, ROOM, PHYSICAL, HOST, CABLING, DOCUMENT, MEDIA, DATA, SOFTWARE, APPLICATION, SERVICE, INTERFACE, PERSONNEL, SUPPLIER)
 		primary_asset_class uuid NULL,                                       -- Primární koncová třída aktiv (asset_class.original s is_leaf = 1)
-		parent_uuid uuid NULL,                                               -- Nadřízené aktivum / prostor ve stromu (asset.original)
+		parent_uuid uuid NULL,                                               -- Exkluzivní nadřízené aktivum / prostor ve stromu (asset.original)
 		sort_code varchar(200) NOT NULL DEFAULT '',                          -- Pořadí v rámci sourozenců
 		is_leaf bit NOT NULL DEFAULT 1,                                      -- 1 = Koncová položka, 0 = Složka / souhrnný uzel
-
-		-- ---------------------------------------------------------------------
-		-- Přímé relační vazby 1:N podle archetypu (vynucované přes meta_column)
-		-- ---------------------------------------------------------------------
-		building_uuid uuid NULL,                                             -- Umístění v budově (asset.original typu BUILDING – povinné pro Místnost a Kabeláž)
-		room_uuid uuid NULL,                                                 -- Umístění v místnosti (asset.original typu ROOM – povinné pro Fyzická aktiva, Hosty, Dokumenty a Média)
-		host_uuid uuid NULL,                                                 -- Primární hostitelský počítač (asset.original typu HOST)
-		software_uuid uuid NULL,                                             -- Zdrojový SW balík (asset.original typu SOFTWARE – pro instalované aplikace)
-		supplier_uuid uuid NULL,                                             -- Dodavatel / provozovatel (asset.original typu SUPPLIER – pro Interface, HW a SW)
 		owner_user_uuid uuid NULL,                                           -- Vlastník / garant aktiva (user_account.original)
 
 		-- ---------------------------------------------------------------------
@@ -108,8 +99,16 @@ END
 GO
 
 -- -----------------------------------------------------------------------------
--- Zajištění chybějících sloupců pro existující databáze
+-- Zajištění chybějících sloupců a odstranění vyčleněných 1:N sloupců
 -- -----------------------------------------------------------------------------
+EXEC sp_drop_index 'asset', 'ix_asset_locations';
+EXEC sp_drop_column 'asset', 'building_uuid';
+EXEC sp_drop_column 'asset', 'room_uuid';
+EXEC sp_drop_column 'asset', 'host_uuid';
+EXEC sp_drop_column 'asset', 'software_uuid';
+EXEC sp_drop_column 'asset', 'supplier_uuid';
+GO
+
 EXEC p_create_missing_column 'asset', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
 EXEC p_create_missing_column 'asset', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'asset', 'import_origin', 'varchar(255) NULL';
@@ -123,11 +122,6 @@ EXEC p_create_missing_column 'asset', 'primary_asset_class', 'uuid NULL';
 EXEC p_create_missing_column 'asset', 'parent_uuid', 'uuid NULL';
 EXEC p_create_missing_column 'asset', 'sort_code', 'varchar(200) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'asset', 'is_leaf', 'bit NOT NULL DEFAULT 1';
-EXEC p_create_missing_column 'asset', 'building_uuid', 'uuid NULL';
-EXEC p_create_missing_column 'asset', 'room_uuid', 'uuid NULL';
-EXEC p_create_missing_column 'asset', 'host_uuid', 'uuid NULL';
-EXEC p_create_missing_column 'asset', 'software_uuid', 'uuid NULL';
-EXEC p_create_missing_column 'asset', 'supplier_uuid', 'uuid NULL';
 EXEC p_create_missing_column 'asset', 'owner_user_uuid', 'uuid NULL';
 EXEC p_create_missing_column 'asset', 'rto_hours', 'decimal(9,2) NULL';
 EXEC p_create_missing_column 'asset', 'rpo_hours', 'decimal(9,2) NULL';
@@ -179,14 +173,6 @@ EXEC sp_create_index
 	@tname = 'asset',
 	@iname = 'ix_asset_archetype_class',
 	@colnames = 'object_owner, asset_archetype, primary_asset_class',
-	@uni = '',
-	@options = 'WHERE record_type = ''A'' AND removed = 0';
-GO
-
-EXEC sp_create_index
-	@tname = 'asset',
-	@iname = 'ix_asset_locations',
-	@colnames = 'object_owner, building_uuid, room_uuid',
 	@uni = '',
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
 GO

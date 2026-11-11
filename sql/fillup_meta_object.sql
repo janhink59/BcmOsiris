@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:45
+ * Verze: 2026-11-11 22:15
  * Soubor: fillup_meta_object.sql
  * Účel:   Idempotentní prvotní naplnění a registrace systémových PHP stránek
  *         a UI tříd (object_type = 'P', object_owner = 0x00) do tabulky meta_object
@@ -8,7 +8,8 @@
  *           a funkce dbo.f_generate_original (f_generate_original.sql).
  *         - Slouží jako podklad pro navigační vazby target_object v fillup_meta_menu.sql
  *           a pro kontrolu oprávnění v abstract_page::check_system_role_access().
- * Změny:  - 2026-11-09 14:45: Doplněna registrace stránek page_asset, page_link,
+ * Změny:  - 2026-11-11 22:15: Doplněna registrace stránky page_link_diagram.
+ *         - 2026-11-09 14:45: Doplněna registrace stránek page_asset, page_link,
  *           page_meta_link_def, page_scenario_assessment a page_countermeasure_implementation.
  *         - 2026-11-06 14:15: Doplněna registrace třídy filter_manager a CSV balíčku
  *           csv_package_simple_class; stránka page_csv_package zpřístupněna pro roli 'U'.
@@ -69,6 +70,7 @@ INSERT INTO @pages (builtin_code, caption, description, system_role) VALUES
 ('page_hierarchy_item','Položky sekundárních hierarchií','Správa uzlů a položek jednotlivých sekundárních hierarchií, číselníků a štítků','U'),
 ('page_impact','Katalog dopadů (CRMM)','Správa hierarchického číselníku dopadů v modulu CRMM','U'),
 ('page_link','Vazby a závislosti aktiv (CRMM)','Správa uživatelských a zděděných vazeb M:N mezi aktivy, službami, aplikacemi, daty, hrozbami a opatřeními','U'),
+('page_link_diagram','Schémata sítí vztahů (Diagramy CRMM)','Správa orientovaných schémat heterogenních sítí vztahů a projekce nepřímých vazeb pro přenos rizik','U'),
 ('page_login','Přihlášení do systému','Přihlašovací obrazovka s podporou lokální autentizace a SSO','U'),
 ('page_logout','Odhlášení ze systému','Ukončení relace a zneplatnění přihlašovacích tokenů','U'),
 ('page_main','Hlavní panel','Úvodní rozcestník aplikace po přihlášení','U'),

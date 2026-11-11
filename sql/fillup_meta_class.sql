@@ -1,10 +1,10 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:45
+ * Verze: 2026-11-11 22:15
  * Soubor: fillup_meta_class.sql
  * Účel:   Hromadné idempotentní nastavení výchozích českých textů (jazyk 'cs')
  *         pro systémové logické třídy v tabulce meta_class (object_owner = 0x00),
- *         včetně všech 17 odvozených STI tříd aktiv nad tabulkou asset,
- *         seřazené abecedně podle class_name.
+ *         včetně všech 17 odvozených STI tříd aktiv nad tabulkou asset a třídy
+ *         link_diagram, seřazené abecedně podle class_name.
  * Vazby:  - Vyžaduje tabulku meta_class a proceduru dbo.p_fix_meta_column.
  * ============================================================================= */
 
@@ -57,6 +57,7 @@ INSERT INTO @cls_cs (class_name, caption, caption_plural, description, helptext)
 ('f_integer_list','Funkce rozkladu seznamu čísel','Rozklad seznamu celých čísel','Tabulková funkce převádějící čárkami oddělený seznam celých čísel na tabulku hodnot bigint.','Pomocná parsovací funkce knihovny HinkMSSQLLibrary.'),
 ('f_language_list','Funkce seznamu jazyků s fallbackem','Seznam jazyků s pořadím dědičnosti','Tabulková funkce vracející podporované jazyky seřazené podle řetězce dědičnosti (fallback_order).','Určuje pořadí prohledávání jazykových mutací pro aktuální relaci.'),
 ('f_resolve_hierarchy','Funkce výpočtu stromové hierarchie','Výpočet stromové hierarchie','Tabulková funkce pro seřazení stromové struktury, výpočet úrovně zanoření a lexikografického kódu.','Zajišťuje průchod stromem od kořenů k listům a detekci sirotků.'),
+('f_resolve_link_diagram','Funkce výpočtu orientovaného grafu sítě','Výpočet orientovaného grafu sítě','Tabulková funkce pro průchod orientovaným grafem (DAG), detekci cyklů a určení vrcholových uzlů.','Zajišťuje výpočet všech acyklických cest v heterogenních i vnitrotřídních sítích.'),
 ('f_string_list','Funkce rozkladu seznamu textů','Rozklad seznamu textů','Tabulková funkce převádějící čárkami oddělený řetězec na tabulku oříznutých textových položek.','Pomocná parsovací funkce knihovny HinkMSSQLLibrary.'),
 ('f_syscolumns','Funkce sloupců tabulky','Sloupce zadané tabulky','Tabulková funkce vracející metadata sloupců pro zadanou trvalou nebo dočasnou (#temp) tabulku.','Využívána při dynamickém skládání SQL dotazů a exportů.'),
 ('f_uuid_list','Funkce rozkladu seznamu UUID','Rozklad seznamu identifikátorů UUID','Tabulková funkce převádějící čárkami oddělený seznam GUIDů na tabulku hodnot uniqueidentifier.','Pomocná parsovací funkce knihovny HinkMSSQLLibrary.'),
@@ -65,11 +66,12 @@ INSERT INTO @cls_cs (class_name, caption, caption_plural, description, helptext)
 ('impact','Dopad','Katalog dopadů','Hierarchický katalog druhů a oblastí dopadů pro hodnocení následků rizikových scénářů, výpadků služeb a kompromitace dat.','Kombinuje oblasti dopadů (finanční, pověst, obecné ohrožení, trestní odpovědnost, řízení firmy, porušení zákonů).'),
 ('language','Jazyk aplikace','Podporované jazyky','Číselník jazyků podporovaných v aplikaci včetně pořadí fallbacku a garantující překladatelské organizace.','Definuje dostupné jazykové mutace uživatelského rozhraní a dat.'),
 ('licence_level','Úroveň licence','Úrovně licencí','Statický číselník licenčních úrovní systému (Demo, Standard, Expert, Custom, Enterprise, Developer).','Určuje rozsah dostupných funkcí a oprávnění licencované organizace.'),
-('link','Vazba mezi objekty','Vazby a závislosti objektů','Univerzální tabulka uživatelských i hierarchicky zděděných vazeb M:N mezi záznamy entit.','Uchovává přímé vazby (ancestor_link = 0x00) i vazby automaticky zmaterializované děděním po stromu.'),
+('link','Vazba mezi objekty','Vazby a závislosti objektů','Univerzální tabulka uživatelských, stromových (parent_uuid) i hierarchicky a diagramově odvozených vazeb M:N mezi záznamy entit.','Uchovává přímé vazby i vazby automaticky zmaterializované děděním po stromu nebo ze schémat sítí.'),
+('link_diagram','Schéma sítě vztahů (Diagram)','Schémata sítí vztahů (Diagramy)','Definice orientovaných schémat heterogenních sítí pro výpočet cest přenosu rizik a závislostí mezi aktivy a útvary.','Skládá vybrané orientované vztahy do sítě a materializuje nepřímé vztahy a vazby pro okamžité vyhodnocení šíření rizik.'),
 ('meta_class','Logická třída (Objekt)','Logické třídy (Objekty)','Definice logických entit systému nad fyzickými tabulkami s podporou dědičnosti (STI) a správy koše.','Zde můžete upravit zobrazované názvy tříd, dobu uchování smazaných záznamů v koši a výchozí ikonu.'),
 ('meta_codetable','Položka systémového číselníku','Systémové číselníky','Univerzální úložiště pevných systémových a metodických výčtových číselníků pro rozevírací seznamy.','Obsahuje položky pevných výčtových číselníků odkazovaných ze sloupců metadat.'),
 ('meta_column','Sloupec metadat','Sloupce metadat','Definice vlastností, popisků, formulářových prvků a vazeb jednotlivých sloupců logických tříd.','Umožňuje přizpůsobit popisky polí ve formulářích, záhlaví seznamů, nápovědu a pořadí zobrazení.'),
-('meta_link_def','Definice typu vazby','Definice typů vazeb','Katalog povolených typů relací a vazeb M:N mezi logickými třídami v tabulce link.','Určuje, které třídy lze mezi sebou propojovat, zda je vazba povinná, vícenásobná nebo omezená na koncové listy.'),
+('meta_link_def','Definice typu vazby','Definice typů vazeb','Katalog povolených typů relací a vztahů M:N mezi logickými třídami v tabulce link (včetně zpětných a odvozených vztahů).','Určuje, které třídy lze mezi sebou propojovat, jaký je směr vztahu (P/R/S), zda je vazba povinná, vícenásobná nebo exkluzivní.'),
 ('meta_menu','Položka menu (Navigace)','Položky menu (Navigace)','Stromová struktura hlavní aplikační navigace a rozcestníků s řízením přístupu podle rolí.','Určuje hierarchii menu, cílové stránky, ikony a oprávnění pro zobrazení navigačních položek.'),
 ('meta_object','Systémový objekt','Systémové objekty','Registr fyzických tabulek, pohledů, funkcí, aplikačních stránek a UI tříd systému.','Definuje fyzické úložiště pro logické třídy a řízení přístupu ke stránkám aplikace podle systémové role.'),
 ('meta_original_keys','Klíč deterministického originálu','Klíče deterministických originálů','Registr klíčových sloupců tabulek, ze kterých se počítá deterministický identifikátor original.','Technická tabulka určující složky MD5 hashe pro výpočet identifikátoru original v triggerech trgo_.'),

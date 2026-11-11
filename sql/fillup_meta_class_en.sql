@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:45
+ * Verze: 2026-11-11 22:15
  * Soubor: fillup_meta_class_en.sql
  * Účel:   Hromadné idempotentní nastavení výchozích anglických překladů (jazyk 'en',
  *         record_type = 'L') pro systémové logické třídy v tabulce meta_class
@@ -50,6 +50,7 @@ INSERT INTO @cls_en (class_name, caption, caption_plural, description, helptext)
 ('f_integer_list','Integer List Split Function','Split Integer List','Table-valued function splitting a comma-separated list of integers into bigint rows.','Helper parsing function of HinkMSSQLLibrary.'),
 ('f_language_list','Language Fallback List Function','Languages with Fallback Order','Table-valued function returning supported languages ordered by the active fallback chain.','Determines translation lookup order for the current session.'),
 ('f_resolve_hierarchy','Tree Hierarchy Resolution Function','Tree Hierarchy Resolution','Table-valued function computing tree ordering, nesting depth, and zero-padded sort paths.','Performs top-down tree traversal and orphan detection.'),
+('f_resolve_link_diagram','Directed Network Graph Resolution Function','Directed Network Graph Resolution','Table-valued function for traversing directed graphs (DAGs), cycle detection, and identifying top-level root nodes.','Computes acyclic paths across heterogeneous and intra-class networks.'),
 ('f_string_list','String List Split Function','Split String List','Table-valued function splitting a comma-separated string into trimmed varchar rows.','Helper parsing function of HinkMSSQLLibrary.'),
 ('f_syscolumns','Table Columns Function','Columns of Specified Table','Table-valued function returning column metadata for a permanent or temporary (#temp) table.','Used for dynamic SQL generation and data exports.'),
 ('f_uuid_list','UUID List Split Function','Split UUID List','Table-valued function splitting a comma-separated list of GUIDs into uniqueidentifier rows.','Helper parsing function of HinkMSSQLLibrary.'),
@@ -58,11 +59,12 @@ INSERT INTO @cls_en (class_name, caption, caption_plural, description, helptext)
 ('impact','Impact','Impact Catalog','Hierarchical catalog of impact types and areas for evaluating risk scenario consequences, service outages, and data compromises.','Combines impact areas (financial, reputation, general hazard, criminal liability, management disruption, legal breach).'),
 ('language','Application Language','Supported Languages','Codetable of supported application languages including fallback order and guarantee translator organization.','Defines available language mutations for UI and data.'),
 ('licence_level','Licence Level','Licence Levels','Static codetable of system licence levels (Demo, Standard, Expert, Custom, Enterprise, Developer).','Determines the scope of available features and permissions for a licensed organization.'),
-('link','Object Link','Object Links & Dependencies','Universal table of user-defined and hierarchically inherited M:N links between entity records.','Stores direct links (ancestor_link = 0x00) as well as links automatically materialized down the hierarchy tree.'),
+('link','Object Link','Object Links & Dependencies','Universal table of user-defined, tree (parent_uuid), and hierarchically or diagram-derived M:N links between entity records.','Stores direct links as well as links automatically materialized down the hierarchy tree or from network schemas.'),
+('link_diagram','Network Relationship Diagram (Schema)','Network Relationship Diagrams (Schemas)','Definitions of directed heterogeneous network schemas for calculating risk and dependency propagation paths across assets and units.','Combines selected directed relationships into a network and materializes indirect relationships and links for instant risk evaluation.'),
 ('meta_class','Logical Class (Object)','Logical Classes (Objects)','Definition of logical system entities over physical tables supporting Single Table Inheritance (STI) and trash retention.','Allows customizing class captions, trash retention days, and default SVG icons.'),
 ('meta_codetable','System Codetable Item','System Codetables','Universal storage of fixed system and methodological enumerated codetables for dropdown selects.','Contains items of fixed enumerated codetables referenced by metadata columns.'),
 ('meta_column','Metadata Column','Metadata Columns','Definition of properties, labels, form controls, and relations for columns of logical classes.','Allows customizing form field labels, list headers, tooltips, and display order.'),
-('meta_link_def','Link Type Definition','Link Type Definitions','Catalog of allowed M:N relationship types between logical classes in the link table.','Defines which classes can be linked, whether the relation is mandatory, multiple, or restricted to leaf nodes.'),
+('meta_link_def','Link Type Definition','Link Type Definitions','Catalog of allowed M:N relationship types between logical classes in the link table (including reverse and derived relationships).','Defines which classes can be linked, direction type (P/R/S), whether the relation is mandatory, multiple, or exclusive.'),
 ('meta_menu','Menu Item (Navigation)','Menu Items (Navigation)','Tree structure of the main application navigation and dashboards with role-based access control.','Defines menu hierarchy, target pages, SVG icons, and required access roles.'),
 ('meta_object','System Object','System Objects','Registry of physical tables, views, functions, application pages, and UI classes.','Defines physical storage objects for logical classes and role-based access control for application pages.'),
 ('meta_original_keys','Deterministic Original Key','Deterministic Original Keys','Registry of key columns used to compute the deterministic original UUID of records.','Technical table defining MD5 hash key components for trgo_ triggers.'),

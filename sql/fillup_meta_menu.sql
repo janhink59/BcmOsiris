@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:45
+ * Verze: 2026-11-11 22:15
  * Soubor: fillup_meta_menu.sql
  * Účel:   Prvotní idempotentní naplnění systémové navigace (object_owner = 0x00)
  *         v tabulce meta_menu s rozestupy sort_code po desítkách ('010', '020'...).
@@ -11,7 +11,7 @@
  *                 Třídy aktiv, Katalog hrozeb, Katalog dopadů, Rizikové scénáře,
  *                 Katalog protiopatření, Stavy protiopatření, Hodnotící škály,
  *                 Stupně hodnotících škál, Sekundární hierarchie, Položky
- *                 sekundárních hierarchií, Definice typů vazeb.
+ *                 sekundárních hierarchií, Definice typů vazeb, Schémata sítí vztahů.
  * Vazby:  - Odkazuje na záznamy stránek (object_type = 'P') v tabulce meta_object
  *           (musí běžet až po fillup_meta_object.sql).
  *         - Využívá deterministickou funkci dbo.f_generate_original.
@@ -26,6 +26,7 @@ DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
 DECLARE @tgt_main uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_main');
 DECLARE @tgt_asset uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_asset');
 DECLARE @tgt_link uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_link');
+DECLARE @tgt_link_diagram uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_link_diagram');
 DECLARE @tgt_scen_assess uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_scenario_assessment');
 DECLARE @tgt_cm_impl uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_countermeasure_implementation');
 DECLARE @tgt_asset_class uuid = dbo.f_generate_original('meta_object', @sys_owner, 'P', 'page_asset_class');
@@ -74,6 +75,7 @@ DECLARE @mnu_scale_value uuid = dbo.f_generate_original('meta_menu', @sys_owner,
 DECLARE @mnu_hierarchy uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'hierarchy', '');
 DECLARE @mnu_hierarchy_item uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'hierarchy_item', '');
 DECLARE @mnu_meta_link_def uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_link_def', '');
+DECLARE @mnu_link_diagram uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'link_diagram', '');
 
 DECLARE @mnu_meta_folder uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'metadata_folder', '');
 DECLARE @mnu_meta_class uuid = dbo.f_generate_original('meta_menu', @sys_owner, 'meta_class', '');
@@ -117,7 +119,7 @@ INSERT INTO @init_menu (original, parent_uuid, sort_code, builtin_code, caption,
 (@mnu_cm_impl,@mnu_crmm_analysis,'050','countermeasure_implementation','Implementace protiopatření','Evidence stavu zavedení jednotlivých bezpečnostních protiopatření u konkrétních aktiv a prostorů',@tgt_cm_impl,'','U','<svg viewBox="0 0 24 24" fill="#16A34A"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>'),
 (@mnu_cm_state,@mnu_crmm_folder,'060','countermeasure_state','Stavy protiopatření','Správa číselníku stavů implementace protiopatření a jejich redukčních a rizikových faktorů',@tgt_cm_state,'','U','<svg viewBox="0 0 24 24" fill="#16A34A"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>'),
 (@mnu_crmm_analysis,@mnu_home,'010','crmm_analysis_folder','Analýza a řízení rizik (CRMM)','Provozní agenda CRMM: evidence prostorů a aktiv, správa závislostí, hodnocení rizikových scénářů a implementace protiopatření',NULL,'','U','<svg viewBox="0 0 24 24" fill="#2563EB"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>'),
-(@mnu_crmm_folder,@mnu_home,'020','crmm_folder','Nastavení a katalogy CRMM','Metodické nastavení systému CRMM pro organizaci: katalogy tříd aktiv, hrozeb, dopadů, scénářů, protiopatření, hodnotících škál, sekundárních hierarchií a typů vazeb',NULL,'','U','<svg viewBox="0 0 24 24" fill="#4F46E5"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>'),
+(@mnu_crmm_folder,@mnu_home,'020','crmm_folder','Nastavení a katalogy CRMM','Metodické nastavení systému CRMM pro organizaci: katalogy tříd aktiv, hrozeb, dopadů, scénářů, protiopatření, hodnotících škál, sekundárních hierarchií, typů vazeb a schémat sítí',NULL,'','U','<svg viewBox="0 0 24 24" fill="#4F46E5"><path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/></svg>'),
 (@mnu_csv_package,@mnu_admin,'050','csv_package','Přenos balíčků (CSV/TSV)','Export a dvoufázový import datových balíčků mezi instancemi',@tgt_csv_package,'','U','<svg viewBox="0 0 24 24" fill="#0891B2"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>'),
 (@mnu_excel_reader,@mnu_meta_folder,'050','excel_reader','Import dat z Excelu','Hromadný import a kontrola metadat ze souboru XLSX',@tgt_excel_reader,'','S','<svg viewBox="0 0 24 24" fill="#16A34A"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 15.01l1.41 1.41L11 14.84V19h2v-4.16l1.59 1.59L16 15.01 12.01 11 8 15.01z"/></svg>'),
 (@mnu_hierarchy,@mnu_crmm_folder,'090','hierarchy','Sekundární hierarchie a štítky','Správa registru sekundárních hierarchií, klasifikačních stromů, číselníků a štítků (tagů)',@tgt_hierarchy,'','U','<svg viewBox="0 0 24 24" fill="#9333EA"><path d="M22 11V3h-7v3H9V3H2v8h7V8h2v10h4v3h7v-8h-7v3h-2V8h2v3z"/></svg>'),
@@ -125,6 +127,7 @@ INSERT INTO @init_menu (original, parent_uuid, sort_code, builtin_code, caption,
 (@mnu_home,NULL,'000','home','Domů','Úvodní rozcestník aplikace',@tgt_main,'','U','<svg viewBox="0 0 24 24" fill="#2563EB"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>'),
 (@mnu_impact,@mnu_crmm_folder,'030','impact','Katalog dopadů','Správa hierarchického katalogu druhů a oblastí dopadů',@tgt_impact,'','U','<svg viewBox="0 0 24 24" fill="#EA580C"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>'),
 (@mnu_link,@mnu_crmm_analysis,'030','link','Vazby a závislosti aktiv','Správa provozních, podpůrných a prostorových vazeb M:N mezi aktivy, službami, aplikacemi, daty a personálem',@tgt_link,'','U','<svg viewBox="0 0 24 24" fill="#0891B2"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>'),
+(@mnu_link_diagram,@mnu_crmm_folder,'120','link_diagram','Schémata sítí vztahů (Diagramy)','Správa orientovaných schémat heterogenních sítí vztahů a projekce nepřímých vazeb pro výpočet cest přenosu rizik',@tgt_link_diagram,'','U','<svg viewBox="0 0 24 24" fill="#4F46E5"><path d="M14 4l2.29 2.29-2.88 2.88 1.42 1.42 2.88-2.88L20 10V4h-6zm-4 0H4v6l2.29-2.29 4.71 4.7V20h2v-8.41l-5.29-5.3L10 4z"/></svg>'),
 (@mnu_meta_class,@mnu_meta_folder,'010','meta_class','Logické třídy (Objekty)','Správa logických entit, jejich vlastností a překladů',@tgt_meta_class,'','U','<svg viewBox="0 0 24 24" fill="#4F46E5"><path d="M12 2l-5.5 9h11L12 2zm0 3.84L13.93 9h-3.87L12 5.84zM17.5 13c-2.49 0-4.5 2.01-4.5 4.5s2.01 4.5 4.5 4.5 4.5-2.01 4.5-4.5-2.01-4.5-4.5-4.5zm0 7c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5zM3 21.5h8v-8H3v8zm2-6h4v4H5v-4z"/></svg>'),
 (@mnu_meta_column,@mnu_meta_folder,'020','meta_column','Sloupce metadat','Správa definic sloupců, formulářových prvků a překladů',@tgt_meta_column,'','U','<svg viewBox="0 0 24 24" fill="#0891B2"><path d="M14.67 5v14H9.33V5h5.34zm1 14H21V5h-5.33v14zm-7.34 0V5H3v14h5.33z"/></svg>'),
 (@mnu_meta_link_def,@mnu_crmm_folder,'110','meta_link_def','Definice typů vazeb','Správa katalogu povolených typů relací a vazeb mezi logickými třídami v tabulce meta_link_def',@tgt_meta_link_def,'','U','<svg viewBox="0 0 24 24" fill="#0284C7"><path d="M17 7h-4v2h4c1.65 0 3 1.35 3 3s-1.35 3-3 3h-4v2h4c2.76 0 5-2.24 5-5s-2.24-5-5-5zm-6 8H7c-1.65 0-3-1.35-3-3s1.35-3 3-3h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-2zm-3-4h8v2H8z"/></svg>'),

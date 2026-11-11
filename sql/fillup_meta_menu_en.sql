@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:45
+ * Verze: 2026-11-11 22:15
  * Soubor: fillup_meta_menu_en.sql
  * Účel:   Hromadné idempotentní nastavení výchozích anglických překladů (jazyk 'en',
  *         record_type = 'L') pro systémové položky navigace v tabulce meta_menu
@@ -30,7 +30,7 @@ INSERT INTO @mnu_en (builtin_code, caption, description, helptext) VALUES
 ('countermeasure_implementation','Countermeasure Implementation','Registry of the implementation status of security countermeasures across specific assets and spaces','Registry of the implementation status of security countermeasures across specific assets and spaces'),
 ('countermeasure_state','Countermeasure States','Management of the codetable of countermeasure implementation states and their reduction and risk factors','Management of the codetable of countermeasure implementation states and their reduction and risk factors'),
 ('crmm_analysis_folder','Risk Analysis & Management (CRMM)','Operational CRMM agenda: spaces and asset inventory, dependency links, risk scenario assessments, and countermeasure implementation','Operational CRMM agenda: spaces and asset inventory, dependency links, risk scenario assessments, and countermeasure implementation'),
-('crmm_folder','CRMM Configuration & Catalogs','Methodological configuration of the CRMM system: catalogs of asset classes, threats, impacts, scenarios, countermeasures, assessment scales, secondary hierarchies, and link types','Methodological configuration of the CRMM system: catalogs of asset classes, threats, impacts, scenarios, countermeasures, assessment scales, secondary hierarchies, and link types'),
+('crmm_folder','CRMM Configuration & Catalogs','Methodological configuration of the CRMM system: catalogs of asset classes, threats, impacts, scenarios, countermeasures, assessment scales, secondary hierarchies, link types, and network diagrams','Methodological configuration of the CRMM system: catalogs of asset classes, threats, impacts, scenarios, countermeasures, assessment scales, secondary hierarchies, link types, and network diagrams'),
 ('csv_package','Package Transfer (CSV/TSV)','Export and two-phase import of data packages between instances','Export and two-phase import of data packages between instances'),
 ('excel_reader','Import Data from Excel','Bulk import and verification of metadata from an XLSX file','Bulk import and verification of metadata from an XLSX file'),
 ('hierarchy','Secondary Hierarchies & Tags','Management of the registry of secondary hierarchies, classification trees, codetables, and tags','Management of the registry of secondary hierarchies, classification trees, codetables, and tags'),
@@ -38,6 +38,7 @@ INSERT INTO @mnu_en (builtin_code, caption, description, helptext) VALUES
 ('home','Home','Main application dashboard','Main application dashboard'),
 ('impact','Impact Catalog','Management of the hierarchical catalog of impact types and areas','Management of the hierarchical catalog of impact types and areas'),
 ('link','Asset Links & Dependencies','Management of operational, support, and spatial M:N links between assets, services, applications, data, and personnel','Management of operational, support, and spatial M:N links between assets, services, applications, data, and personnel'),
+('link_diagram','Network Diagrams (Schemas)','Management of directed heterogeneous network schemas and projection of indirect links for risk propagation path calculation','Management of directed heterogeneous network schemas and projection of indirect links for risk propagation path calculation'),
 ('meta_class','Logical Classes (Objects)','Management of logical entities, their properties, and translations','Management of logical entities, their properties, and translations'),
 ('meta_column','Metadata Columns','Management of column definitions, form controls, and translations','Management of column definitions, form controls, and translations'),
 ('meta_link_def','Link Type Definitions','Management of the catalog of allowed relationship and link types between logical classes in meta_link_def','Management of the catalog of allowed relationship and link types between logical classes in meta_link_def'),

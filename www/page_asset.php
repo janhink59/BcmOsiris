@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-09 18:30
+ * Verze: 2026-11-11 22:00
  * Soubor: page_asset.php
  * Třída: page_asset
  * Účel: Správa prostorů (Okres -> Město -> Lokalita -> Budova -> Místnost při
@@ -17,6 +17,9 @@
  *   a implementace protiopatření (`page_countermeasure_implementation`).
  *
  * Změny:
+ * 2026-11-11 22:00 - Odstraněny vyčleněné 1:N sloupce (building_uuid, room_uuid,
+ *                    host_uuid, software_uuid, supplier_uuid); v tabulce asset
+ *                    zůstává pouze přímý parent_uuid a ostatní vazby jsou v link.
  * 2026-11-09 18:30 - Sekce názvů (caption, shortname) přesunuta na začátek detailu,
  *                    rozděleny zobrazované sloupce mezi Prostory (&group=SPACE)
  *                    a Evidence aktiv, roletka asset_archetype omezena na příslušnou
@@ -71,7 +74,7 @@ class page_asset extends abstract_page_tree {
 
 		$grp_pres = $this->phrase('grp_presentation', [], 'Prezentační texty, popis a poznámky'); // Sekce názvu a popisů
 		$grp_id   = $this->phrase('grp_identification', [], 'Klasifikace, archetyp a identifikace'); // Sekce klasifikace a kódů
-		$grp_loc  = $this->phrase('grp_placement_relations', [], 'Prostorové umístění, strom a přímé vazby (1:N)'); // Sekce umístění
+		$grp_loc  = $this->phrase('grp_placement_relations', [], 'Zařazení ve stromu (parent_uuid)'); // Sekce stromového zařazení
 		$grp_bia  = $this->phrase('grp_bia_risk_scores', [], 'Parametry dostupnosti (BIA) a agregované skóre rizik (0 až 100 %)'); // Sekce BIA a rizik
 		$grp_perm = $this->phrase('grp_validity_protection', [], 'Platnost, ikona a ochrana záznamu'); // Sekce platnosti a ikony
 
@@ -92,7 +95,7 @@ class page_asset extends abstract_page_tree {
 			$this->form_groups = [                                           // Sekce formuláře pro Prostory a lokality (bez IT/BIA polí)
 				$grp_pres => ['caption', 'shortname', 'description_text', 'help_text', 'note'], // Názvy a popisy na prvním místě
 				$grp_id   => ['asset_archetype', 'primary_asset_class', 'builtin_code', 'external_code', 'owner_user_uuid'], // Klasifikace prostoru
-				$grp_loc  => ['parent_uuid', 'sort_code', 'is_leaf', 'building_uuid'], // Strom prostorů a budova pro místnost
+				$grp_loc  => ['parent_uuid', 'sort_code', 'is_leaf'],        // Exkluzivní strom prostorů
 				$grp_bia  => ['inherent_risk_score', 'residual_risk_score'], // Agregované riziko prostoru
 				$grp_perm => ['svg_icon', 'valid_from', 'valid_to', 'is_final', 'is_protected', 'inactive'] // Ikona a platnost
 			];                                                               // Konec definice skupin pro Prostory
@@ -113,7 +116,7 @@ class page_asset extends abstract_page_tree {
 			$this->form_groups = [                                           // Sekce formuláře pro Evidenci věcných aktiv
 				$grp_pres => ['caption', 'shortname', 'description_text', 'help_text', 'note'], // Názvy a popisy na prvním místě
 				$grp_id   => ['asset_archetype', 'primary_asset_class', 'builtin_code', 'inventory_number', 'external_code', 'owner_user_uuid'], // Klasifikace aktiva
-				$grp_loc  => ['parent_uuid', 'sort_code', 'is_leaf', 'building_uuid', 'room_uuid', 'host_uuid', 'software_uuid', 'supplier_uuid'], // Umístění a vazby 1:N
+				$grp_loc  => ['parent_uuid', 'sort_code', 'is_leaf'],        // Exkluzivní stromová nadřízenost
 				$grp_bia  => ['rto_hours', 'rpo_hours', 'confidentiality_score', 'integrity_score', 'availability_score', 'inherent_risk_score', 'residual_risk_score'], // BIA a skóre rizik
 				$grp_perm => ['svg_icon', 'valid_from', 'valid_to', 'is_final', 'is_protected', 'inactive'] // Ikona a platnost
 			];                                                               // Konec definice skupin pro Evidenci aktiv
@@ -175,7 +178,7 @@ class page_asset extends abstract_page_tree {
 	}
 
 	/**
-	 * Zkontroluje povinné prostorové umístění a synchronizuje `primary_asset_class` a `building_uuid` před uložením.
+	 * Doplní výchozí `primary_asset_class` podle zvoleného archetypu před uložením.
 	 */
 	protected function process_save(): void {
 		if (isset($_POST['btn_save']) OR isset($_POST['btn_save_draft']) OR isset($_POST['btn_forward_approval'])) { // Při ukládání záznamu
@@ -187,36 +190,6 @@ class page_asset extends abstract_page_tree {
 				if ($def_pac !== '') {                                       // Pokud výchozí třída v katalogu existuje
 					$_POST['primary_asset_class'] = $def_pac;                // Doplnění do $_POST před voláním entity_manageru
 				}
-			}
-
-			// U místnosti (ROOM) synchronizujeme building_uuid a parent_uuid
-			if ($arch === 'ROOM') {                                          // Speciální ošetření pro Místnost
-				$bld = trim((string) ($_POST['building_uuid'] ?? ''));       // Zadaná budova
-				$par = trim((string) ($_POST['parent_uuid'] ?? ''));         // Zadaný nadřízený uzel ve stromu prostorů
-				if ($bld === '' AND $par !== '' AND is_guid($par)) {         // Pokud je vyplněn rodič ve stromu, ověříme zda jde o budovu
-					$p_row = sqlfirstrow("SELECT TOP 1 asset_archetype, building_uuid FROM asset WHERE original = " . guidliteral($par) . " AND record_type = 'A' AND removed = 0"); // Rodič
-					if (! empty($p_row)) {                                   // Pokud nadřízený prostor existuje
-						if ((string) $p_row['asset_archetype'] === 'BUILDING') { // Rodič je přímo budova
-							$_POST['building_uuid'] = $par;                  // Nastavení budovy podle rodiče
-							$bld = $par;                                     // Aktualizace lokální proměnné
-						} elseif (! empty($p_row['building_uuid'])) {        // Rodič je podřízená místnost v budově
-							$_POST['building_uuid'] = (string) $p_row['building_uuid']; // Převzetí budovy od nadřízené místnosti
-							$bld = (string) $p_row['building_uuid'];         // Aktualizace lokální proměnné
-						}
-					}
-				} elseif ($bld !== '' AND $par === '') {                     // Pokud je vybrána budova, ale není vyplněn rodič ve stromu
-					$_POST['parent_uuid'] = $bld;                            // Zařazení místnosti pod budovu i ve stromu prostorů
-				}
-			}
-
-			// Validace povinného umístění v budově (pro ROOM a CABLING) a v místnosti (pro PHYSICAL, HOST, DOCUMENT, MEDIA)
-			if (in_array($arch, ['ROOM', 'CABLING'], true) AND trim((string) ($_POST['building_uuid'] ?? '')) === '') { // Chybí budova
-				$this->save_error_message = $this->phrase('err_building_mandatory', [], 'Pro záznam typu Místnost (ROOM) a Kabeláž (CABLING) musí být povinně vybrána Budova (building_uuid).'); // Chyba
-				return;                                                      // Zastavení ukládání se zachováním formuláře
-			}
-			if (in_array($arch, ['PHYSICAL', 'HOST', 'DOCUMENT', 'MEDIA'], true) AND trim((string) ($_POST['room_uuid'] ?? '')) === '') { // Chybí místnost
-				$this->save_error_message = $this->phrase('err_room_mandatory', [], 'Pro fyzické aktivum, hostitelský počítač, dokument a médium musí být povinně vybrána Místnost (room_uuid).'); // Chyba
-				return;                                                      // Zastavení ukládání se zachováním formuláře
 			}
 		}
 
@@ -314,7 +287,8 @@ HTML;
 		$btn_cmi = new abstract_button('btn_asset_cms', 'Opatření ({' . chr(36) . 'count}) →', 'page_asset', '', 'btn-secondary'); // Tlačítko opatření
 		$btn_cmi->set_href('index.php?page=page_countermeasure_implementation&asset_uuid=' . urlencode($update_guid))->set_vars(['count' => $cnt_cmi]); // Odkaz na opatření
 
-		$extra = $btn_lnk->render() . "\n\t\t\t\t\t" . $btn_scn->render() . "\n\t\t\t\t\t" . $btn_cmi->render(); // Spojení tlačítek
+		$extra = $btn_lnk->render() . "\n\t\t\t\t\\t" . $btn_scn->render() . "\n\t\t\t\t\\t" . $btn_cmi->render(); // Spojení tlačítek
+		$extra = str_replace('\\t', "\t", $extra);                           // Čisté tabulátory pro odsazení
 		return ($parent_btns !== '') ? ($parent_btns . "\n\t\t\t\t\t" . $extra) : $extra; // Výsledná sada tlačítek
 	}
 
@@ -444,37 +418,11 @@ HTML;
 					}
 				}
 
-				function setRowVisible(colName, visible) {
-					const inp = form.querySelector('[name="' + colName + '"]');
-					if (!inp) return;
-					const tr = inp.closest('tr');
-					if (tr) {
-						tr.style.display = visible ? '' : 'none';
-					}
-				}
-
-				function applyArchetypeVisibility() {
-					const a = (archSel.value ? archSel.value : '').toUpperCase();
-					const needBld  = (a === 'ROOM' ? true : a === 'CABLING');
-					const needRoom = (a === 'PHYSICAL' ? true : (a === 'HOST' ? true : (a === 'DOCUMENT' ? true : a === 'MEDIA')));
-					const needHost = (a === 'APPLICATION' ? true : a === 'DATA');
-					const needSw   = (a === 'APPLICATION');
-					const needSup  = (a === 'INTERFACE' ? true : (a === 'PHYSICAL' ? true : (a === 'HOST' ? true : a === 'SOFTWARE')));
-
-					setRowVisible('building_uuid', needBld);
-					setRowVisible('room_uuid', needRoom);
-					setRowVisible('host_uuid', needHost);
-					setRowVisible('software_uuid', needSw);
-					setRowVisible('supplier_uuid', needSup);
-				}
-
 				archSel.addEventListener('change', function() {
 					rebuildPrimaryAssetClassOptions(false);
-					applyArchetypeVisibility();
 				});
 
 				rebuildPrimaryAssetClassOptions(true);
-				applyArchetypeVisibility();
 			})();
 		</script>
 HTML;

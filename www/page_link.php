@@ -1,12 +1,13 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-09 18:30
+ * Verze: 2026-11-11 22:00
  * Soubor: page_link.php
  * Třída: page_link
  * Účel: Správa provozních, katalogových a prostorových vazeb M:N v tabulce link
- *       (včetně zobrazení vazeb automaticky odvozených děděním po hierarchii
- *       s příznakem is_derived = 1).
+ *       (včetně zobrazení vazeb automaticky odvozených děděním po hierarchii,
+ *       ze sloupce parent_uuid nebo ze schémat heterogenních sítí s příznakem
+ *       is_derived = 1).
  *
  * ARCHITEKTONICKÉ VAZBY:
  * - Instancována dynamicky z routeru `index.php` při `?page=page_link`.
@@ -22,7 +23,9 @@ class page_link extends abstract_page_master_detail {
 
 	private string $filter_link_def = '';                                    // Filtr na vybraný typ vazby (meta_link_def.original)
 	private string $filter_from_object = '';                                 // Filtr na konkrétní objekt (asset/threat/scenario...)
+	private string $filter_diagram_uuid = '';                                // Filtr na schéma heterogenní sítě (link_diagram.original)
 	private string $from_object_caption = '';                                // Zobrazovaný název filtrovaného objektu
+	private string $diagram_caption = '';                                    // Zobrazovaný název filtrovaného diagramu sítě
 
 	public function __construct() {
 		parent::__construct();                                               // Inicializace správce frází a kontroly přístupu
@@ -37,6 +40,7 @@ class page_link extends abstract_page_master_detail {
 
 		$this->filter_link_def = trim((string) getinput('link_def_filter')); // Načtení filtru typu vazby z URL
 		$this->filter_from_object = trim((string) getinput('from_object'));  // Načtení filtru objektu z URL
+		$this->filter_diagram_uuid = trim((string) getinput('diagram_uuid')); // Načtení filtru diagramu z URL
 
 		$where_parts = [];                                                   // Skládání podmínky master_where
 		if ($this->filter_link_def !== '' AND is_guid($this->filter_link_def)) { // Filtr na typ vazby
@@ -50,22 +54,30 @@ class page_link extends abstract_page_master_detail {
 				$this->from_object_caption = (string) ($a_row['caption'] ?: $a_row['builtin_code']); // Uložení názvu aktiva
 			}
 		}
+		if ($this->filter_diagram_uuid !== '' AND is_guid($this->filter_diagram_uuid)) { // Filtr na schéma heterogenní sítě
+			$dg_lit = guidliteral($this->filter_diagram_uuid);               // SQL literál diagramu
+			$where_parts[] = "(m.diagram_uuid = {$dg_lit} OR m.from_object = {$dg_lit})"; // Přímé spojnice i odvozené vazby diagramu
+			$d_row = sqlfirstrow("SELECT TOP 1 caption, builtin_code FROM link_diagram WHERE original = {$dg_lit} AND record_type = 'A' AND removed = 0"); // Název diagramu
+			if (! empty($d_row)) {                                           // Pokud diagram existuje
+				$this->diagram_caption = (string) ($d_row['caption'] ?: $d_row['builtin_code']); // Uložení názvu diagramu
+			}
+		}
 
 		if (! empty($where_parts)) {                                         // Sestavení výsledné podmínky pro levý panel
 			$this->master_where = implode(' AND ', $where_parts);            // Spojení podmínek přes AND
 		}
 
 		$grp_rel  = $this->phrase('grp_link_endpoints', [], 'Typ vazby, zdrojový a cílový objekt'); // Sekce koncových bodů vazby
-		$grp_meta = $this->phrase('grp_weight_note', [], 'Váha přenosu rizika, poznámka a platnost'); // Sekce váhy a poznámky
+		$grp_meta = $this->phrase('grp_weight_note', [], 'Váha přenosu rizika, původ, poznámka a platnost'); // Sekce váhy a poznámky
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_rel  => ['link_def', 'from_object', 'to_object'],           // Klíčové složky vazby
-			$grp_meta => ['link_weight', 'note', 'valid_from', 'valid_to', 'inactive'] // Váha, poznámka a platnost záznamu
+			$grp_meta => ['link_weight', 'reverse_link_weight', 'diagram_uuid', 'note', 'valid_from', 'valid_to', 'inactive'] // Váha, diagram, poznámka a platnost
 		];                                                                   // Konec definice skupin formuláře
 	}
 
 	/**
-	 * Rozšíří kontextový přívažek URL o parametry `link_def_filter` a `from_object`.
+	 * Rozšíří kontextový přívažek URL o parametry `link_def_filter`, `from_object` a `diagram_uuid`.
 	 */
 	protected function get_context_url_suffix(): string {
 		$suffix = parent::get_context_url_suffix();                          // Základní kontextové parametry z předka
@@ -74,6 +86,9 @@ class page_link extends abstract_page_master_detail {
 		}
 		if ($this->filter_from_object !== '' AND ! str_contains($suffix, '&from_object=')) { // Zachování filtru objektu
 			$suffix .= '&from_object=' . urlencode($this->filter_from_object); // Připojení from_object
+		}
+		if ($this->filter_diagram_uuid !== '' AND ! str_contains($suffix, '&diagram_uuid=')) { // Zachování filtru diagramu
+			$suffix .= '&diagram_uuid=' . urlencode($this->filter_diagram_uuid); // Připojení diagram_uuid
 		}
 		return $suffix;                                                      // Vrácení přívažku URL
 	}
@@ -109,6 +124,12 @@ class page_link extends abstract_page_master_detail {
 			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM countermeasure WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
 			UNION ALL
 			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM hierarchy_item WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
+			UNION ALL
+			SELECT original, COALESCE(NULLIF(caption, ''), shortname) AS cap FROM organization_unit WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
+			UNION ALL
+			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM link_diagram WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
+			UNION ALL
+			SELECT original, COALESCE(NULLIF(caption_forward, ''), link_code) AS cap FROM meta_link_def WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
 		");                                                                  // Jednorázové načtení názvů propojovaných objektů
 		if (is_array($obj_rows)) {                                           // Naplnění mapy objektů
 			foreach ($obj_rows as $or) {                                     // Průchod objekty
@@ -120,9 +141,18 @@ class page_link extends abstract_page_master_detail {
 	}
 
 	/**
-	 * Vykreslí horní ovládací prvky levého panelu (návrat na aktivum, filtr typu vazby a tlačítko + Nová vazba).
+	 * Vykreslí horní ovládací prvky levého panelu (návrat na aktivum nebo diagram, filtr typu vazby a tlačítko + Nová vazba).
 	 */
 	protected function render_master_top(): void {
+		if ($this->filter_diagram_uuid !== '') {                             // Návratové tlačítko při příchodu z page_link_diagram
+			$back_dg_url = "index.php?page=page_link_diagram&update_guid=" . urlencode($this->filter_diagram_uuid); // URL diagramu
+			$btn_back_dg = new abstract_button('btn_back_to_diagram', '← Zpět na schéma sítě: {' . chr(36) . 'diagram}', 'page_link', '', 'btn-secondary'); // Tlačítko
+			$btn_back_dg->set_href($back_dg_url)                             // Nastavení cílové URL
+				->set_vars(['diagram' => $this->diagram_caption ?: $this->filter_diagram_uuid]) // Název diagramu
+				->set_style('width: 100%; justify-content: center; margin-bottom: 8px;'); // Stylování
+			echo $btn_back_dg->render();                                     // Vykreslení návratového tlačítka
+		}
+
 		if ($this->filter_from_object !== '') {                              // Návratové tlačítko při příchodu z page_asset
 			$back_url = "index.php?page=page_asset&update_guid=" . urlencode($this->filter_from_object); // URL aktiva
 			$btn_back = new abstract_button('btn_back_to_asset', '← Zpět na aktivum: {' . chr(36) . 'asset}', 'page_link', '', 'btn-secondary'); // Tlačítko
@@ -162,11 +192,12 @@ class page_link extends abstract_page_master_detail {
 
 		$lbl_flt = htmlspecialchars($this->phrase('lbl_filter_link_def', [], 'Typ vazby (link_def):')); // Popisek roletky
 		$from_part = ($this->filter_from_object !== '') ? ('&from_object=' . urlencode($this->filter_from_object)) : ''; // Zachování from_object
+		$diag_part = ($this->filter_diagram_uuid !== '') ? ('&diagram_uuid=' . urlencode($this->filter_diagram_uuid)) : ''; // Zachování diagram_uuid
 
 		echo <<<HTML
 		<div style="margin-bottom: 10px;">
 			<label style="font-size: 12px; color: #555; display: block; margin-bottom: 4px;">{$lbl_flt}</label>
-			<select onchange="document.location='index.php?page=page_link{$from_part}&link_def_filter=' + encodeURIComponent(this.value);" style="width: 100%; padding: 6px; box-sizing: border-box;">
+			<select onchange="document.location='index.php?page=page_link{$from_part}{$diag_part}&link_def_filter=' + encodeURIComponent(this.value);" style="width: 100%; padding: 6px; box-sizing: border-box;">
 				{$options_html}
 			</select>
 		</div>
@@ -279,15 +310,21 @@ HTML;
 		if ($update_guid === 'NEW' AND is_array($datarow) AND ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') { // Nová vazba
 			if ($this->filter_link_def !== '') {                             // Předvyplnění typu vazby z filtru
 				$datarow['link_def'] = $this->filter_link_def;               // Nastavení link_def
+			} elseif ($this->filter_diagram_uuid !== '') {                   // Při přidávání spojnice do diagramu předvyplníme diagram_includes_link_def
+				$dg_def = sqlfirstrow("SELECT TOP 1 original FROM meta_link_def WHERE link_code = 'diagram_includes_link_def' AND record_type = 'A' AND removed = 0"); // Vztah diagramu
+				if (! empty($dg_def['original'])) {                          // Pokud vztah v DB existuje
+					$datarow['link_def'] = (string) $dg_def['original'];     // Nastavení link_def pro spojnici diagramu
+				}
+				$datarow['from_object'] = $this->filter_diagram_uuid;        // Předvyplnění diagramu jako zdroje
 			}
 			if ($this->filter_from_object !== '') {                          // Předvyplnění zdrojového objektu z filtru
 				$datarow['from_object'] = $this->filter_from_object;         // Nastavení from_object
 			}
 		}
 
-		if ($update_guid !== '' AND $update_guid !== 'NEW' AND ! empty($datarow['is_derived'])) { // Zděděná vazba
+		if ($update_guid !== '' AND $update_guid !== 'NEW' AND ! empty($datarow['is_derived'])) { // Zděděná nebo stromová vazba
 			$this->is_readonly = true;                                       // Uzamčení zděděné vazby v detailu
-			$msg_der = htmlspecialchars($this->phrase('msg_derived_link_readonly', [], 'Tato vazba vznikla automatickým děděním z nadřízeného uzlu hierarchie (is_derived = 1). Zděděnou vazbu nelze ručně přepisovat; upravte ji na zdrojovém nadřízeném uzlu.')); // Info
+			$msg_der = htmlspecialchars($this->phrase('msg_derived_link_readonly', [], 'Tato vazba vznikla automatickým děděním po hierarchii, ze sloupce parent_uuid nebo projekcí ze schématu sítě (is_derived = 1). Zděděnou vazbu nelze ručně přepisovat; upravte ji na zdrojovém záznamu nebo diagramu.')); // Info
 			echo "<div class=\"msg-info\" style=\"margin-bottom: 12px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e;\">{$msg_der}</div>\n"; // Žlutý pruh
 		}
 
@@ -393,13 +430,15 @@ HTML;
 					populateEndpointSelect(fromSel, cfg.from_class, preserveCurrent);
 					populateEndpointSelect(toSel, cfg.to_class, preserveCurrent);
 
-					const wInp = form.querySelector('[name="link_weight"]');
-					if (wInp) {
-						const wTr = wInp.closest('tr');
-						if (wTr) {
-							wTr.style.display = cfg.weight === 1 ? '' : 'none';
+					['link_weight', 'reverse_link_weight'].forEach(function(col) {
+						const wInp = form.querySelector('[name="' + col + '"]');
+						if (wInp) {
+							const wTr = wInp.closest('tr');
+							if (wTr) {
+								wTr.style.display = cfg.weight === 1 ? '' : 'none';
+							}
 						}
-					}
+					});
 				}
 
 				if (defSel) {
