@@ -1,15 +1,20 @@
 /* =============================================================================
- * Verze: 2026-10-30 23:35
+ * Verze: 2026-11-11 21:30
  * Soubor: table_link.sql
  * Tabulka: link
- * Popis:   Univerzální transakční tabulka pro uživatelské i zděděné vazby mezi
- *          záznamy. Konkrétní smysl a typ vazby (např. 1:N, M:N, leaf_only)
+ * Popis:   Univerzální transakční tabulka pro uživatelské, stromové (parent_uuid)
+ *          i hierarchicky či diagramově odvozené vazby mezi záznamy.
+ *          Konkrétní smysl a typ vztahu (např. 1:N, M:N, leaf_only, direction_type)
  *          diktuje definiční tabulka "meta_link_def".
- * Vazby:   - link_def (UUID) ukazuje na definici vazby (meta_link_def.original).
+ * Vazby:   - link_def (UUID) ukazuje na definici vztahu (meta_link_def.original).
  *          - from_object a to_object (UUID) ukazují na originály cílových záznamů.
  *          - ancestor_link (UUID) ukazuje na link.original nadřízené vazby,
  *            ze které tato vazba vznikla děděním po hierarchii (0x00 = přímá vazba).
- * Změny:   - 2026-10-30 23:35: Přidán sloupec ancestor_link uuid NOT NULL DEFAULT 0x00,
+ *          - diagram_uuid (UUID) ukazuje na link_diagram.original u nepřímých
+ *            vazeb materializovaných ze schématu heterogenní sítě.
+ * Změny:   - 2026-11-11 21:30: Přidány sloupce reverse_link_weight a diagram_uuid
+ *            a index ix_link_diagram.
+ *          - 2026-10-30 23:35: Přidán sloupec ancestor_link uuid NOT NULL DEFAULT 0x00,
  *            zařazen do unikátního indexu uq_link_active_definition a vytvořen
  *            index ix_link_ancestor_link pro rychlé přepočty děděných vazeb.
  *          - 2026-10-23 11:00: Doplněny SSC sloupce draft_author, approval_note,
@@ -48,19 +53,21 @@ CREATE TABLE link(
 	-- -------------------------------------------------------------------------
 	-- Datové atributy vazby
 	-- -------------------------------------------------------------------------
-	link_def uuid NOT NULL,                            -- Odkaz na definici vazby (meta_link_def.original)
+	link_def uuid NOT NULL,                            -- Odkaz na definici vztahu (meta_link_def.original)
 	from_object uuid NOT NULL,                         -- UUID originálu zdrojového objektu
 	to_object uuid NOT NULL,                           -- UUID originálu cílového objektu
-	ancestor_link uuid NOT NULL DEFAULT 0x00,          -- UUID zdrojové vazby v link při dědění (0x00 = ručně zadaná vazba)
+	ancestor_link uuid NOT NULL DEFAULT 0x00,          -- UUID zdrojové vazby při dědění / projekci (0x00 = ručně zadaná vazba)
+	diagram_uuid uuid NULL,                            -- Odkaz na link_diagram.original u vazby vygenerované z diagramu sítě
 	
 	-- Metriky a vlastnosti uplatněné přímo na konkrétní instanci vazby
-	link_weight decimal(16,4) NULL,                    -- Kvantitativní hodnota (např. váha rizika nebo priorita vazby)
+	link_weight decimal(16,4) NULL,                    -- Kvantitativní hodnota v přímém směru (váha přenosu rizika / priorita)
+	reverse_link_weight decimal(16,4) NULL,            -- Volitelná kvantitativní hodnota v opačném směru
 	note varchar(max) NOT NULL DEFAULT '',             -- Umožňuje tenantovi okomentovat si důvod propojení
 	
 	-- -------------------------------------------------------------------------
 	-- Systémová příznaková data
 	-- -------------------------------------------------------------------------
-	is_derived bit NOT NULL DEFAULT 0,                 -- 1 = Vazba vznikla děděním (ancestor_link <> 0x00), 0 = přímá vazba
+	is_derived bit NOT NULL DEFAULT 0,                 -- 1 = Vazba vznikla děděním, ze sloupce parent_uuid nebo z diagramu sítě
 
 	CONSTRAINT pk_link PRIMARY KEY (uuid)
 );
@@ -73,6 +80,8 @@ EXEC p_create_missing_column 'link', 'draft_author', 'uuid NOT NULL DEFAULT 0x00
 EXEC p_create_missing_column 'link', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'link', 'import_origin', 'varchar(255) NULL';
 EXEC p_create_missing_column 'link', 'ancestor_link', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'link', 'diagram_uuid', 'uuid NULL';
+EXEC p_create_missing_column 'link', 'reverse_link_weight', 'decimal(16,4) NULL';
 GO
 
 -- -----------------------------------------------------------------------------
@@ -143,4 +152,12 @@ EXEC sp_create_index
 	@colnames = 'ancestor_link, object_owner', 
 	@uni = '', 
 	@options = 'WHERE ancestor_link <> 0x00';
+GO
+
+EXEC sp_create_index 
+	@tname = 'link', 
+	@iname = 'ix_link_diagram', 
+	@colnames = 'diagram_uuid, object_owner', 
+	@uni = '', 
+	@options = 'WHERE diagram_uuid IS NOT NULL';
 GO

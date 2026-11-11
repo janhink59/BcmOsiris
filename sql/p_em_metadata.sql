@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 18:30
+ * Verze: 2026-11-11 21:30
  * Soubor: p_em_metadata.sql
  * Procedury: dbo.p_em_get_class_meta, dbo.p_em_get_columns_meta,
  *            dbo.p_em_get_select_options
@@ -14,12 +14,8 @@
  *            STI filtrování podle asset_archetype, asset_class_by_archetype a
  *            rekurzivní stromové vazby parent_uuid s vyloučením vlastního podstromu).
  * Vazby:  - Voláno z PHP třídy entity_manager (entity_manager.php, entity_manager_ui.php),
- *           page_asset.php, page_link.php, page_hierarchy_item.php,
+ *           page_asset.php, page_link.php, page_link_diagram.php, page_hierarchy_item.php,
  *           page_scale_value.php a page_approval.php.
- * Změny:  - 2026-11-09 18:30: V p_em_get_select_options doplněn režim
- *           @mode = 'asset_class_by_archetype' pro filtrování koncových tříd
- *           aktiv podle zvoleného archetypu a v @mode = 'parent_tree' povolen
- *           výběr uzlu pro automatické rozčlenění listu na složku (+ _oth).
  * ============================================================================= */
 
 EXECUTE dropni 'p_em_get_class_meta', 'P';
@@ -375,7 +371,6 @@ BEGIN
 		) tr
 		WHERE x.rn = 1;
 
-		-- Propagace root_archetype z kořenové třídy archetypu (např. ac_site -> SITE) na všechny její podřízené podtřídy
 		WHILE @@ROWCOUNT > 0
 		BEGIN
 			UPDATE ch
@@ -399,7 +394,6 @@ BEGIN
 	END
 
 	-- 3. Stromový výběr nadřízeného uzlu (parent_uuid) s ochranou proti zacyklení
-	--    (Umožňuje vybrat i dosavadní koncový uzel, který se při uložení nového potomka automaticky rozčlení přes _oth)
 	IF @mode = 'parent_tree' AND @storage_table <> '' AND OBJECT_ID(@storage_table, 'U') IS NOT NULL
 	BEGIN
 		DECLARE @has_code bit = CASE WHEN COL_LENGTH(@storage_table, 'builtin_code') IS NOT NULL THEN 1 ELSE 0 END;
@@ -563,7 +557,9 @@ BEGIN
 
 		IF @ref_table = 'meta_link_def'
 		BEGIN
-			SELECT a.original, a.link_code AS code_col, COALESCE(tr.caption_forward, a.caption_forward, a.link_code) AS caption
+			SELECT a.original, a.link_code AS code_col,
+				COALESCE(tr.caption_forward, a.caption_forward, a.link_code)
+				+ CASE WHEN a.direction_type = 'R' THEN ' [R]' WHEN a.direction_type = 'S' THEN ' [S]' ELSE '' END AS caption
 			FROM meta_link_def a
 			OUTER APPLY (
 				SELECT TOP 1 l.caption_forward
@@ -573,12 +569,16 @@ BEGIN
 				  AND NULLIF(CAST(l.caption_forward AS VARCHAR(MAX)), '') IS NOT NULL
 				ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = @org_sql THEN 0 ELSE 1 END ASC
 			) tr
-			WHERE a.object_owner IN (0x00, @org_sql) AND a.record_type = 'A' AND a.removed = 0 AND a.inactive = 0
-			ORDER BY a.link_code;
+			WHERE a.object_owner IN (0x00, @org_sql)
+			  AND a.record_type = 'A'
+			  AND a.removed = 0
+			  AND a.inactive = 0
+			  AND (@ref_table <> @storage_table OR @curr_guid IS NULL OR a.original <> @curr_guid)
+			ORDER BY a.is_derived ASC, a.link_code ASC;
 			RETURN;
 		END
 
-		-- Obecná cílová tabulka (hierarchy, scale, scale_value, organization, asset_class, asset...)
+		-- Obecná cílová tabulka (hierarchy, scale, scale_value, organization, asset_class, asset, link_diagram...)
 		DECLARE @ref_has_code bit = CASE WHEN COL_LENGTH(@ref_table, 'builtin_code') IS NOT NULL THEN 1 ELSE 0 END;
 		DECLARE @ref_has_login bit = CASE WHEN COL_LENGTH(@ref_table, 'login_name') IS NOT NULL THEN 1 ELSE 0 END;
 		DECLARE @ref_has_sort bit = CASE WHEN COL_LENGTH(@ref_table, 'sort_code') IS NOT NULL THEN 1 ELSE 0 END;

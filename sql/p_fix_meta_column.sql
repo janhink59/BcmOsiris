@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 16:30
+ * Verze: 2026-11-11 21:30
  * Soubor: p_fix_meta_column.sql
  * Procedury: dbo.p_sync_hierarchy_to_meta_class, dbo.p_fix_meta_column
  * Účel: 1. dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
@@ -17,10 +17,10 @@
  *   meta_class, meta_column a meta_codetable.
  *
  * Změny:
- * - 2026-11-09 16:30: Sekce 5b optimalizována: 16 sekvenčních UPDATE bloků pro
- *   referenced_class a referenced_codetable nahrazeno jedinou mapovací tabulkou
- *   @ref_map a jedním hromadným dotazem UPDATE. Doplněno výchozí list_order
- *   pro tabulky asset, scenario_assessment, countermeasure_implementation a link.
+ * - 2026-11-11 21:30: Opraven filtr u indexu uq_<tab>_language na record_type = 'L'.
+ *   Z @ref_map odstraněny zrušené 1:N sloupce tabulky asset a doplněny vazby
+ *   pro reverse_link_def, diagram_uuid a číselník link_direction_type.
+ * - 2026-11-09 16:30: Sekce 5b optimalizována přes mapovací tabulku @ref_map.
  * ============================================================================= */
 
 EXECUTE dropni 'p_fix_meta_column', 'P';
@@ -259,7 +259,7 @@ BEGIN
 				@iname = @idx_lang,
 				@colnames = 'original, object_owner, language',
 				@uni = 'UNIQUE',
-				@options = 'WHERE record_type = ''A'' AND removed = 0';
+				@options = 'WHERE record_type = ''L'' AND removed = 0';
 		END
 
 		SET @idx_draft = 'uq_' + @rac_tab + '_draft';
@@ -887,37 +887,35 @@ BEGIN
 	);
 
 	INSERT INTO @ref_map (column_name, ref_class_name, ref_codetable, force_if_sys) VALUES
-		('scale_type',            NULL,                   'scale_type',      0),
-		('asset_archetype',       NULL,                   'asset_archetype', 0),
-		('parent_class',          'meta_class',           NULL,              0),
-		('ancestor_class',        'meta_class',           NULL,              0),
-		('referenced_class',      'meta_class',           NULL,              0),
-		('from_class',            'meta_class',           NULL,              0),
-		('to_class',              'meta_class',           NULL,              0),
-		('storage_object',        'meta_object',          NULL,              0),
-		('target_object',         'meta_object',          NULL,              0),
-		('ancestor',              'meta_column',          NULL,              1),
-		('link_def',              'meta_link_def',        NULL,              0),
-		('owner_user_uuid',       'user_account',         NULL,              0),
-		('assessor_user_uuid',    'user_account',         NULL,              0),
-		('responsible_user_uuid', 'user_account',         NULL,              0),
-		('manager_uuid',          'user_account',         NULL,              0),
-		('hierarchy',             'hierarchy',            NULL,              0),
-		('scale',                 'scale',                NULL,              0),
-		('asset_class_uuid',      'asset_class',          NULL,              0),
-		('primary_asset_class',   'asset_class',          NULL,              0),
-		('threat_uuid',           'threat',               NULL,              0),
-		('scenario_uuid',         'scenario',             NULL,              0),
-		('countermeasure_uuid',   'countermeasure',       NULL,              0),
-		('state_uuid',            'countermeasure_state', NULL,              0),
-		('asset_uuid',            'asset',                NULL,              0),
-		('from_object',           'asset',                NULL,              0),
-		('to_object',             'asset',                NULL,              0),
-		('building_uuid',         'asset_building',       NULL,              0),
-		('room_uuid',             'asset_room',           NULL,              0),
-		('host_uuid',             'asset_host',           NULL,              0),
-		('software_uuid',         'asset_software',       NULL,              0),
-		('supplier_uuid',         'asset_supplier',       NULL,              0);
+		('scale_type',            NULL,                   'scale_type',          0),
+		('asset_archetype',       NULL,                   'asset_archetype',     0),
+		('direction_type',        NULL,                   'link_direction_type', 0),
+		('parent_class',          'meta_class',           NULL,                  0),
+		('ancestor_class',        'meta_class',           NULL,                  0),
+		('referenced_class',      'meta_class',           NULL,                  0),
+		('from_class',            'meta_class',           NULL,                  0),
+		('to_class',              'meta_class',           NULL,                  0),
+		('storage_object',        'meta_object',          NULL,                  0),
+		('target_object',         'meta_object',          NULL,                  0),
+		('ancestor',              'meta_column',          NULL,                  1),
+		('link_def',              'meta_link_def',        NULL,                  0),
+		('reverse_link_def',      'meta_link_def',        NULL,                  0),
+		('diagram_uuid',          'link_diagram',         NULL,                  0),
+		('owner_user_uuid',       'user_account',         NULL,                  0),
+		('assessor_user_uuid',    'user_account',         NULL,                  0),
+		('responsible_user_uuid', 'user_account',         NULL,                  0),
+		('manager_uuid',          'user_account',         NULL,                  0),
+		('hierarchy',             'hierarchy',            NULL,                  0),
+		('scale',                 'scale',                NULL,                  0),
+		('asset_class_uuid',      'asset_class',          NULL,                  0),
+		('primary_asset_class',   'asset_class',          NULL,                  0),
+		('threat_uuid',           'threat',               NULL,                  0),
+		('scenario_uuid',         'scenario',             NULL,                  0),
+		('countermeasure_uuid',   'countermeasure',       NULL,                  0),
+		('state_uuid',            'countermeasure_state', NULL,                  0),
+		('asset_uuid',            'asset',                NULL,                  0),
+		('from_object',           'asset',                NULL,                  0),
+		('to_object',             'asset',                NULL,                  0);
 
 	UPDATE mc
 	SET mc.referenced_codetable = CASE
@@ -948,7 +946,7 @@ BEGIN
 	  AND column_name = 'parent_uuid'
 	  AND referenced_class IS NULL;
 
-	-- Naplnění systémových číselníků scale_type a asset_archetype v tabulce meta_codetable (A + symetrické L)
+	-- Naplnění systémových číselníků scale_type, asset_archetype a link_direction_type v tabulce meta_codetable
 	IF OBJECT_ID('meta_codetable', 'U') IS NOT NULL
 	BEGIN
 		DECLARE @ct_items TABLE (
@@ -959,27 +957,30 @@ BEGIN
 			caption_en varchar(200)
 		);
 		INSERT INTO @ct_items VALUES
-			('scale_type',      'THREAT',        '010', 'Hrozba / Pravděpodobnost',                'Threat / Probability'),
-			('scale_type',      'VULNERABILITY', '020', 'Zranitelnost',                            'Vulnerability'),
-			('scale_type',      'IMPACT',        '030', 'Dopad / Kritičnost aktiv',                'Impact / Asset Criticality'),
-			('scale_type',      'RISK',          '040', 'Výsledné riziko / Míra ohrožení',         'Resulting Risk / Threat Level'),
-			('asset_archetype', 'DISTRICT',      '010', 'Okres / region (prostor)',                'District / Region (Space)'),
-			('asset_archetype', 'CITY',          '020', 'Město / obec (prostor)',                  'City / Municipality (Space)'),
-			('asset_archetype', 'SITE',          '030', 'Lokalita / areál (prostor)',              'Site / Campus (Space)'),
-			('asset_archetype', 'BUILDING',      '040', 'Budova (povinný prostor)',                'Building (Mandatory Space)'),
-			('asset_archetype', 'ROOM',          '050', 'Místnost / sál (prostor v budově)',       'Room / Hall (Space in Building)'),
-			('asset_archetype', 'PHYSICAL',      '060', 'Fyzické aktivum / hardware (v místnosti)','Physical Asset / Hardware (in Room)'),
-			('asset_archetype', 'HOST',          '070', 'Hostitelský počítač / server (v místnosti)','Host Computer / Server (in Room)'),
-			('asset_archetype', 'CABLING',       '080', 'Kabeláž a rozvody (v budově)',            'Cabling & Wiring (in Building)'),
-			('asset_archetype', 'DOCUMENT',      '090', 'Dokument (uložený v místnosti)',          'Document (Stored in Room)'),
-			('asset_archetype', 'MEDIA',         '100', 'Médium / nosič dat (uložený v místnosti)','Storage Media / Carrier (in Room)'),
-			('asset_archetype', 'DATA',          '110', 'Datové aktivum (informace / databáze)',   'Data Asset (Information / Database)'),
-			('asset_archetype', 'SOFTWARE',      '120', 'Software (vyvíjený / pořizovaný)',        'Software (Developed / Procured)'),
-			('asset_archetype', 'APPLICATION',   '130', 'Aplikace (instalovaná instance)',         'Application (Installed Instance)'),
-			('asset_archetype', 'SERVICE',       '140', 'Služba (interní / zákaznická)',           'Service (Internal / Customer-Facing)'),
-			('asset_archetype', 'INTERFACE',     '150', 'Služba typu Interface (internet/hlas/video)','Interface Service (Internet/Voice/Video)'),
-			('asset_archetype', 'PERSONNEL',     '160', 'Personál / klíčová role',                 'Personnel / Key Role'),
-			('asset_archetype', 'SUPPLIER',      '170', 'Dodavatel / externí partner',             'Supplier / External Partner');
+			('scale_type',          'THREAT',        '010', 'Hrozba / Pravděpodobnost',                  'Threat / Probability'),
+			('scale_type',          'VULNERABILITY', '020', 'Zranitelnost',                              'Vulnerability'),
+			('scale_type',          'IMPACT',        '030', 'Dopad / Kritičnost aktiv',                  'Impact / Asset Criticality'),
+			('scale_type',          'RISK',          '040', 'Výsledné riziko / Míra ohrožení',           'Resulting Risk / Threat Level'),
+			('asset_archetype',     'DISTRICT',      '010', 'Okres / region (prostor)',                  'District / Region (Space)'),
+			('asset_archetype',     'CITY',          '020', 'Město / obec (prostor)',                    'City / Municipality (Space)'),
+			('asset_archetype',     'SITE',          '030', 'Lokalita / areál (prostor)',                'Site / Campus (Space)'),
+			('asset_archetype',     'BUILDING',      '040', 'Budova (povinný prostor)',                  'Building (Mandatory Space)'),
+			('asset_archetype',     'ROOM',          '050', 'Místnost / sál (prostor v budově)',         'Room / Hall (Space in Building)'),
+			('asset_archetype',     'PHYSICAL',      '060', 'Fyzické aktivum / hardware (v místnosti)',  'Physical Asset / Hardware (in Room)'),
+			('asset_archetype',     'HOST',          '070', 'Hostitelský počítač / server (v místnosti)','Host Computer / Server (in Room)'),
+			('asset_archetype',     'CABLING',       '080', 'Kabeláž a rozvody (v budově)',              'Cabling & Wiring (in Building)'),
+			('asset_archetype',     'DOCUMENT',      '090', 'Dokument (uložený v místnosti)',            'Document (Stored in Room)'),
+			('asset_archetype',     'MEDIA',         '100', 'Médium / nosič dat (uložený v místnosti)',  'Storage Media / Carrier (in Room)'),
+			('asset_archetype',     'DATA',          '110', 'Datové aktivum (informace / databáze)',     'Data Asset (Information / Database)'),
+			('asset_archetype',     'SOFTWARE',      '120', 'Software (vyvíjený / pořizovaný)',          'Software (Developed / Procured)'),
+			('asset_archetype',     'APPLICATION',   '130', 'Aplikace (instalovaná instance)',           'Application (Installed Instance)'),
+			('asset_archetype',     'SERVICE',       '140', 'Služba (interní / zákaznická)',             'Service (Internal / Customer-Facing)'),
+			('asset_archetype',     'INTERFACE',     '150', 'Služba typu Interface (internet/hlas/video)','Interface Service (Internet/Voice/Video)'),
+			('asset_archetype',     'PERSONNEL',     '160', 'Personál / klíčová role',                   'Personnel / Key Role'),
+			('asset_archetype',     'SUPPLIER',      '170', 'Dodavatel / externí partner',               'Supplier / External Partner'),
+			('link_direction_type', 'P',             '010', 'Primární (řídící směr)',                    'Primary (Controlling Direction)'),
+			('link_direction_type', 'R',             '020', 'Zpětný (reverzní směr)',                    'Reverse (Backward Direction)'),
+			('link_direction_type', 'S',             '030', 'Symetrický (neorientovaný vztah)',          'Symmetric (Undirected Relation)');
 
 		INSERT INTO meta_codetable (
 			uuid, object_owner, original, record_type, approval_status, [language],

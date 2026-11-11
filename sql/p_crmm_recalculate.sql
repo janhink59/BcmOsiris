@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 16:30
+ * Verze: 2026-11-11 21:30
  * Soubor: p_crmm_recalculate.sql
  * Procedura: dbo.p_crmm_recalculate
  * Účel:   Centrální výpočetní procedura modulu CRMM (Custom Risk Management Module):
@@ -11,18 +11,18 @@
  *            - inherent_risk_score (normalizovaný průměr hrozby, zranitelnosti
  *              a dopadu v intervalu 0..100 %),
  *            - reduction_score (průměrná efektivní redukce z opatření
- *              aplikovaných na daném aktivu či jeho prostoru a navázaných na scénář),
+ *              aplikovaných na daném aktivu či jeho nadřazeném prostoru v link
+ *              a navázaných na scénář/hrozbu přes countermeasure_mitigates_*),
  *            - min_risk_floor_score (maximum ze scenario.residual_risk_min_score
  *              a efektivního rizikového faktoru neimplementovaných opatření),
  *            - residual_risk_score (zbytkové riziko po redukci, omezené shora 100 %
  *              a zdola prahem min_risk_floor_score).
  *         3. Agreguje vypočtené inherentní a reziduální riziko na jednotlivá
- *            aktiva v tabulce asset a propaguje skóre rizik a CIA dopadů po
- *            provozních vazbách v tabulce link (Data/Host/SW -> Aplikace -> Služba).
+ *            aktiva v tabulce asset a propaguje skóre rizik po orientovaných
+ *            provozních a prostorových vazbách v tabulce link.
  * Vazby:  - Volána automaticky z entity_manager_ssc::run_post_save_hooks()
  *           a z akčních tlačítek na stránkách page_asset, page_scenario_assessment
  *           a page_countermeasure_implementation.
- *         - Automaticky zařazena v BuildListDb.txt přes masku p_*.sql.
  * ============================================================================= */
 
 EXECUTE dropni 'p_crmm_recalculate', 'P';
@@ -48,6 +48,10 @@ BEGIN
 		WHERE spid = @@SPID;
 	END
 	SET @org_uuid = ISNULL(@org_uuid, 0x00);
+
+	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+	DECLARE @mld_cm_scen uniqueidentifier = dbo.f_generate_original('meta_link_def', @sys_owner, 'countermeasure_mitigates_scenario', '');
+	DECLARE @mld_cm_thrt uniqueidentifier = dbo.f_generate_original('meta_link_def', @sys_owner, 'countermeasure_mitigates_threat', '');
 
 	-- =========================================================================
 	-- 1. PŘEPOČET EFEKTIVNÍCH FAKTORŮ V TABULCE countermeasure_implementation
@@ -172,8 +176,8 @@ BEGIN
 		ORDER BY CASE WHEN sc.object_owner = @org_uuid THEN 0 ELSE 1 END
 	) sc_info
 	OUTER APPLY (
-		-- Aplikovaná protiopatření na hodnoceném aktivu (nebo jeho místnosti/budově/rodiči)
-		--Pokud má scénář v tabulce link navázaná specifická opatření, uplatní se ta; jinak všechna opatření aktiva.
+		-- Aplikovaná protiopatření na hodnoceném aktivu nebo na nadřazeném prostoru/aktivu v tabulce link.
+		-- Kontrola specifických opatření scénáře/hrozby je omezena výhradně na vztahy countermeasure_mitigates_*.
 		SELECT
 			ISNULL(AVG(ci.effective_reduction_factor), 0.0000) AS avg_red,
 			ISNULL(MAX(ci.effective_risk_factor), 0.0000) AS max_rsk
@@ -182,12 +186,26 @@ BEGIN
 		  AND ci.record_type = 'A'
 		  AND ci.removed = 0
 		  AND ci.inactive = 0
-		  AND ci.asset_uuid IN (sa.asset_uuid, a.room_uuid, a.building_uuid, a.parent_uuid)
+		  AND (
+			ci.asset_uuid = sa.asset_uuid
+			OR ci.asset_uuid = a.parent_uuid
+			OR EXISTS (
+				SELECT 1
+				FROM link loc_l
+				WHERE loc_l.from_object = sa.asset_uuid
+				  AND loc_l.to_object = ci.asset_uuid
+				  AND loc_l.object_owner IN (@org_uuid, 0x00)
+				  AND loc_l.record_type = 'A'
+				  AND loc_l.removed = 0
+				  AND loc_l.inactive = 0
+			)
+		  )
 		  AND (
 			NOT EXISTS (
 				SELECT 1
 				FROM link l
 				WHERE l.from_object IN (sa.scenario_uuid, sc_info.threat_uuid)
+				  AND l.link_def IN (@mld_cm_scen, @mld_cm_thrt)
 				  AND l.object_owner IN (@org_uuid, 0x00)
 				  AND l.record_type = 'A'
 				  AND l.removed = 0
@@ -197,6 +215,7 @@ BEGIN
 				SELECT 1
 				FROM link l
 				WHERE l.from_object IN (sa.scenario_uuid, sc_info.threat_uuid)
+				  AND l.link_def IN (@mld_cm_scen, @mld_cm_thrt)
 				  AND l.to_object = ci.countermeasure_uuid
 				  AND l.object_owner IN (@org_uuid, 0x00)
 				  AND l.record_type = 'A'
@@ -261,7 +280,7 @@ BEGIN
 	  );
 
 	-- =========================================================================
-	-- 3. AGREGACE RIZIK NA AKTIVA A ŠÍŘENÍ PO VAZBÁCH V TABULCE link
+	-- 3. AGREGACE RIZIK NA AKTIVA A ŠÍŘENÍ PO ORIENTOVANÝCH VAZBÁCH V TABULCE link
 	-- =========================================================================
 	DECLARE @asset_scores TABLE (
 		asset_uuid uniqueidentifier NOT NULL PRIMARY KEY,
@@ -295,10 +314,9 @@ BEGIN
 	  AND a.record_type = 'A'
 	  AND a.removed = 0;
 
-	-- 3b. Vícekrokový přenos rizik po orientovaných závislostech v tabulce link
-	--     (od podpůrných aktiv to_object -> k závislým aktivům from_object, např. Data/Host/SW -> Aplikace -> Služba)
+	-- 3b. Vícekrokový přenos rizik po orientovaných závislostech v tabulce link (direction_type IN ('P', 'S'))
 	DECLARE @pass int = 1;
-	WHILE @pass <= 3
+	WHILE @pass <= 6
 	BEGIN
 		UPDATE src
 		SET src.prop_inh = CASE
@@ -315,7 +333,7 @@ BEGIN
 				MAX(
 					CAST(
 						ROUND(
-							target_sc.prop_inh * CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 THEN l.link_weight / 100.0000 ELSE 1.0000 END,
+							target_sc.prop_inh * CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 AND l.diagram_uuid IS NULL THEN l.link_weight / 100.0000 ELSE 1.0000 END,
 							4
 						) AS decimal(9,4)
 					)
@@ -323,12 +341,17 @@ BEGIN
 				MAX(
 					CAST(
 						ROUND(
-							target_sc.prop_res * CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 THEN l.link_weight / 100.0000 ELSE 1.0000 END,
+							target_sc.prop_res * CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 AND l.diagram_uuid IS NULL THEN l.link_weight / 100.0000 ELSE 1.0000 END,
 							4
 						) AS decimal(9,4)
 					)
 				) AS max_dep_res
 			FROM link l
+			JOIN meta_link_def mld
+				ON mld.original = l.link_def
+				AND mld.record_type = 'A'
+				AND mld.removed = 0
+				AND mld.direction_type IN ('P', 'S')
 			JOIN @asset_scores target_sc ON target_sc.asset_uuid = l.to_object
 			WHERE l.from_object = src.asset_uuid
 			  AND l.object_owner IN (@org_uuid, 0x00)

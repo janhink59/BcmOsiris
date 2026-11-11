@@ -1,12 +1,12 @@
 /* =============================================================================
- * Verze: 2026-11-09 18:30
+ * Verze: 2026-11-11 21:30
  * Soubor: changes_2026.sql
  * Účel:   Jednorázové změny struktury a dat databáze v kalendářním roce 2026.
  *         Spouští se samostatně PŘED hlavním slepeným skriptem BcmOsirisDb.sql.
  *
  * Pravidla pro údržbu a přidávání změn:
  * - Verze databáze (system_constant.database_version) má formát 'RR.MM.DD.N'
- *   (např. '26.11.09.0', kde poslední číslice N je intradenní pořadí změny).
+ *   (např. '26.11.11.0', kde poslední číslice N je intradenní pořadí změny).
  * - Všechny změnové bloky běží v transakci zahájené příkazem BEGIN TRAN.
  * - Příkaz COMMIT musí být uveden VÝHRADNĚ na konci posledního odladěného bloku
  *   (předchozí příkazy COMMIT při přidání nového bloku odstraň).
@@ -22,6 +22,11 @@
  *   databází neprovede žádné změny a nezpůsobí žádnou škodu.
  *
  * Změny:
+ * - 2026-11-11 21:30 (26.11.11.0): Rozšíření meta_link_def (reverse_link_def,
+ *   direction_type, is_exclusive_parent, is_derived, diagram_uuid) a link
+ *   (reverse_link_weight, diagram_uuid), vytvoření tabulky link_diagram,
+ *   odstranění redundantních 1:N sloupců z tabulky asset (building_uuid,
+ *   room_uuid, host_uuid, software_uuid, supplier_uuid) a oprava uq_%_language.
  * - 2026-11-09 18:30 (26.11.09.0): Sjednocení builtin_code a link_code na
  *   striktní snake_case a odstranění starých záznamů porušujících snake_case.
  * - 2026-11-04 15:15 (26.11.04.1): Doplnění sloupce is_default do hierarchy_item,
@@ -479,6 +484,112 @@ BEGIN
 		'26.11.09.0',
 		'Sjednocení builtin_code a link_code na snake_case a odstranění starých nekonformních dat'
 	);
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Verze 26.11.11.0: Obousměrné vztahy v meta_link_def, vyčištění 1:N sloupců
+--                   z asset, tabulka link_diagram a projekce nepřímých vazeb
+-- -----------------------------------------------------------------------------
+IF EXISTS (
+	SELECT 1
+	FROM system_constant
+	WHERE database_version < '26.11.11.0'
+)
+BEGIN
+	PRINT '11.11.2026 (26.11.11.0): Rozšíření meta_link_def a link, tabulka link_diagram a odstranění 1:N sloupců z asset';
+
+	-- 1. Odstranění redundantních vazebních sloupců z tabulky asset (ponechává se pouze přímý parent_uuid)
+	IF OBJECT_ID('asset', 'U') IS NOT NULL
+	BEGIN
+		EXEC sp_drop_index 'asset', 'ix_asset_locations';
+
+		IF COL_LENGTH('asset', 'building_uuid') IS NOT NULL
+		BEGIN
+			EXEC('UPDATE asset SET parent_uuid = building_uuid WHERE parent_uuid IS NULL AND building_uuid IS NOT NULL');
+			EXEC sp_drop_column 'asset', 'building_uuid';
+		END
+
+		IF COL_LENGTH('asset', 'room_uuid') IS NOT NULL
+		BEGIN
+			EXEC('UPDATE asset SET parent_uuid = room_uuid WHERE parent_uuid IS NULL AND room_uuid IS NOT NULL');
+			EXEC sp_drop_column 'asset', 'room_uuid';
+		END
+
+		EXEC sp_drop_column 'asset', 'host_uuid';
+		EXEC sp_drop_column 'asset', 'software_uuid';
+		EXEC sp_drop_column 'asset', 'supplier_uuid';
+	END
+
+	-- 2. Rozšíření tabulky meta_link_def pro zpětné vztahy, exkluzivní parent_uuid a odvozené vztahy z diagramů
+	IF OBJECT_ID('meta_link_def', 'U') IS NOT NULL
+	BEGIN
+		EXEC p_create_missing_column 'meta_link_def', 'reverse_link_def', 'uuid NULL';
+		EXEC p_create_missing_column 'meta_link_def', 'direction_type', 'varchar(1) NOT NULL DEFAULT ''P''';
+		EXEC p_create_missing_column 'meta_link_def', 'is_exclusive_parent', 'bit NOT NULL DEFAULT 0';
+		EXEC p_create_missing_column 'meta_link_def', 'is_derived', 'bit NOT NULL DEFAULT 0';
+		EXEC p_create_missing_column 'meta_link_def', 'diagram_uuid', 'uuid NULL';
+	END
+
+	-- 3. Rozšíření tabulky link o zpětnou váhu a identifikátor diagramu pro materializované nepřímé vazby
+	IF OBJECT_ID('link', 'U') IS NOT NULL
+	BEGIN
+		EXEC p_create_missing_column 'link', 'reverse_link_weight', 'decimal(16,4) NULL';
+		EXEC p_create_missing_column 'link', 'diagram_uuid', 'uuid NULL';
+	END
+
+	-- 4. Založení tabulky link_diagram (pokud ještě neexistuje)
+	IF OBJECT_ID('link_diagram', 'U') IS NULL
+	BEGIN
+		CREATE TABLE link_diagram (
+			uuid uuid NOT NULL,
+			object_owner uuid NOT NULL DEFAULT 0x00,
+			original uuid NOT NULL DEFAULT 0x00,
+			record_type varchar(1) NOT NULL DEFAULT 'A',
+			approval_status varchar(1) NOT NULL DEFAULT 'A',
+			draft_author uuid NOT NULL DEFAULT 0x00,
+			approval_note varchar(max) NOT NULL DEFAULT '',
+			inactive bit NOT NULL DEFAULT 0,
+			removed bit NOT NULL DEFAULT 0,
+			language varchar(2) NOT NULL DEFAULT 'cs',
+			valid_from date NOT NULL DEFAULT '1970-01-01',
+			valid_to date NULL,
+			is_template bit NOT NULL DEFAULT 0,
+			template uuid NULL,
+			import_origin varchar(255) NULL,
+			date_created datetime NOT NULL DEFAULT getdate(),
+			who_created uuid NOT NULL DEFAULT 0x00,
+			date_modified datetime NOT NULL DEFAULT getdate(),
+			who_modified uuid NOT NULL DEFAULT 0x00,
+			builtin_code varchar(80) NOT NULL DEFAULT '',
+			external_code varchar(40) NOT NULL DEFAULT '',
+			caption varchar(200) NOT NULL DEFAULT '',
+			shortname varchar(40) NOT NULL DEFAULT '',
+			description_text varchar(max) NOT NULL DEFAULT '',
+			help_text varchar(max) NOT NULL DEFAULT '',
+			svg_icon varchar(max) NOT NULL DEFAULT '',
+			sort_code varchar(20) NOT NULL DEFAULT '',
+			is_final bit NOT NULL DEFAULT 0,
+			is_protected bit NOT NULL DEFAULT 0,
+			CONSTRAINT pk_link_diagram PRIMARY KEY (uuid)
+		);
+	END
+
+	EXEC sp_drop_default 'system_constant', 'database_version';
+
+	ALTER TABLE system_constant
+		ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.11.11.0' FOR database_version;
+
+	UPDATE system_constant
+	SET database_version = '26.11.11.0',
+		date_modified = GETDATE();
+
+	INSERT INTO service_logbook ([name], [version], content)
+	VALUES (
+		'changes_2026.sql',
+		'26.11.11.0',
+		'Rozšíření meta_link_def a link pro zpětné vztahy, exkluzivní parent_uuid a projekci diagramů, vytvoření link_diagram a vyčištění asset'
+	);
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
 	COMMIT;
@@ -498,7 +609,7 @@ GO
 -- =============================================================================
 IF @@TRANCOUNT > 0 ROLLBACK;
 
-DECLARE @expected_version varchar(20) = '26.11.09.0';                          -- Požadovaná cílová verze tohoto skriptu
+DECLARE @expected_version varchar(20) = '26.11.11.0';                          -- Požadovaná cílová verze tohoto skriptu
 DECLARE @current_version varchar(20) = '';                                     -- Skutečná verze zjištěná v system_constant
 DECLARE @msg varchar(800) = '';                                                -- Text výsledné zprávy pro operátora
 DECLARE @severity int = 16;                                                    -- Závažnost (1 = OK/Info, 16 = Červená chyba)

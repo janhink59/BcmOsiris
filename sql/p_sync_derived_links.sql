@@ -1,28 +1,28 @@
 /* =============================================================================
- * Verze: 2026-11-09 18:30
+ * Verze: 2026-11-11 21:30
  * Soubor: p_sync_derived_links.sql
  * Funkce:    dbo.f_is_hierarchy_node_locked
- * Procedury: dbo.p_sync_derived_links, dbo.p_split_hierarchy_node_to_folder
+ * Procedury: dbo.p_sync_derived_links, dbo.p_rebuild_link_diagram,
+ *            dbo.p_split_hierarchy_node_to_folder
  * Účel:   1. Funkce f_is_hierarchy_node_locked ověří, zda je daný uzel hierarchie
  *            (nebo libovolný podřízený uzel v jeho podstromu) již navázán na jiné
  *            entity v tabulkách link, scenario, asset, scenario_assessment nebo
  *            countermeasure_implementation.
- *         2. Procedura p_sync_derived_links provádí materializaci (a výmaz)
- *            zděděných vazeb v tabulce link pomocí sloupce ancestor_link.
- *         3. Procedura p_split_hierarchy_node_to_folder automaticky rozčlení
- *            koncový uzel (is_leaf = 1) na vnitřní složku (is_leaf = 0): pokud
- *            jsou na uzel již navázány záznamy, založí pod ním nový koncový
- *            uzel s builtin_code '<parent>_oth' ('... – ostatní') a převede na
- *            něj stávající vazby a záznamy.
- * Vazby:  - Čte tabulky link, meta_link_def, meta_class, meta_object, asset_class,
- *           threat, impact, scenario, countermeasure, hierarchy, hierarchy_item,
- *           asset, scenario_assessment, countermeasure_implementation a v_syscolumns.
- *         - Využívá deterministické funkce dbo.f_generate_original a dbo.f_link_original.
- *         - Volána z entity_manager_ui.php, entity_manager_write.php,
- *           entity_manager_ssc.php a abstract_page_tree.php.
+ *         2. Procedura p_sync_derived_links automaticky zrcadlí exkluzivní
+ *            stromové vazby parent_uuid do tabulky link (is_derived = 1) a
+ *            provádí materializaci zděděných vazeb přes ancestor_link.
+ *         3. Procedura p_rebuild_link_diagram vyhodnotí pomocí funkce
+ *            dbo.f_resolve_link_diagram cesty v heterogenní síti diagramu
+ *            (link_diagram) a projektuje nepřímé vztahy do meta_link_def
+ *            (is_derived = 1, diagram_uuid) a nepřímé vazby uzlů do tabulky
+ *            link (is_derived = 1, diagram_uuid).
+ *         4. Procedura p_split_hierarchy_node_to_folder automaticky rozčlení
+ *            koncový uzel (is_leaf = 1) na vnitřní složku (is_leaf = 0) a
+ *            založí podřízený uzel '<parent>_oth' ('... – ostatní').
  * ============================================================================= */
 
 EXECUTE dropni 'p_split_hierarchy_node_to_folder', 'P';
+EXECUTE dropni 'p_rebuild_link_diagram', 'P';
 EXECUTE dropni 'p_sync_derived_links', 'P';
 EXECUTE dropni 'f_is_hierarchy_node_locked', 'FN';
 GO
@@ -137,17 +137,6 @@ BEGIN
 			  AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
 		END
 
-		IF EXISTS (
-			SELECT 1
-			FROM asset a
-			JOIN @subtree s
-				ON s.original IN (a.building_uuid, a.room_uuid, a.host_uuid, a.software_uuid, a.supplier_uuid)
-			WHERE a.record_type = 'A'
-			  AND a.removed = 0
-			  AND NOT EXISTS (SELECT 1 FROM @subtree self_s WHERE self_s.original = a.original)
-		)
-			RETURN 1;
-
 		IF OBJECT_ID('scenario_assessment', 'U') IS NOT NULL
 			IF EXISTS (SELECT 1 FROM scenario_assessment sa JOIN @subtree s ON s.original = sa.asset_uuid WHERE sa.record_type = 'A' AND sa.removed = 0)
 				RETURN 1;
@@ -174,7 +163,9 @@ BEGIN
 				FROM hierarchy_item hi
 				JOIN @subtree s ON s.original = hi.hierarchy
 				JOIN link l ON (l.from_object = hi.original OR l.to_object = hi.original)
+				LEFT JOIN meta_link_def mld ON mld.original = l.link_def AND mld.record_type = 'A' AND mld.removed = 0
 				WHERE hi.record_type = 'A' AND hi.removed = 0 AND l.record_type = 'A' AND l.removed = 0
+				  AND ISNULL(mld.is_exclusive_parent, 0) = 0
 			)
 				RETURN 1;
 	END
@@ -192,16 +183,375 @@ BEGIN
 	END
 
 	-- 2. Společná kontrola platných vazeb v tabulce link na libovolný uzel podstromu
+	--    (Ignorujeme zrcadlené vazby parent_uuid s is_exclusive_parent = 1 a odvozené projekce diagramů)
 	IF EXISTS (
 		SELECT 1
 		FROM link l
 		JOIN @subtree s ON s.original = l.from_object OR s.original = l.to_object
+		LEFT JOIN meta_link_def mld ON mld.original = l.link_def AND mld.record_type = 'A' AND mld.removed = 0
 		WHERE l.record_type = 'A'
 		  AND l.removed = 0
+		  AND l.diagram_uuid IS NULL
+		  AND ISNULL(mld.is_exclusive_parent, 0) = 0
 	)
 		RETURN 1;
 
 	RETURN 0;
+END
+GO
+
+/* =============================================================================
+ * Procedura: dbo.p_rebuild_link_diagram
+ * Účel: Vyhodnotí orientované vztahy zařazené do diagramu (link_diagram) pomocí
+ *       funkce dbo.f_resolve_link_diagram:
+ *       1. Pro každou dosažitelnou dvojici tříd (from_class -> ... -> to_class)
+ *          v diagramu vygeneruje/zaktualizuje odvozený vztah v meta_link_def
+ *          (is_derived = 1, diagram_uuid = @diag).
+ *       2. Pro každou acyklickou cestu mezi konkrétními objekty (uzly) v síti
+ *          diagramu vygeneruje/zaktualizuje odvozenou vazbu v tabulce link
+ *          (is_derived = 1, diagram_uuid = @diag).
+ * ============================================================================= */
+CREATE PROCEDURE dbo.p_rebuild_link_diagram
+	@diagram_uuid uniqueidentifier = NULL,
+	@org_uuid uniqueidentifier = NULL
+AS
+BEGIN
+	SET NOCOUNT ON;
+	SET XACT_ABORT ON;
+
+	IF OBJECT_ID('link_diagram', 'U') IS NULL
+	   OR OBJECT_ID('meta_link_def', 'U') IS NULL
+	   OR OBJECT_ID('link', 'U') IS NULL
+	   OR OBJECT_ID('dbo.f_resolve_link_diagram', 'TF') IS NULL
+		RETURN;
+
+	IF @org_uuid IS NULL
+	BEGIN
+		SELECT TOP 1 @org_uuid = ISNULL(organization, 0x00)
+		FROM dbsession
+		WHERE spid = @@SPID;
+	END
+	SET @org_uuid = ISNULL(@org_uuid, 0x00);
+
+	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+	DECLARE @mld_diag_inc uniqueidentifier = dbo.f_generate_original('meta_link_def', @sys_owner, 'diagram_includes_link_def', '');
+
+	-- 1. Odstranění odvozených záznamů pro smazané nebo neaktivní diagramy
+	DELETE l
+	FROM link l
+	LEFT JOIN link_diagram d
+		ON d.original = l.diagram_uuid
+		AND d.record_type = 'A'
+		AND d.removed = 0
+		AND d.inactive = 0
+	WHERE l.diagram_uuid IS NOT NULL
+	  AND l.is_derived = 1
+	  AND (@diagram_uuid IS NULL OR l.diagram_uuid = @diagram_uuid)
+	  AND d.uuid IS NULL;
+
+	DELETE mld
+	FROM meta_link_def mld
+	LEFT JOIN link_diagram d
+		ON d.original = mld.diagram_uuid
+		AND d.record_type = 'A'
+		AND d.removed = 0
+		AND d.inactive = 0
+	WHERE mld.diagram_uuid IS NOT NULL
+	  AND mld.is_derived = 1
+	  AND (@diagram_uuid IS NULL OR mld.diagram_uuid = @diagram_uuid)
+	  AND d.uuid IS NULL;
+
+	-- 2. Seznam aktivních diagramů ke zpracování
+	DECLARE @diags TABLE (
+		diag_orig uniqueidentifier NOT NULL PRIMARY KEY,
+		diag_owner uniqueidentifier NOT NULL,
+		diag_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+		diag_caption varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+		[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL
+	);
+
+	INSERT INTO @diags (diag_orig, diag_owner, diag_code, diag_caption, [language])
+	SELECT original, object_owner, builtin_code, caption, [language]
+	FROM (
+		SELECT d.original, d.object_owner, d.builtin_code, d.caption, d.[language],
+			ROW_NUMBER() OVER (PARTITION BY d.original ORDER BY CASE WHEN d.object_owner = @org_uuid THEN 0 ELSE 1 END) AS rn
+		FROM link_diagram d
+		WHERE d.object_owner IN (@org_uuid, 0x00)
+		  AND d.record_type = 'A'
+		  AND d.removed = 0
+		  AND d.inactive = 0
+		  AND (@diagram_uuid IS NULL OR d.original = @diagram_uuid)
+	) x
+	WHERE x.rn = 1;
+
+	DECLARE @d_orig uniqueidentifier, @d_owner uniqueidentifier, @d_code varchar(80), @d_cap varchar(200), @d_lang varchar(2);
+
+	DECLARE cur_diag CURSOR LOCAL FAST_FORWARD FOR
+		SELECT diag_orig, diag_owner, diag_code, diag_caption, [language]
+		FROM @diags;
+
+	OPEN cur_diag;
+	FETCH NEXT FROM cur_diag INTO @d_orig, @d_owner, @d_code, @d_cap, @d_lang;
+
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+		-- A. Načtení základních vztahů (meta_link_def) zařazených do tohoto diagramu
+		DECLARE @inc_defs TABLE (
+			mld_orig uniqueidentifier NOT NULL PRIMARY KEY,
+			from_class uniqueidentifier NOT NULL,
+			to_class uniqueidentifier NOT NULL,
+			direction_type varchar(1) COLLATE DATABASE_DEFAULT NOT NULL,
+			reverse_link_def uniqueidentifier NULL,
+			edge_weight decimal(9,4) NOT NULL
+		);
+		DELETE FROM @inc_defs;
+
+		INSERT INTO @inc_defs (mld_orig, from_class, to_class, direction_type, reverse_link_def, edge_weight)
+		SELECT
+			mld.original,
+			mld.from_class,
+			mld.to_class,
+			ISNULL(NULLIF(mld.direction_type, ''), 'P'),
+			mld.reverse_link_def,
+			CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 THEN CAST(l.link_weight AS decimal(9,4)) ELSE 100.0000 END
+		FROM link l
+		JOIN meta_link_def mld
+			ON mld.original = l.to_object
+			AND mld.record_type = 'A'
+			AND mld.removed = 0
+			AND mld.inactive = 0
+			AND mld.is_derived = 0
+		WHERE l.link_def = @mld_diag_inc
+		  AND l.from_object = @d_orig
+		  AND l.object_owner IN (@d_owner, @org_uuid, 0x00)
+		  AND l.record_type = 'A'
+		  AND l.removed = 0
+		  AND l.inactive = 0;
+
+		-- B. Sestavení metagrafu tříd v diagramu přes dbo.f_resolve_link_diagram
+		DECLARE @cls_in tt_resolve_link_diagram;
+		DELETE FROM @cls_in;
+
+		INSERT INTO @cls_in (node_id, from_id, sort_order)
+		SELECT DISTINCT LOWER(CAST(c_uuid AS varchar(36))), '', LOWER(CAST(c_uuid AS varchar(36)))
+		FROM (
+			SELECT from_class AS c_uuid FROM @inc_defs
+			UNION
+			SELECT to_class AS c_uuid FROM @inc_defs
+		) u;
+
+		INSERT INTO @cls_in (node_id, from_id, sort_order)
+		SELECT DISTINCT
+			LOWER(CAST(to_class AS varchar(36))),
+			LOWER(CAST(from_class AS varchar(36))),
+			LOWER(CAST(to_class AS varchar(36)))
+		FROM @inc_defs
+		WHERE from_class <> to_class;
+
+		-- C. Dosažitelné dvojice tříd v diagramu (včetně vnitrotřídních self-referencing cest)
+		DECLARE @cls_pairs TABLE (
+			from_class uniqueidentifier NOT NULL,
+			to_class uniqueidentifier NOT NULL,
+			derived_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			derived_orig uniqueidentifier NOT NULL,
+			caption_cs varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			PRIMARY KEY (from_class, to_class)
+		);
+		DELETE FROM @cls_pairs;
+
+		INSERT INTO @cls_pairs (from_class, to_class, derived_code, derived_orig, caption_cs)
+		SELECT
+			p.fc_uuid,
+			p.tc_uuid,
+			v.d_code,
+			dbo.f_generate_original('meta_link_def', @d_owner, v.d_code, ''),
+			LEFT('[' + @d_code + '] ' + ISNULL(mc_f.caption, mc_f.class_name) + ' -> ' + ISNULL(mc_t.caption, mc_t.class_name), 200)
+		FROM (
+			SELECT DISTINCT
+				TRY_CONVERT(uniqueidentifier, root_id) AS fc_uuid,
+				TRY_CONVERT(uniqueidentifier, node_id) AS tc_uuid
+			FROM dbo.f_resolve_link_diagram(@cls_in)
+			WHERE level >= 1 AND bad = 0
+			UNION
+			SELECT DISTINCT from_class, to_class
+			FROM @inc_defs
+		) p
+		JOIN meta_class mc_f ON mc_f.original = p.fc_uuid AND mc_f.record_type = 'A' AND mc_f.removed = 0 AND mc_f.object_owner IN (0x00, @d_owner)
+		JOIN meta_class mc_t ON mc_t.original = p.tc_uuid AND mc_t.record_type = 'A' AND mc_t.removed = 0 AND mc_t.object_owner IN (0x00, @d_owner)
+		CROSS APPLY (
+			SELECT LOWER(LEFT('dg_' + @d_code + '_' + mc_f.class_name + '_' + mc_t.class_name, 80)) AS d_code
+		) v
+		WHERE p.fc_uuid IS NOT NULL AND p.tc_uuid IS NOT NULL;
+
+		-- Odstranění neplatných odvozených vztahů diagramu z meta_link_def
+		DELETE mld
+		FROM meta_link_def mld
+		WHERE mld.diagram_uuid = @d_orig
+		  AND mld.is_derived = 1
+		  AND NOT EXISTS (SELECT 1 FROM @cls_pairs cp WHERE cp.derived_orig = mld.original);
+
+		-- Vložení/aktualizace odvozených vztahů diagramu v meta_link_def (A + symetrické L)
+		INSERT INTO meta_link_def (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			link_code, from_class, to_class, direction_type,
+			caption_forward, caption_backward,
+			is_multiple, is_mandatory, leaf_only, link_weight_enabled,
+			is_derived, diagram_uuid, is_final, is_protected
+		)
+		SELECT
+			cp.derived_orig, @d_owner, cp.derived_orig, 'A', 'A', @d_lang,
+			cp.derived_code, cp.from_class, cp.to_class, 'P',
+			cp.caption_cs, cp.caption_cs,
+			1, 0, 0, 1,
+			1, @d_orig, 1, 1
+		FROM @cls_pairs cp
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_link_def ex
+			WHERE ex.original = cp.derived_orig AND ex.object_owner = @d_owner AND ex.record_type = 'A'
+		);
+
+		INSERT INTO meta_link_def (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			link_code, from_class, to_class, direction_type,
+			caption_forward, caption_backward,
+			is_multiple, is_mandatory, leaf_only, link_weight_enabled,
+			is_derived, diagram_uuid, is_final, is_protected
+		)
+		SELECT
+			NEWID(), @d_owner, cp.derived_orig, 'L', 'A', @d_lang,
+			cp.derived_code, cp.from_class, cp.to_class, 'P',
+			cp.caption_cs, cp.caption_cs,
+			1, 0, 0, 1,
+			1, @d_orig, 1, 1
+		FROM @cls_pairs cp
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_link_def ex
+			WHERE ex.original = cp.derived_orig AND ex.object_owner = @d_owner AND ex.record_type = 'L' AND ex.[language] = @d_lang
+		);
+
+		-- D. Sestavení sítě konkrétních objektů (uzlů) po všech spojnicích diagramu
+		DECLARE @edges TABLE (
+			from_obj uniqueidentifier NOT NULL,
+			to_obj uniqueidentifier NOT NULL,
+			PRIMARY KEY (from_obj, to_obj)
+		);
+		DELETE FROM @edges;
+
+		INSERT INTO @edges (from_obj, to_obj)
+		SELECT DISTINCT src.from_obj, src.to_obj
+		FROM (
+			-- 1. Přímé a symetrické vazby uložené pod mld_orig
+			SELECT l.from_object AS from_obj, l.to_object AS to_obj
+			FROM @inc_defs idf
+			JOIN link l
+				ON l.link_def = idf.mld_orig
+				AND l.object_owner IN (@org_uuid, @d_owner, 0x00)
+				AND l.record_type = 'A'
+				AND l.removed = 0
+				AND l.inactive = 0
+				AND l.diagram_uuid IS NULL
+			WHERE idf.direction_type IN ('P', 'S', 'R')
+
+			UNION
+
+			-- 2. Zpětné vztahy ('R') a opačný směr symetrických vztahů ('S') čtené z kanonického záznamu v link
+			SELECT l.to_object AS from_obj, l.from_object AS to_obj
+			FROM @inc_defs idf
+			JOIN link l
+				ON (
+					(idf.direction_type = 'R' AND l.link_def = idf.reverse_link_def)
+					OR (idf.direction_type = 'S' AND l.link_def = idf.mld_orig)
+				)
+				AND l.object_owner IN (@org_uuid, @d_owner, 0x00)
+				AND l.record_type = 'A'
+				AND l.removed = 0
+				AND l.inactive = 0
+				AND l.diagram_uuid IS NULL
+		) src
+		WHERE src.from_obj <> src.to_obj;
+
+		DECLARE @obj_in tt_resolve_link_diagram;
+		DELETE FROM @obj_in;
+
+		INSERT INTO @obj_in (node_id, from_id, sort_order)
+		SELECT DISTINCT LOWER(CAST(o_uuid AS varchar(36))), '', LOWER(CAST(o_uuid AS varchar(36)))
+		FROM (
+			SELECT from_obj AS o_uuid FROM @edges
+			UNION
+			SELECT to_obj AS o_uuid FROM @edges
+		) u;
+
+		INSERT INTO @obj_in (node_id, from_id, sort_order)
+		SELECT
+			LOWER(CAST(to_obj AS varchar(36))),
+			LOWER(CAST(from_obj AS varchar(36))),
+			LOWER(CAST(to_obj AS varchar(36)))
+		FROM @edges;
+
+		-- E. Zjištění třídy každého zapojeného objektu pro spárování s @cls_pairs
+		DECLARE @obj_class TABLE (
+			obj_orig uniqueidentifier NOT NULL PRIMARY KEY,
+			cls_orig uniqueidentifier NOT NULL
+		);
+		DELETE FROM @obj_class;
+
+		INSERT INTO @obj_class (obj_orig, cls_orig)
+		SELECT a.original, dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset_' + LOWER(a.asset_archetype), '')
+		FROM asset a
+		WHERE a.object_owner IN (@org_uuid, 0x00) AND a.record_type = 'A' AND a.removed = 0
+		  AND EXISTS (SELECT 1 FROM @obj_in oi WHERE oi.from_id = '' AND oi.node_id = LOWER(CAST(a.original AS varchar(36))));
+
+		INSERT INTO @obj_class (obj_orig, cls_orig)
+		SELECT ou.original, dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'organization_unit', '')
+		FROM organization_unit ou
+		WHERE ou.object_owner IN (@org_uuid, 0x00) AND ou.record_type = 'A' AND ou.removed = 0
+		  AND NOT EXISTS (SELECT 1 FROM @obj_class ex WHERE ex.obj_orig = ou.original)
+		  AND EXISTS (SELECT 1 FROM @obj_in oi WHERE oi.from_id = '' AND oi.node_id = LOWER(CAST(ou.original AS varchar(36))));
+
+		-- F. Projekce vyřešených cest z f_resolve_link_diagram do tabulky link (is_derived = 1, diagram_uuid = @d_orig)
+		DELETE FROM link
+		WHERE diagram_uuid = @d_orig
+		  AND object_owner = @org_uuid
+		  AND is_derived = 1;
+
+		INSERT INTO link (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			link_def, from_object, to_object, ancestor_link, diagram_uuid,
+			link_weight, note, is_derived
+		)
+		SELECT
+			x.calc_orig, @org_uuid, x.calc_orig, 'A', 'A', @d_lang,
+			cp.derived_orig, paths.f_obj, paths.t_obj, @d_orig, @d_orig,
+			CAST(paths.min_lvl AS decimal(16,4)), '', 1
+		FROM (
+			SELECT
+				TRY_CONVERT(uniqueidentifier, r.root_id) AS f_obj,
+				TRY_CONVERT(uniqueidentifier, r.node_id) AS t_obj,
+				MIN(r.level) AS min_lvl
+			FROM dbo.f_resolve_link_diagram(@obj_in) r
+			WHERE r.level >= 1
+			  AND r.bad = 0
+			GROUP BY r.root_id, r.node_id
+		) paths
+		JOIN @obj_class oc_f ON oc_f.obj_orig = paths.f_obj
+		JOIN @obj_class oc_t ON oc_t.obj_orig = paths.t_obj
+		JOIN @cls_pairs cp ON cp.from_class = oc_f.cls_orig AND cp.to_class = oc_t.cls_orig
+		CROSS APPLY (
+			SELECT dbo.f_link_original(
+				CAST(@org_uuid AS varchar(36)),
+				CAST(cp.derived_orig AS varchar(36)),
+				CAST(paths.f_obj AS varchar(36)),
+				CAST(paths.t_obj AS varchar(36)),
+				CAST(@d_orig AS varchar(36))
+			) AS calc_orig
+		) x
+		WHERE paths.f_obj <> paths.t_obj;
+
+		FETCH NEXT FROM cur_diag INTO @d_orig, @d_owner, @d_code, @d_cap, @d_lang;
+	END
+
+	CLOSE cur_diag;
+	DEALLOCATE cur_diag;
 END
 GO
 
@@ -215,7 +565,99 @@ BEGIN
 	SET NOCOUNT ON;
 	SET XACT_ABORT ON;
 
-	-- 1. Odstranění osiřelých odvozených vazeb, jejichž kořenová vazba již neexistuje nebo je zrušená/neaktivní
+	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
+
+	-- 0. Automatické zrcadlení exkluzivních stromových vztahů parent_uuid do tabulky link (is_derived = 1)
+	IF @root_link_original IS NULL AND OBJECT_ID('meta_link_def', 'U') IS NOT NULL
+	BEGIN
+		DECLARE @parent_tabs TABLE (
+			tabname varchar(128) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+			link_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL
+		);
+		INSERT INTO @parent_tabs (tabname, link_code) VALUES
+			('asset',          'asset_has_parent'),
+			('asset_class',    'asset_class_has_parent'),
+			('threat',         'threat_has_parent'),
+			('impact',         'impact_has_parent'),
+			('scenario',       'scenario_has_parent'),
+			('countermeasure', 'countermeasure_has_parent'),
+			('hierarchy_item', 'hierarchy_item_has_parent');
+
+		DECLARE @pt_tab varchar(128), @pt_code varchar(80);
+		DECLARE cur_pt CURSOR LOCAL FAST_FORWARD FOR
+			SELECT tabname, link_code FROM @parent_tabs;
+
+		OPEN cur_pt;
+		FETCH NEXT FROM cur_pt INTO @pt_tab, @pt_code;
+
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			IF OBJECT_ID(@pt_tab, 'U') IS NOT NULL AND COL_LENGTH(@pt_tab, 'parent_uuid') IS NOT NULL
+			BEGIN
+				DECLARE @mld_par uuid = dbo.f_generate_original('meta_link_def', @sys_owner, @pt_code, '');
+				IF EXISTS (SELECT 1 FROM meta_link_def WHERE original = @mld_par AND record_type = 'A' AND removed = 0)
+				BEGIN
+					DECLARE @sql_par nvarchar(max) = N'
+					DELETE l
+					FROM link l
+					LEFT JOIN [' + @pt_tab + N'] src
+						ON src.original = l.from_object
+						AND src.parent_uuid = l.to_object
+						AND src.object_owner = l.object_owner
+						AND src.record_type = ''A''
+						AND src.removed = 0
+						AND src.inactive = 0
+					WHERE l.link_def = @p_mld
+					  AND l.is_derived = 1
+					  AND l.ancestor_link = 0x00
+					  AND src.uuid IS NULL;
+
+					INSERT INTO link (
+						uuid, object_owner, original, record_type, approval_status, [language],
+						link_def, from_object, to_object, ancestor_link, is_derived,
+						date_created, who_created, date_modified, who_modified
+					)
+					SELECT
+						x.calc_orig, src.object_owner, x.calc_orig, ''A'', ''A'', src.[language],
+						@p_mld, src.original, src.parent_uuid, 0x00, 1,
+						src.date_created, src.who_created, src.date_modified, src.who_modified
+					FROM [' + @pt_tab + N'] src
+					CROSS APPLY (
+						SELECT dbo.f_link_original(
+							CAST(src.object_owner AS varchar(36)),
+							CAST(@p_mld AS varchar(36)),
+							CAST(src.original AS varchar(36)),
+							CAST(src.parent_uuid AS varchar(36)),
+							''00000000-0000-0000-0000-000000000000''
+						) AS calc_orig
+					) x
+					WHERE src.record_type = ''A''
+					  AND src.removed = 0
+					  AND src.inactive = 0
+					  AND src.parent_uuid IS NOT NULL
+					  AND src.parent_uuid <> 0x00
+					  AND NOT EXISTS (
+						SELECT 1 FROM link ex
+						WHERE ex.object_owner = src.object_owner
+						  AND ex.link_def = @p_mld
+						  AND ex.from_object = src.original
+						  AND ex.to_object = src.parent_uuid
+						  AND ex.ancestor_link = 0x00
+						  AND ex.record_type = ''A''
+						  AND ex.removed = 0
+					  );';
+
+					EXEC sp_executesql @sql_par, N'@p_mld uniqueidentifier', @p_mld = @mld_par;
+				END
+			END
+			FETCH NEXT FROM cur_pt INTO @pt_tab, @pt_code;
+		END
+
+		CLOSE cur_pt;
+		DEALLOCATE cur_pt;
+	END
+
+	-- 1. Odstranění osiřelých odvozených vazeb z dědění po hierarchii (mimo projekce diagramů diagram_uuid IS NOT NULL)
 	DELETE d
 	FROM link d
 	LEFT JOIN link r
@@ -226,10 +668,11 @@ BEGIN
 		AND r.inactive = 0
 		AND r.ancestor_link = 0x00
 	WHERE d.ancestor_link <> 0x00
+	  AND d.diagram_uuid IS NULL
 	  AND (@root_link_original IS NULL OR d.ancestor_link = @root_link_original)
 	  AND r.uuid IS NULL;
 
-	-- 2. Načtení aktivních kořenových vazeb ke zpracování
+	-- 2. Načtení aktivních kořenových vazeb ke zpracování (mimo is_exclusive_parent a mimo diagramy)
 	DECLARE @roots TABLE (
 		root_orig uniqueidentifier NOT NULL,
 		root_owner uniqueidentifier NOT NULL,
@@ -271,6 +714,8 @@ BEGIN
 		ON mld.original = r.link_def
 		AND mld.record_type = 'A'
 		AND mld.removed = 0
+		AND mld.is_exclusive_parent = 0
+		AND mld.is_derived = 0
 		AND mld.object_owner IN (0x00, r.object_owner)
 	JOIN meta_class mc_from
 		ON mc_from.original = mld.from_class
@@ -296,9 +741,10 @@ BEGIN
 	  AND r.removed = 0
 	  AND r.inactive = 0
 	  AND r.ancestor_link = 0x00
+	  AND r.diagram_uuid IS NULL
 	  AND (@root_link_original IS NULL OR r.original = @root_link_original);
 
-	-- 3. Zpracování jednotlivých kořenových vazeb, u nichž alespoň jedna strana podporuje hierarchii (parent_uuid)
+	-- 3. Zpracování jednotlivých kořenových vazeb, u nichž alespoň jedna strana podporuje katalogovou hierarchii (parent_uuid)
 	DECLARE @r_orig uniqueidentifier, @r_owner uniqueidentifier, @r_def uniqueidentifier;
 	DECLARE @f_obj uniqueidentifier, @t_obj uniqueidentifier;
 	DECLARE @w decimal(16,4), @nt varchar(max), @lng varchar(2), @who uniqueidentifier;
@@ -369,6 +815,7 @@ BEGIN
 		FROM link d
 		WHERE d.ancestor_link = @r_orig
 		  AND d.object_owner = @r_owner
+		  AND d.diagram_uuid IS NULL
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM #desc_from df
@@ -423,6 +870,12 @@ BEGIN
 
 	CLOSE cur_roots;
 	DEALLOCATE cur_roots;
+
+	-- 4. Přepočet nepřímých vztahů a vazeb ve všech aktivních diagramech sítě
+	IF OBJECT_ID('dbo.p_rebuild_link_diagram', 'P') IS NOT NULL
+	BEGIN
+		EXEC dbo.p_rebuild_link_diagram;
+	END
 END
 GO
 
@@ -636,19 +1089,13 @@ BEGIN
 		END
 		ELSE IF @table_name = 'asset'
 		BEGIN
-			UPDATE asset SET building_uuid = @new_oth_original WHERE building_uuid = @node_original AND object_owner IN (@org_uuid, 0x00) AND original <> @new_oth_original;
-			UPDATE asset SET room_uuid = @new_oth_original WHERE room_uuid = @node_original AND object_owner IN (@org_uuid, 0x00) AND original <> @new_oth_original;
-			UPDATE asset SET host_uuid = @new_oth_original WHERE host_uuid = @node_original AND object_owner IN (@org_uuid, 0x00) AND original <> @new_oth_original;
-			UPDATE asset SET software_uuid = @new_oth_original WHERE software_uuid = @node_original AND object_owner IN (@org_uuid, 0x00) AND original <> @new_oth_original;
-			UPDATE asset SET supplier_uuid = @new_oth_original WHERE supplier_uuid = @node_original AND object_owner IN (@org_uuid, 0x00) AND original <> @new_oth_original;
-
 			IF OBJECT_ID('scenario_assessment', 'U') IS NOT NULL
 				UPDATE scenario_assessment SET asset_uuid = @new_oth_original WHERE asset_uuid = @node_original AND object_owner IN (@org_uuid, 0x00);
 			IF OBJECT_ID('countermeasure_implementation', 'U') IS NOT NULL
 				UPDATE countermeasure_implementation SET asset_uuid = @new_oth_original WHERE asset_uuid = @node_original AND object_owner IN (@org_uuid, 0x00);
 		END
 
-		-- Přesměrování přímých vazeb v tabulce link (kde je cíl/zdroj vázán na koncový list)
+		-- Přesměrování přímých vazeb v tabulce link (mimo is_exclusive_parent)
 		IF OBJECT_ID('link', 'U') IS NOT NULL
 		BEGIN
 			UPDATE l
@@ -660,6 +1107,8 @@ BEGIN
 			JOIN meta_link_def mld ON mld.original = l.link_def AND mld.record_type = 'A' AND mld.removed = 0
 			WHERE l.to_object = @node_original
 			  AND l.ancestor_link = 0x00
+			  AND l.diagram_uuid IS NULL
+			  AND mld.is_exclusive_parent = 0
 			  AND l.object_owner IN (@org_uuid, 0x00)
 			  AND (mld.leaf_only = 1 OR @table_name = 'asset');
 
@@ -669,12 +1118,13 @@ BEGIN
 				l.date_modified = GETDATE(),
 				l.who_modified = @user_session
 			FROM link l
+			JOIN meta_link_def mld ON mld.original = l.link_def AND mld.record_type = 'A' AND mld.removed = 0
 			WHERE l.from_object = @node_original
 			  AND l.ancestor_link = 0x00
+			  AND l.diagram_uuid IS NULL
+			  AND mld.is_exclusive_parent = 0
 			  AND l.object_owner IN (@org_uuid, 0x00)
 			  AND @table_name = 'asset';
-
-			EXEC dbo.p_sync_derived_links;
 		END
 	END
 
@@ -694,5 +1144,10 @@ BEGIN
 		@p_orig = @node_original,
 		@p_org = @org_uuid,
 		@p_user = @user_session;
+
+	IF OBJECT_ID('dbo.p_sync_derived_links', 'P') IS NOT NULL
+	BEGIN
+		EXEC dbo.p_sync_derived_links;
+	END
 END
 GO
