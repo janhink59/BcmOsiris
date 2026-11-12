@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-12 17:10
  * Soubor: p_crmm_recalculate.sql
  * Procedura: dbo.p_crmm_recalculate
  * Účel:   Centrální výpočetní procedura modulu CRMM (Custom Risk Management Module):
@@ -11,18 +11,23 @@
  *            - inherent_risk_score (normalizovaný průměr hrozby, zranitelnosti
  *              a dopadu v intervalu 0..100 %),
  *            - reduction_score (průměrná efektivní redukce z opatření
- *              aplikovaných na daném aktivu či jeho nadřazeném prostoru v link
- *              a navázaných na scénář/hrozbu přes countermeasure_mitigates_*),
+ *              aplikovaných na daném aktivu či jeho nadřazeném prostoru/aktivu
+ *              a navázaných na scénář),
  *            - min_risk_floor_score (maximum ze scenario.residual_risk_min_score
  *              a efektivního rizikového faktoru neimplementovaných opatření),
  *            - residual_risk_score (zbytkové riziko po redukci, omezené shora 100 %
  *              a zdola prahem min_risk_floor_score).
  *         3. Agreguje vypočtené inherentní a reziduální riziko na jednotlivá
- *            aktiva v tabulce asset a propaguje skóre rizik po orientovaných
- *            provozních a prostorových vazbách v tabulce link.
+ *            aktiva v tabulce asset a propaguje skóre rizik po provozních
+ *            vazbách v tabulce link (Data/Host/SW -> Aplikace -> Služba).
  * Vazby:  - Volána automaticky z entity_manager_ssc::run_post_save_hooks()
  *           a z akčních tlačítek na stránkách page_asset, page_scenario_assessment
  *           a page_countermeasure_implementation.
+ * Změny:  - 2026-11-12 17:10: Odstraněny odkazy na zrušené sloupce room_uuid
+ *           a building_uuid v asset (nahrazeno vazbami v tabulce link), opravena
+ *           podmínka NOT EXISTS u protiopatření scénáře (omezena na vztahy
+ *           countermeasure_mitigates_scenario / countermeasure_mitigates_threat)
+ *           a zpřesněno šíření rizik mezi aktivy.
  * ============================================================================= */
 
 EXECUTE dropni 'p_crmm_recalculate', 'P';
@@ -49,9 +54,11 @@ BEGIN
 	END
 	SET @org_uuid = ISNULL(@org_uuid, 0x00);
 
-	DECLARE @sys_owner uniqueidentifier = CAST(0x00 AS uniqueidentifier);
-	DECLARE @mld_cm_scen uniqueidentifier = dbo.f_generate_original('meta_link_def', @sys_owner, 'countermeasure_mitigates_scenario', '');
-	DECLARE @mld_cm_thrt uniqueidentifier = dbo.f_generate_original('meta_link_def', @sys_owner, 'countermeasure_mitigates_threat', '');
+	-- Synchronizace odvozených a stromových vazeb v tabulce link před přepočtem
+	IF OBJECT_ID('dbo.p_sync_derived_links', 'P') IS NOT NULL
+	BEGIN
+		EXEC dbo.p_sync_derived_links;
+	END
 
 	-- =========================================================================
 	-- 1. PŘEPOČET EFEKTIVNÍCH FAKTORŮ V TABULCE countermeasure_implementation
@@ -176,8 +183,7 @@ BEGIN
 		ORDER BY CASE WHEN sc.object_owner = @org_uuid THEN 0 ELSE 1 END
 	) sc_info
 	OUTER APPLY (
-		-- Aplikovaná protiopatření na hodnoceném aktivu nebo na nadřazeném prostoru/aktivu v tabulce link.
-		-- Kontrola specifických opatření scénáře/hrozby je omezena výhradně na vztahy countermeasure_mitigates_*.
+		-- Aplikovaná protiopatření na hodnoceném aktivu nebo jeho nadřazeném prostoru/rodiči v tabulce link
 		SELECT
 			ISNULL(AVG(ci.effective_reduction_factor), 0.0000) AS avg_red,
 			ISNULL(MAX(ci.effective_risk_factor), 0.0000) AS max_rsk
@@ -191,21 +197,34 @@ BEGIN
 			OR ci.asset_uuid = a.parent_uuid
 			OR EXISTS (
 				SELECT 1
-				FROM link loc_l
-				WHERE loc_l.from_object = sa.asset_uuid
-				  AND loc_l.to_object = ci.asset_uuid
-				  AND loc_l.object_owner IN (@org_uuid, 0x00)
-				  AND loc_l.record_type = 'A'
-				  AND loc_l.removed = 0
-				  AND loc_l.inactive = 0
+				FROM link l_loc
+				JOIN meta_link_def mld_loc
+					ON mld_loc.original = l_loc.link_def
+					AND mld_loc.record_type = 'A'
+					AND mld_loc.removed = 0
+					AND mld_loc.link_code IN (
+						'parent_to_child', 'room_contains_physical', 'room_contains_host',
+						'room_contains_document', 'room_contains_media',
+						'building_contains_room', 'building_contains_cabling'
+					)
+				WHERE l_loc.from_object = ci.asset_uuid
+				  AND l_loc.to_object = sa.asset_uuid
+				  AND l_loc.object_owner IN (@org_uuid, 0x00)
+				  AND l_loc.record_type = 'A'
+				  AND l_loc.removed = 0
+				  AND l_loc.inactive = 0
 			)
 		  )
 		  AND (
 			NOT EXISTS (
 				SELECT 1
 				FROM link l
+				JOIN meta_link_def mld_cm
+					ON mld_cm.original = l.link_def
+					AND mld_cm.record_type = 'A'
+					AND mld_cm.removed = 0
+					AND mld_cm.link_code IN ('countermeasure_mitigates_scenario', 'countermeasure_mitigates_threat')
 				WHERE l.from_object IN (sa.scenario_uuid, sc_info.threat_uuid)
-				  AND l.link_def IN (@mld_cm_scen, @mld_cm_thrt)
 				  AND l.object_owner IN (@org_uuid, 0x00)
 				  AND l.record_type = 'A'
 				  AND l.removed = 0
@@ -214,8 +233,12 @@ BEGIN
 			OR EXISTS (
 				SELECT 1
 				FROM link l
+				JOIN meta_link_def mld_cm
+					ON mld_cm.original = l.link_def
+					AND mld_cm.record_type = 'A'
+					AND mld_cm.removed = 0
+					AND mld_cm.link_code IN ('countermeasure_mitigates_scenario', 'countermeasure_mitigates_threat')
 				WHERE l.from_object IN (sa.scenario_uuid, sc_info.threat_uuid)
-				  AND l.link_def IN (@mld_cm_scen, @mld_cm_thrt)
 				  AND l.to_object = ci.countermeasure_uuid
 				  AND l.object_owner IN (@org_uuid, 0x00)
 				  AND l.record_type = 'A'
@@ -280,7 +303,7 @@ BEGIN
 	  );
 
 	-- =========================================================================
-	-- 3. AGREGACE RIZIK NA AKTIVA A ŠÍŘENÍ PO ORIENTOVANÝCH VAZBÁCH V TABULCE link
+	-- 3. AGREGACE RIZIK NA AKTIVA A ŠÍŘENÍ PO VAZBÁCH V TABULCE link
 	-- =========================================================================
 	DECLARE @asset_scores TABLE (
 		asset_uuid uniqueidentifier NOT NULL PRIMARY KEY,
@@ -314,7 +337,7 @@ BEGIN
 	  AND a.record_type = 'A'
 	  AND a.removed = 0;
 
-	-- 3b. Vícekrokový přenos rizik po orientovaných závislostech v tabulce link (direction_type IN ('P', 'S'))
+	-- 3b. Vícekrokový přenos rizik po orientovaných závislostech aktiv v tabulce link
 	DECLARE @pass int = 1;
 	WHILE @pass <= 6
 	BEGIN
@@ -333,7 +356,7 @@ BEGIN
 				MAX(
 					CAST(
 						ROUND(
-							target_sc.prop_inh * CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 AND l.diagram_uuid IS NULL THEN l.link_weight / 100.0000 ELSE 1.0000 END,
+							target_sc.prop_inh * CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 THEN l.link_weight / 100.0000 ELSE 1.0000 END,
 							4
 						) AS decimal(9,4)
 					)
@@ -341,7 +364,7 @@ BEGIN
 				MAX(
 					CAST(
 						ROUND(
-							target_sc.prop_res * CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 AND l.diagram_uuid IS NULL THEN l.link_weight / 100.0000 ELSE 1.0000 END,
+							target_sc.prop_res * CASE WHEN ISNULL(l.link_weight, 0) > 0 AND l.link_weight <= 100 THEN l.link_weight / 100.0000 ELSE 1.0000 END,
 							4
 						) AS decimal(9,4)
 					)
@@ -351,7 +374,8 @@ BEGIN
 				ON mld.original = l.link_def
 				AND mld.record_type = 'A'
 				AND mld.removed = 0
-				AND mld.direction_type IN ('P', 'S')
+				AND mld.is_exclusive_parent = 0
+				AND mld.link_code <> 'asset_additional_class'
 			JOIN @asset_scores target_sc ON target_sc.asset_uuid = l.to_object
 			WHERE l.from_object = src.asset_uuid
 			  AND l.object_owner IN (@org_uuid, 0x00)

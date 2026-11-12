@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-12 16:45
  * Soubor: p_fix_meta_column.sql
  * Procedury: dbo.p_sync_hierarchy_to_meta_class, dbo.p_fix_meta_column
  * Účel: 1. dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
@@ -7,20 +7,25 @@
  *          (STI nad hierarchy_item) včetně symetrických 'L' záznamů. Volána jak
  *          z triggeru trg_hierarchy_sync_meta_class, tak při buildu v p_fix_meta_column.
  *       2. dbo.p_fix_meta_column provádí automatizovanou technickou synchronizaci
- *          a provazování dědičnosti metadat (meta_object, meta_class, meta_column)
- *          a sjednocení RAC/SSC sloupců a unikátních filtrovaných indexů.
+ *          a provazování dědičnosti metadat (meta_object, meta_class, meta_column),
+ *          sjednocení RAC/SSC sloupců a unikátních filtrovaných indexů a automatickou
+ *          projekci nativních 1:N vazeb (parent_uuid -> parent_to_child / child_to_parent
+ *          a cizích klíčů referenced_class) do tabulky meta_link_def (is_derived = 1).
  *
  * Vazby na okolí:
  * - Volána na konci sestavovací dávky databáze (final_scripts.sql), před maskou
  *   fillup_*.sql v BuildListDb.txt a z triggeru trg_hierarchy_sync_meta_class.
  * - Čte systémový pohled v_syscolumns a synchronizuje tabulky meta_object,
- *   meta_class, meta_column a meta_codetable.
+ *   meta_class, meta_column, meta_codetable a meta_link_def.
  *
  * Změny:
- * - 2026-11-11 21:30: Opraven filtr u indexu uq_<tab>_language na record_type = 'L'.
- *   Z @ref_map odstraněny zrušené 1:N sloupce tabulky asset a doplněny vazby
- *   pro reverse_link_def, diagram_uuid a číselník link_direction_type.
- * - 2026-11-09 16:30: Sekce 5b optimalizována přes mapovací tabulku @ref_map.
+ * - 2026-11-12 16:45: Opraven filtr indexu uq_<tab>_language na record_type = 'L',
+ *   přidán číselník direction_type ('P', 'R', 'S'), aktualizována @ref_map a
+ *   doplněna sekce 7 pro automatické promítání nativních 1:N cizích klíčů a
+ *   parent_uuid (parent_to_child 'P' / child_to_parent 'R') do meta_link_def.
+ * - 2026-11-09 16:30: Sekce 5b optimalizována: 16 sekvenčních UPDATE bloků pro
+ *   referenced_class a referenced_codetable nahrazeno jedinou mapovací tabulkou
+ *   @ref_map a jedním hromadným dotazem UPDATE.
  * ============================================================================= */
 
 EXECUTE dropni 'p_fix_meta_column', 'P';
@@ -887,35 +892,35 @@ BEGIN
 	);
 
 	INSERT INTO @ref_map (column_name, ref_class_name, ref_codetable, force_if_sys) VALUES
-		('scale_type',            NULL,                   'scale_type',          0),
-		('asset_archetype',       NULL,                   'asset_archetype',     0),
-		('direction_type',        NULL,                   'link_direction_type', 0),
-		('parent_class',          'meta_class',           NULL,                  0),
-		('ancestor_class',        'meta_class',           NULL,                  0),
-		('referenced_class',      'meta_class',           NULL,                  0),
-		('from_class',            'meta_class',           NULL,                  0),
-		('to_class',              'meta_class',           NULL,                  0),
-		('storage_object',        'meta_object',          NULL,                  0),
-		('target_object',         'meta_object',          NULL,                  0),
-		('ancestor',              'meta_column',          NULL,                  1),
-		('link_def',              'meta_link_def',        NULL,                  0),
-		('reverse_link_def',      'meta_link_def',        NULL,                  0),
-		('diagram_uuid',          'link_diagram',         NULL,                  0),
-		('owner_user_uuid',       'user_account',         NULL,                  0),
-		('assessor_user_uuid',    'user_account',         NULL,                  0),
-		('responsible_user_uuid', 'user_account',         NULL,                  0),
-		('manager_uuid',          'user_account',         NULL,                  0),
-		('hierarchy',             'hierarchy',            NULL,                  0),
-		('scale',                 'scale',                NULL,                  0),
-		('asset_class_uuid',      'asset_class',          NULL,                  0),
-		('primary_asset_class',   'asset_class',          NULL,                  0),
-		('threat_uuid',           'threat',               NULL,                  0),
-		('scenario_uuid',         'scenario',             NULL,                  0),
-		('countermeasure_uuid',   'countermeasure',       NULL,                  0),
-		('state_uuid',            'countermeasure_state', NULL,                  0),
-		('asset_uuid',            'asset',                NULL,                  0),
-		('from_object',           'asset',                NULL,                  0),
-		('to_object',             'asset',                NULL,                  0);
+		('scale_type',            NULL,                   'scale_type',      0),
+		('asset_archetype',       NULL,                   'asset_archetype', 0),
+		('direction_type',        NULL,                   'direction_type',  0),
+		('parent_class',          'meta_class',           NULL,              0),
+		('ancestor_class',        'meta_class',           NULL,              0),
+		('referenced_class',      'meta_class',           NULL,              0),
+		('from_class',            'meta_class',           NULL,              0),
+		('to_class',              'meta_class',           NULL,              0),
+		('storage_object',        'meta_object',          NULL,              0),
+		('target_object',         'meta_object',          NULL,              0),
+		('ancestor',              'meta_column',          NULL,              1),
+		('link_def',              'meta_link_def',        NULL,              0),
+		('reverse_link_def',      'meta_link_def',        NULL,              0),
+		('diagram_uuid',          'link_diagram',         NULL,              0),
+		('owner_user_uuid',       'user_account',         NULL,              0),
+		('assessor_user_uuid',    'user_account',         NULL,              0),
+		('responsible_user_uuid', 'user_account',         NULL,              0),
+		('manager_uuid',          'user_account',         NULL,              0),
+		('hierarchy',             'hierarchy',            NULL,              0),
+		('scale',                 'scale',                NULL,              0),
+		('asset_class_uuid',      'asset_class',          NULL,              0),
+		('primary_asset_class',   'asset_class',          NULL,              0),
+		('threat_uuid',           'threat',               NULL,              0),
+		('scenario_uuid',         'scenario',             NULL,              0),
+		('countermeasure_uuid',   'countermeasure',       NULL,              0),
+		('state_uuid',            'countermeasure_state', NULL,              0),
+		('asset_uuid',            'asset',                NULL,              0),
+		('from_object',           'asset',                NULL,              0),
+		('to_object',             'asset',                NULL,              0);
 
 	UPDATE mc
 	SET mc.referenced_codetable = CASE
@@ -946,7 +951,7 @@ BEGIN
 	  AND column_name = 'parent_uuid'
 	  AND referenced_class IS NULL;
 
-	-- Naplnění systémových číselníků scale_type, asset_archetype a link_direction_type v tabulce meta_codetable
+	-- Naplnění systémových číselníků scale_type, asset_archetype a direction_type v meta_codetable
 	IF OBJECT_ID('meta_codetable', 'U') IS NOT NULL
 	BEGIN
 		DECLARE @ct_items TABLE (
@@ -957,30 +962,30 @@ BEGIN
 			caption_en varchar(200)
 		);
 		INSERT INTO @ct_items VALUES
-			('scale_type',          'THREAT',        '010', 'Hrozba / Pravděpodobnost',                  'Threat / Probability'),
-			('scale_type',          'VULNERABILITY', '020', 'Zranitelnost',                              'Vulnerability'),
-			('scale_type',          'IMPACT',        '030', 'Dopad / Kritičnost aktiv',                  'Impact / Asset Criticality'),
-			('scale_type',          'RISK',          '040', 'Výsledné riziko / Míra ohrožení',           'Resulting Risk / Threat Level'),
-			('asset_archetype',     'DISTRICT',      '010', 'Okres / region (prostor)',                  'District / Region (Space)'),
-			('asset_archetype',     'CITY',          '020', 'Město / obec (prostor)',                    'City / Municipality (Space)'),
-			('asset_archetype',     'SITE',          '030', 'Lokalita / areál (prostor)',                'Site / Campus (Space)'),
-			('asset_archetype',     'BUILDING',      '040', 'Budova (povinný prostor)',                  'Building (Mandatory Space)'),
-			('asset_archetype',     'ROOM',          '050', 'Místnost / sál (prostor v budově)',         'Room / Hall (Space in Building)'),
-			('asset_archetype',     'PHYSICAL',      '060', 'Fyzické aktivum / hardware (v místnosti)',  'Physical Asset / Hardware (in Room)'),
-			('asset_archetype',     'HOST',          '070', 'Hostitelský počítač / server (v místnosti)','Host Computer / Server (in Room)'),
-			('asset_archetype',     'CABLING',       '080', 'Kabeláž a rozvody (v budově)',              'Cabling & Wiring (in Building)'),
-			('asset_archetype',     'DOCUMENT',      '090', 'Dokument (uložený v místnosti)',            'Document (Stored in Room)'),
-			('asset_archetype',     'MEDIA',         '100', 'Médium / nosič dat (uložený v místnosti)',  'Storage Media / Carrier (in Room)'),
-			('asset_archetype',     'DATA',          '110', 'Datové aktivum (informace / databáze)',     'Data Asset (Information / Database)'),
-			('asset_archetype',     'SOFTWARE',      '120', 'Software (vyvíjený / pořizovaný)',          'Software (Developed / Procured)'),
-			('asset_archetype',     'APPLICATION',   '130', 'Aplikace (instalovaná instance)',           'Application (Installed Instance)'),
-			('asset_archetype',     'SERVICE',       '140', 'Služba (interní / zákaznická)',             'Service (Internal / Customer-Facing)'),
-			('asset_archetype',     'INTERFACE',     '150', 'Služba typu Interface (internet/hlas/video)','Interface Service (Internet/Voice/Video)'),
-			('asset_archetype',     'PERSONNEL',     '160', 'Personál / klíčová role',                   'Personnel / Key Role'),
-			('asset_archetype',     'SUPPLIER',      '170', 'Dodavatel / externí partner',               'Supplier / External Partner'),
-			('link_direction_type', 'P',             '010', 'Primární (řídící směr)',                    'Primary (Controlling Direction)'),
-			('link_direction_type', 'R',             '020', 'Zpětný (reverzní směr)',                    'Reverse (Backward Direction)'),
-			('link_direction_type', 'S',             '030', 'Symetrický (neorientovaný vztah)',          'Symmetric (Undirected Relation)');
+			('scale_type',      'THREAT',        '010', 'Hrozba / Pravděpodobnost',                'Threat / Probability'),
+			('scale_type',      'VULNERABILITY', '020', 'Zranitelnost',                            'Vulnerability'),
+			('scale_type',      'IMPACT',        '030', 'Dopad / Kritičnost aktiv',                'Impact / Asset Criticality'),
+			('scale_type',      'RISK',          '040', 'Výsledné riziko / Míra ohrožení',         'Resulting Risk / Threat Level'),
+			('asset_archetype', 'DISTRICT',      '010', 'Okres / region (prostor)',                'District / Region (Space)'),
+			('asset_archetype', 'CITY',          '020', 'Město / obec (prostor)',                  'City / Municipality (Space)'),
+			('asset_archetype', 'SITE',          '030', 'Lokalita / areál (prostor)',              'Site / Campus (Space)'),
+			('asset_archetype', 'BUILDING',      '040', 'Budova (povinný prostor)',                'Building (Mandatory Space)'),
+			('asset_archetype', 'ROOM',          '050', 'Místnost / sál (prostor v budově)',       'Room / Hall (Space in Building)'),
+			('asset_archetype', 'PHYSICAL',      '060', 'Fyzické aktivum / hardware (v místnosti)','Physical Asset / Hardware (in Room)'),
+			('asset_archetype', 'HOST',          '070', 'Hostitelský počítač / server (v místnosti)','Host Computer / Server (in Room)'),
+			('asset_archetype', 'CABLING',       '080', 'Kabeláž a rozvody (v budově)',            'Cabling & Wiring (in Building)'),
+			('asset_archetype', 'DOCUMENT',      '090', 'Dokument (uložený v místnosti)',          'Document (Stored in Room)'),
+			('asset_archetype', 'MEDIA',         '100', 'Médium / nosič dat (uložený v místnosti)','Storage Media / Carrier (in Room)'),
+			('asset_archetype', 'DATA',          '110', 'Datové aktivum (informace / databáze)',   'Data Asset (Information / Database)'),
+			('asset_archetype', 'SOFTWARE',      '120', 'Software (vyvíjený / pořizovaný)',        'Software (Developed / Procured)'),
+			('asset_archetype', 'APPLICATION',   '130', 'Aplikace (instalovaná instance)',         'Application (Installed Instance)'),
+			('asset_archetype', 'SERVICE',       '140', 'Služba (interní / zákaznická)',           'Service (Internal / Customer-Facing)'),
+			('asset_archetype', 'INTERFACE',     '150', 'Služba typu Interface (internet/hlas/video)','Interface Service (Internet/Voice/Video)'),
+			('asset_archetype', 'PERSONNEL',     '160', 'Personál / klíčová role',                 'Personnel / Key Role'),
+			('asset_archetype', 'SUPPLIER',      '170', 'Dodavatel / externí partner',             'Supplier / External Partner'),
+			('direction_type',  'P',             '010', 'Primární / řídící směr (P)',              'Primary / Governing Direction (P)'),
+			('direction_type',  'R',             '020', 'Zpětný / reverzní směr (R)',              'Reverse / Inverse Direction (R)'),
+			('direction_type',  'S',             '030', 'Symetrický / neorientovaný (S)',          'Symmetric / Undirected (S)');
 
 		INSERT INTO meta_codetable (
 			uuid, object_owner, original, record_type, approval_status, [language],
@@ -1034,5 +1039,191 @@ BEGIN
 	WHERE caption IS NULL 
 	  AND record_type = 'A' 
 	  AND object_owner = 0x00;
+
+	-- -------------------------------------------------------------------------
+	-- 7. AUTOMATICKÁ PROJEKCE VŠECH NATIVNÍCH 1:N VAZEB (parent_uuid i cizích
+	--    klíčů referenced_class) DO meta_link_def JAKO ODVOZENÝCH (is_derived = 1)
+	--    - Referenced / Parent objekt je vždy primární ('P'), child je ('R').
+	--    - U parent_uuid má primární vztah link_code = 'parent_to_child' ('P')
+	--      a zpětný vztah link_code = 'child_to_parent' ('R').
+	-- -------------------------------------------------------------------------
+	IF OBJECT_ID('meta_link_def', 'U') IS NOT NULL AND COL_LENGTH('meta_link_def', 'direction_type') IS NOT NULL
+	BEGIN
+		DECLARE @native_links TABLE (
+			from_class uuid NOT NULL,
+			link_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			to_class uuid NOT NULL,
+			rev_from_class uuid NOT NULL,
+			rev_link_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			direction_type varchar(1) NOT NULL,
+			is_exclusive_parent bit NOT NULL,
+			is_multiple bit NOT NULL,
+			is_mandatory bit NOT NULL,
+			caption_cs varchar(200) NOT NULL,
+			caption_rev_cs varchar(200) NOT NULL,
+			caption_en varchar(200) NOT NULL,
+			caption_rev_en varchar(200) NOT NULL,
+			PRIMARY KEY (from_class, link_code)
+		);
+
+		-- 7a. Stromové vztahy parent_uuid na všech třídách (parent_to_child = 'P', child_to_parent = 'R')
+		INSERT INTO @native_links (
+			from_class, link_code, to_class, rev_from_class, rev_link_code,
+			direction_type, is_exclusive_parent, is_multiple, is_mandatory,
+			caption_cs, caption_rev_cs, caption_en, caption_rev_en
+		)
+		SELECT
+			mcl.original, 'parent_to_child', mcl.original, mcl.original, 'child_to_parent',
+			'P', 1, 1, 0,
+			'Je nadřízenou položkou pro (parent_uuid)', 'Má nadřízenou položku (parent_uuid)',
+			'Is parent item for (parent_uuid)', 'Has parent item (parent_uuid)'
+		FROM meta_column mc
+		JOIN meta_class mcl ON mcl.original = mc.parent_class AND mcl.object_owner = 0x00 AND mcl.record_type = 'A' AND mcl.removed = 0
+		WHERE mc.object_owner = 0x00
+		  AND mc.record_type = 'A'
+		  AND mc.removed = 0
+		  AND mc.column_name = 'parent_uuid'
+		  AND mcl.class_name <> 'sys_global_columns'
+		UNION ALL
+		SELECT
+			mcl.original, 'child_to_parent', mcl.original, mcl.original, 'parent_to_child',
+			'R', 1, 0, 0,
+			'Má nadřízenou položku (parent_uuid)', 'Je nadřízenou položkou pro (parent_uuid)',
+			'Has parent item (parent_uuid)', 'Is parent item for (parent_uuid)'
+		FROM meta_column mc
+		JOIN meta_class mcl ON mcl.original = mc.parent_class AND mcl.object_owner = 0x00 AND mcl.record_type = 'A' AND mcl.removed = 0
+		WHERE mc.object_owner = 0x00
+		  AND mc.record_type = 'A'
+		  AND mc.removed = 0
+		  AND mc.column_name = 'parent_uuid'
+		  AND mcl.class_name <> 'sys_global_columns';
+
+		-- 7b. Ostatní nativní 1:N cizí klíče (referenced_class IS NOT NULL, mimo systémové tabulky meta_* a sloupce v tabulce link)
+		INSERT INTO @native_links (
+			from_class, link_code, to_class, rev_from_class, rev_link_code,
+			direction_type, is_exclusive_parent, is_multiple, is_mandatory,
+			caption_cs, caption_rev_cs, caption_en, caption_rev_en
+		)
+		SELECT
+			ref_cls.original,
+			LEFT('ref_by_' + mcl.class_name + '_' + mc.column_name, 80),
+			mcl.original,
+			mcl.original,
+			LEFT('fk_' + mc.column_name, 80),
+			'P', 0, 1, 0,
+			LEFT('Je odkazováno z ' + COALESCE(NULLIF(mcl.caption, ''), mcl.class_name) + ' (' + mc.column_name + ')', 200),
+			LEFT('Odkazuje na ' + COALESCE(NULLIF(ref_cls.caption, ''), ref_cls.class_name) + ' (' + mc.column_name + ')', 200),
+			LEFT('Is referenced by ' + mcl.class_name + ' (' + mc.column_name + ')', 200),
+			LEFT('References ' + ref_cls.class_name + ' (' + mc.column_name + ')', 200)
+		FROM meta_column mc
+		JOIN meta_class mcl ON mcl.original = mc.parent_class AND mcl.object_owner = 0x00 AND mcl.record_type = 'A' AND mcl.removed = 0
+		LEFT JOIN meta_column gc ON gc.original = mc.ancestor AND gc.object_owner = 0x00 AND gc.record_type = 'A'
+		JOIN meta_class ref_cls ON ref_cls.original = COALESCE(mc.referenced_class, gc.referenced_class) AND ref_cls.object_owner = 0x00 AND ref_cls.record_type = 'A' AND ref_cls.removed = 0
+		WHERE mc.object_owner = 0x00
+		  AND mc.record_type = 'A'
+		  AND mc.removed = 0
+		  AND mc.column_name <> 'parent_uuid'
+		  AND mcl.class_name NOT IN ('sys_global_columns', 'link')
+		  AND mcl.class_name NOT LIKE 'meta_%'
+		UNION ALL
+		SELECT
+			mcl.original,
+			LEFT('fk_' + mc.column_name, 80),
+			ref_cls.original,
+			ref_cls.original,
+			LEFT('ref_by_' + mcl.class_name + '_' + mc.column_name, 80),
+			'R', 0, 0, COALESCE(mc.is_mandatory, gc.is_mandatory, 0),
+			LEFT('Odkazuje na ' + COALESCE(NULLIF(ref_cls.caption, ''), ref_cls.class_name) + ' (' + mc.column_name + ')', 200),
+			LEFT('Je odkazováno z ' + COALESCE(NULLIF(mcl.caption, ''), mcl.class_name) + ' (' + mc.column_name + ')', 200),
+			LEFT('References ' + ref_cls.class_name + ' (' + mc.column_name + ')', 200),
+			LEFT('Is referenced by ' + mcl.class_name + ' (' + mc.column_name + ')', 200)
+		FROM meta_column mc
+		JOIN meta_class mcl ON mcl.original = mc.parent_class AND mcl.object_owner = 0x00 AND mcl.record_type = 'A' AND mcl.removed = 0
+		LEFT JOIN meta_column gc ON gc.original = mc.ancestor AND gc.object_owner = 0x00 AND gc.record_type = 'A'
+		JOIN meta_class ref_cls ON ref_cls.original = COALESCE(mc.referenced_class, gc.referenced_class) AND ref_cls.object_owner = 0x00 AND ref_cls.record_type = 'A' AND ref_cls.removed = 0
+		WHERE mc.object_owner = 0x00
+		  AND mc.record_type = 'A'
+		  AND mc.removed = 0
+		  AND mc.column_name <> 'parent_uuid'
+		  AND mcl.class_name NOT IN ('sys_global_columns', 'link')
+		  AND mcl.class_name NOT LIKE 'meta_%';
+
+		-- Vložení chybějících 'A' záznamů nativních 1:N vztahů do meta_link_def
+		INSERT INTO meta_link_def (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			link_code, from_class, to_class, reverse_link_def, direction_type,
+			is_exclusive_parent, is_derived,
+			caption_forward, caption_backward,
+			is_multiple, is_mandatory, leaf_only, link_weight_enabled,
+			is_final, is_protected,
+			date_created, who_created, date_modified, who_modified
+		)
+		SELECT
+			x.orig, 0x00, x.orig, 'A', 'A', 'cs',
+			nl.link_code, nl.from_class, nl.to_class, r.rev_orig, nl.direction_type,
+			nl.is_exclusive_parent, 1,
+			nl.caption_cs, nl.caption_rev_cs,
+			nl.is_multiple, nl.is_mandatory, 0, 0,
+			1, 1,
+			@batch_time, @sys_owner, @batch_time, @sys_owner
+		FROM @native_links nl
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_link_def', @sys_owner, CAST(nl.from_class AS varchar(36)), nl.link_code) AS orig) x
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_link_def', @sys_owner, CAST(nl.rev_from_class AS varchar(36)), nl.rev_link_code) AS rev_orig) r
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_link_def mld
+			WHERE mld.original = x.orig AND mld.object_owner = 0x00 AND mld.record_type = 'A'
+		);
+
+		-- Vložení symetrických 'L' záznamů ('cs' a 'en') pro nativní 1:N vztahy
+		INSERT INTO meta_link_def (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			link_code, from_class, to_class, reverse_link_def, direction_type,
+			is_exclusive_parent, is_derived,
+			caption_forward, caption_backward,
+			is_multiple, is_mandatory, leaf_only, link_weight_enabled,
+			is_final, is_protected,
+			date_created, who_created, date_modified, who_modified
+		)
+		SELECT
+			NEWID(), 0x00, x.orig, 'L', 'A', 'cs',
+			nl.link_code, nl.from_class, nl.to_class, r.rev_orig, nl.direction_type,
+			nl.is_exclusive_parent, 1,
+			nl.caption_cs, nl.caption_rev_cs,
+			nl.is_multiple, nl.is_mandatory, 0, 0,
+			1, 1,
+			@batch_time, @sys_owner, @batch_time, @sys_owner
+		FROM @native_links nl
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_link_def', @sys_owner, CAST(nl.from_class AS varchar(36)), nl.link_code) AS orig) x
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_link_def', @sys_owner, CAST(nl.rev_from_class AS varchar(36)), nl.rev_link_code) AS rev_orig) r
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_link_def mld
+			WHERE mld.original = x.orig AND mld.object_owner = 0x00 AND mld.record_type = 'L' AND mld.[language] = 'cs'
+		);
+
+		INSERT INTO meta_link_def (
+			uuid, object_owner, original, record_type, approval_status, [language],
+			link_code, from_class, to_class, reverse_link_def, direction_type,
+			is_exclusive_parent, is_derived,
+			caption_forward, caption_backward,
+			is_multiple, is_mandatory, leaf_only, link_weight_enabled,
+			is_final, is_protected,
+			date_created, who_created, date_modified, who_modified
+		)
+		SELECT
+			NEWID(), 0x00, x.orig, 'L', 'A', 'en',
+			nl.link_code, nl.from_class, nl.to_class, r.rev_orig, nl.direction_type,
+			nl.is_exclusive_parent, 1,
+			nl.caption_en, nl.caption_rev_en,
+			nl.is_multiple, nl.is_mandatory, 0, 0,
+			1, 1,
+			@batch_time, @sys_owner, @batch_time, @sys_owner
+		FROM @native_links nl
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_link_def', @sys_owner, CAST(nl.from_class AS varchar(36)), nl.link_code) AS orig) x
+		CROSS APPLY (SELECT dbo.f_generate_original('meta_link_def', @sys_owner, CAST(nl.rev_from_class AS varchar(36)), nl.rev_link_code) AS rev_orig) r
+		WHERE NOT EXISTS (
+			SELECT 1 FROM meta_link_def mld
+			WHERE mld.original = x.orig AND mld.object_owner = 0x00 AND mld.record_type = 'L' AND mld.[language] = 'en'
+		);
+	END
 END
 GO

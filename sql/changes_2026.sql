@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-12 16:45
  * Soubor: changes_2026.sql
  * Účel:   Jednorázové změny struktury a dat databáze v kalendářním roce 2026.
  *         Spouští se samostatně PŘED hlavním slepeným skriptem BcmOsirisDb.sql.
@@ -22,11 +22,11 @@
  *   databází neprovede žádné změny a nezpůsobí žádnou škodu.
  *
  * Změny:
- * - 2026-11-11 21:30 (26.11.11.0): Rozšíření meta_link_def (reverse_link_def,
- *   direction_type, is_exclusive_parent, is_derived, diagram_uuid) a link
- *   (reverse_link_weight, diagram_uuid), vytvoření tabulky link_diagram,
- *   odstranění redundantních 1:N sloupců z tabulky asset (building_uuid,
- *   room_uuid, host_uuid, software_uuid, supplier_uuid) a oprava uq_%_language.
+ * - 2026-11-12 16:45 (26.11.11.0): Rozšíření meta_link_def (reverse_link_def,
+ *   direction_type, is_exclusive_parent, is_derived, diagram_uuid) se složeným
+ *   klíčem (from_class, link_code), rozšíření link (reverse_link_weight,
+ *   diagram_uuid), vytvoření tabulky link_diagram a odstranění redundantních
+ *   1:N sloupců z tabulky asset.
  * - 2026-11-09 18:30 (26.11.09.0): Sjednocení builtin_code a link_code na
  *   striktní snake_case a odstranění starých záznamů porušujících snake_case.
  * - 2026-11-04 15:15 (26.11.04.1): Doplnění sloupce is_default do hierarchy_item,
@@ -355,7 +355,6 @@ IF EXISTS (
 BEGIN
 	PRINT '09.11.2026 (26.11.09.0): Sjednocení builtin_code a link_code na snake_case a vyčištění starých dat';
 
-	-- 1. Oprava builtin_code v organization_licence ('SYS' -> 'sys' a převod na snake_case)
 	IF OBJECT_ID('organization_licence', 'U') IS NOT NULL
 	BEGIN
 		UPDATE organization_licence
@@ -368,7 +367,6 @@ BEGIN
 		WHERE builtin_code LIKE '%[^a-z0-9_]%' COLLATE Latin1_General_BIN;
 	END
 
-	-- 2. Oprava link_code v meta_link_def (např. 'asset_Additional_class' -> 'asset_additional_class')
 	IF OBJECT_ID('meta_link_def', 'U') IS NOT NULL
 	BEGIN
 		UPDATE meta_link_def
@@ -380,8 +378,6 @@ BEGIN
 		   OR link_code LIKE '%[^a-z0-9_]%' COLLATE Latin1_General_BIN;
 	END
 
-	-- 3. Odstranění starých a testovacích dat v katalogových a CRMM tabulkách,
-	--    jejichž builtin_code nedodržuje pravidlo snake_case ([a-z0-9_])
 	DECLARE @clean_tabs TABLE (tabname varchar(128) NOT NULL PRIMARY KEY);
 	INSERT INTO @clean_tabs (tabname) VALUES
 		('asset'),
@@ -437,7 +433,6 @@ BEGIN
 	CLOSE cur_clean;
 	DEALLOCATE cur_clean;
 
-	-- 4. Vyčištění případných osiřelých záznamů v navazujících tabulkách CRMM
 	IF OBJECT_ID('scenario_assessment', 'U') IS NOT NULL AND OBJECT_ID('asset', 'U') IS NOT NULL
 	BEGIN
 		DELETE sa
@@ -488,8 +483,9 @@ END
 GO
 
 -- -----------------------------------------------------------------------------
--- Verze 26.11.11.0: Obousměrné vztahy v meta_link_def, vyčištění 1:N sloupců
---                   z asset, tabulka link_diagram a projekce nepřímých vazeb
+-- Verze 26.11.11.0: Obousměrné vztahy v meta_link_def se složeným klíčem
+--                   (from_class, link_code), vyčištění 1:N sloupců z asset,
+--                   tabulka link_diagram a projekce nepřímých a 1:N vazeb
 -- -----------------------------------------------------------------------------
 IF EXISTS (
 	SELECT 1
@@ -521,7 +517,7 @@ BEGIN
 		EXEC sp_drop_column 'asset', 'supplier_uuid';
 	END
 
-	-- 2. Rozšíření tabulky meta_link_def pro zpětné vztahy, exkluzivní parent_uuid a odvozené vztahy z diagramů
+	-- 2. Rozšíření tabulky meta_link_def a přechod na složený klíč (from_class, link_code)
 	IF OBJECT_ID('meta_link_def', 'U') IS NOT NULL
 	BEGIN
 		EXEC p_create_missing_column 'meta_link_def', 'reverse_link_def', 'uuid NULL';
@@ -529,6 +525,17 @@ BEGIN
 		EXEC p_create_missing_column 'meta_link_def', 'is_exclusive_parent', 'bit NOT NULL DEFAULT 0';
 		EXEC p_create_missing_column 'meta_link_def', 'is_derived', 'bit NOT NULL DEFAULT 0';
 		EXEC p_create_missing_column 'meta_link_def', 'diagram_uuid', 'uuid NULL';
+
+		IF OBJECT_ID('meta_original_keys', 'U') IS NOT NULL
+		BEGIN
+			UPDATE meta_original_keys
+			SET key1_column = 'from_class',
+				key2_column = 'link_code'
+			WHERE table_name = 'meta_link_def';
+		END
+
+		-- Vyčištění systémových záznamů meta_link_def (znovu se čistě naplní v fillup_meta_link_def.sql a p_fix_meta_column.sql)
+		DELETE FROM meta_link_def WHERE object_owner = 0x00;
 	END
 
 	-- 3. Rozšíření tabulky link o zpětnou váhu a identifikátor diagramu pro materializované nepřímé vazby
@@ -536,6 +543,7 @@ BEGIN
 	BEGIN
 		EXEC p_create_missing_column 'link', 'reverse_link_weight', 'decimal(16,4) NULL';
 		EXEC p_create_missing_column 'link', 'diagram_uuid', 'uuid NULL';
+		DELETE FROM link WHERE is_derived = 1;
 	END
 
 	-- 4. Založení tabulky link_diagram (pokud ještě neexistuje)
@@ -588,7 +596,7 @@ BEGIN
 	VALUES (
 		'changes_2026.sql',
 		'26.11.11.0',
-		'Rozšíření meta_link_def a link pro zpětné vztahy, exkluzivní parent_uuid a projekci diagramů, vytvoření link_diagram a vyčištění asset'
+		'Rozšíření meta_link_def a link se složeným klíčem (from_class, link_code), projekce 1:N vazeb, vytvoření link_diagram a vyčištění asset'
 	);
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
@@ -597,8 +605,7 @@ END
 GO
 
 -- =============================================================================
--- Bezpečnostní pojistka: Odrolování neukončené transakce (při testu nanečisto
--- nebo pokud byla databáze již ve stejné či vyšší verzi a žádný blok neproběhl)
+-- Bezpečnostní pojistka: Odrolování neukončené transakce
 -- =============================================================================
 IF @@TRANCOUNT > 0 ROLLBACK;
 SET NOCOUNT ON;

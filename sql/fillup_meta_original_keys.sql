@@ -1,11 +1,14 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:15
+ * Verze: 2026-11-12 16:45
  * Soubor: fillup_meta_original_keys.sql
  * Účel: Hromadné znovunaplnění definic pro generování sloupce "original".
  * Vazby: Slouží jako podklad pro proceduru generate_trgo, která dynamicky 
  *        skládá a zakládá triggery nad všemi definovanými tabulkami.
  *        Čte systémový pohled v_syscolumns a zapisuje do tabulky meta_original_keys.
  * Změny:
+ * - 2026-11-12 16:45: Klíč tabulky meta_link_def rozšířen na složený klíč
+ *   (from_class, link_code), aby šlo používat jednotné kódy parent_to_child
+ *   a child_to_parent napříč různými třídami.
  * - 2026-11-09 14:15: Přidány složené klíče (asset_uuid, scenario_uuid) pro
  *   tabulku scenario_assessment a (asset_uuid, countermeasure_uuid) pro
  *   tabulku countermeasure_implementation (tabulka asset se zařadí automaticky
@@ -28,7 +31,7 @@ VALUES
 	('meta_object', 'object_type', 'builtin_code'),
 	('meta_column', 'parent_class', 'column_name'),                         -- Vazba na logickou třídu
 	('meta_class', 'class_name', NULL),                                     -- Třída je unikátní svým názvem
-	('meta_link_def', 'link_code', NULL),                                   -- Definice vazby je unikátní kódem
+	('meta_link_def', 'from_class', 'link_code'),                           -- Definice vztahu je unikátní zdrojovou třídou a kódem
 	('meta_codetable', 'codetable_name', 'value_code'),                     -- Číselník je unikátní názvem a hodnotou
 	('meta_phrase', 'source_code', 'builtin_code'),                         -- Fráze je unikátní zdrojovou třídou a kódem
 	('hierarchy', 'builtin_code', NULL),                                    -- Hierarchie je unikátní svým kódem
