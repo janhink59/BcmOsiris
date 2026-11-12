@@ -1,7 +1,18 @@
-﻿-- =============================================================================
--- Tabulka: organization_unit
--- Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
--- =============================================================================
+﻿/* =============================================================================
+ * Verze: 2026-11-12 18:30
+ * Soubor: table_organization_unit.sql
+ * Tabulka: organization_unit (Organizační jednotky a útvary)
+ * Popis:   Hierarchický číselník vnitřních organizačních útvarů a oddělení
+ *          organizace (např. IT oddělení, HR / personální oddělení).
+ * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
+ * Vazby:   - parent_uuid ukazuje na nadřízený útvar (organization_unit.original).
+ *          - Vazby na personál (asset_personnel) a spravovaná aktiva (asset)
+ *            se ukládají do tabulky link.
+ * Změny:
+ * - 2026-11-12 18:30: Doplněny sloupce builtin_code, parent_uuid, sort_code,
+ *   is_leaf, svg_icon, is_final, is_protected, draft_author, approval_note,
+ *   import_origin a indexy uq_organization_unit_draft a ix_organization_unit_parent_sort.
+ * ============================================================================= */
 
 -- Kontrola a odstranění tabulky, pokud pochází ze starého systému (obsahuje guid)
 IF EXISTS(SELECT * FROM v_syscolumns WHERE tabname='organization_unit' AND colname='guid')
@@ -18,6 +29,8 @@ CREATE TABLE organization_unit (
 	original uuid NOT NULL DEFAULT 0x00,
 	record_type varchar(1) NOT NULL DEFAULT 'A',
 	approval_status varchar(1) NOT NULL DEFAULT 'A',
+	draft_author uuid NOT NULL DEFAULT 0x00,
+	approval_note varchar(max) NOT NULL DEFAULT '',
 	inactive bit NOT NULL DEFAULT 0,
 	removed bit NOT NULL DEFAULT 0,
 	language varchar(2) NOT NULL DEFAULT 'cs',
@@ -25,16 +38,19 @@ CREATE TABLE organization_unit (
 	valid_to date NULL,
 	is_template bit NOT NULL DEFAULT 0,
 	template uuid NULL,
+	import_origin varchar(255) NULL,
 	
 	-- -------------------------------------------------------------------------
-	-- Společné textové vlastnosti
+	-- Společné textové a prezentační vlastnosti
 	-- -------------------------------------------------------------------------
+	builtin_code varchar(80) NOT NULL DEFAULT '',
 	caption varchar(200) NOT NULL DEFAULT '',
 	shortname varchar(40) NOT NULL DEFAULT '',
 	external_code varchar(200) NOT NULL DEFAULT '',
 	instance_class_name varchar(80) NOT NULL DEFAULT '',
 	description_text varchar(max) NOT NULL DEFAULT '',
 	help_text varchar(max) NOT NULL DEFAULT '',
+	svg_icon varchar(max) NOT NULL DEFAULT '',
 	
 	-- -------------------------------------------------------------------------
 	-- Auditní stopy
@@ -45,15 +61,37 @@ CREATE TABLE organization_unit (
 	who_modified uuid NOT NULL DEFAULT 0x00,
 
 	-- -------------------------------------------------------------------------
-	-- Specifické sloupce
+	-- Stromová struktura a ochrana záznamu
 	-- -------------------------------------------------------------------------
+	parent_uuid uuid NULL,
+	sort_code varchar(200) NOT NULL DEFAULT '',
+	is_leaf bit NOT NULL DEFAULT 1,
 	builtin bit NOT NULL DEFAULT 0,
+	is_final bit NOT NULL DEFAULT 0,
+	is_protected bit NOT NULL DEFAULT 0,
 
 	CONSTRAINT pk_organization_unit PRIMARY KEY (uuid)
 );
 GO
 
--- Indexy pro zajištění RAC architektury
+-- -----------------------------------------------------------------------------
+-- Zajištění chybějících sloupců pro existující databáze
+-- -----------------------------------------------------------------------------
+EXEC p_create_missing_column 'organization_unit', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
+EXEC p_create_missing_column 'organization_unit', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'organization_unit', 'import_origin', 'varchar(255) NULL';
+EXEC p_create_missing_column 'organization_unit', 'builtin_code', 'varchar(80) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'organization_unit', 'svg_icon', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'organization_unit', 'parent_uuid', 'uuid NULL';
+EXEC p_create_missing_column 'organization_unit', 'sort_code', 'varchar(200) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'organization_unit', 'is_leaf', 'bit NOT NULL DEFAULT 1';
+EXEC p_create_missing_column 'organization_unit', 'is_final', 'bit NOT NULL DEFAULT 0';
+EXEC p_create_missing_column 'organization_unit', 'is_protected', 'bit NOT NULL DEFAULT 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Indexy pro zajištění RAC a SSC architektury a průchodu stromem
+-- -----------------------------------------------------------------------------
 EXEC sp_create_index 
 	@tname = 'organization_unit', 
 	@iname = 'uq_organization_unit_active', 
@@ -68,4 +106,20 @@ EXEC sp_create_index
 	@colnames = 'original, object_owner, language', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''L'' AND removed = 0';
+GO
+
+EXEC sp_create_index 
+	@tname = 'organization_unit', 
+	@iname = 'uq_organization_unit_draft', 
+	@colnames = 'original, object_owner, language, draft_author', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''D'' AND removed = 0';
+GO
+
+EXEC sp_create_index 
+	@tname = 'organization_unit', 
+	@iname = 'ix_organization_unit_parent_sort', 
+	@colnames = 'parent_uuid, sort_code, builtin_code', 
+	@uni = '', 
+	@options = 'WHERE record_type = ''A'' AND removed = 0';
 GO

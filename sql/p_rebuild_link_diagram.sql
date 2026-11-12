@@ -2,7 +2,7 @@ EXECUTE dropni 'p_rebuild_link_diagram', 'P';
 GO
 
 /* =============================================================================
- * Verze:     2026-11-12 17:10
+ * Verze:     2026-11-12 18:30
  * Soubor:    p_rebuild_link_diagram.sql
  * Procedura: dbo.p_rebuild_link_diagram
  * Účel:      Vyhodnotí topologii schématu heterogenní sítě (@diagram_uuid
@@ -10,7 +10,7 @@ GO
  *            1. Nejprve synchronizuje stromové a zděděné vazby
  *               (dbo.p_sync_derived_links).
  *            2. Vyhodnotí cesty mezi logickými třídami přes
- *               dbo.f_resolve_link_diagram a pro každou dosažitelnální dvojici
+ *               dbo.f_resolve_link_diagram a pro každou dosažitelnou dvojici
  *               tříd (from_class, to_class) vygeneruje do meta_link_def
  *               odvozený vztah (is_derived = 1, diagram_uuid = @diagram_uuid).
  *            3. Vyhodnotí cesty mezi konkrétními objekty (uzly) po všech
@@ -23,6 +23,10 @@ GO
  *            - Využívá tabulkový typ tt_resolve_link_diagram, proceduru
  *              dbo.p_sync_derived_links a funkce dbo.f_resolve_link_diagram,
  *              dbo.f_generate_original a dbo.f_link_original.
+ * Změny:
+ * - 2026-11-12 18:30: Opraveno volání agregační funkce MIN() nad typem
+ *   uniqueidentifier (přetypováno přes varchar(36)) a podmínka mld.is_derived = 0
+ *   změněna na mld.diagram_uuid IS NULL (povolení stromových a 1:N vztahů).
  * ============================================================================= */
 CREATE PROCEDURE dbo.p_rebuild_link_diagram
 	@diagram_uuid uniqueidentifier,
@@ -112,7 +116,7 @@ BEGIN
 		AND mld.record_type = 'A'
 		AND mld.removed = 0
 		AND mld.inactive = 0
-		AND mld.is_derived = 0
+		AND mld.diagram_uuid IS NULL
 	WHERE l.from_object = @diagram_uuid
 		AND l.object_owner IN (@org_uuid, 0x00)
 		AND l.record_type = 'A'
@@ -134,11 +138,11 @@ BEGIN
 	);
 
 	INSERT INTO @obj_edges (from_obj, to_obj, from_cls, to_cls)
-	SELECT DISTINCT
+	SELECT
 		src.from_obj,
 		src.to_obj,
-		MIN(src.from_cls),
-		MIN(src.to_cls)
+		CAST(MIN(CAST(src.from_cls AS varchar(36))) AS uniqueidentifier),
+		CAST(MIN(CAST(src.to_cls AS varchar(36))) AS uniqueidentifier)
 	FROM (
 		SELECT
 			CASE WHEN dd.direction_type = 'R' THEN l.to_object ELSE l.from_object END AS from_obj,
@@ -167,7 +171,9 @@ BEGIN
 	);
 
 	INSERT INTO @node_class (obj_uuid, cls_uuid)
-	SELECT obj_uuid, MIN(cls_uuid)
+	SELECT
+		obj_uuid,
+		CAST(MIN(CAST(cls_uuid AS varchar(36))) AS uniqueidentifier)
 	FROM (
 		SELECT from_obj AS obj_uuid, from_cls AS cls_uuid FROM @obj_edges
 		UNION ALL

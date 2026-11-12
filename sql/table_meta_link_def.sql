@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-12 18:30
  * Soubor: table_meta_link_def.sql
  * Tabulka: meta_link_def
  * Popis:   Definiční tabulka pro vztahy mezi logickými třídami (meta_class).
@@ -12,7 +12,9 @@
  * Vazby:   - from_class a to_class (UUID) ukazují na meta_class.original.
  *          - reverse_link_def (UUID) ukazuje na opačný vztah v meta_link_def.original.
  *          - diagram_uuid (UUID) ukazuje na link_diagram.original.
- * Změny:   - 2026-11-11 21:30: Doplněny sloupce reverse_link_def, direction_type,
+ * Změny:   - 2026-11-12 18:30: Doplněn unikátní filtrovaný index uq_meta_link_def_key
+ *            nad složeným klíčem (object_owner, from_class, link_code).
+ *          - 2026-11-11 21:30: Doplněny sloupce reverse_link_def, direction_type,
  *            is_exclusive_parent, is_derived a diagram_uuid.
  *          - 2026-10-23 11:00: Doplněny SSC sloupce draft_author, approval_note,
  *            import_origin a unikátní index uq_meta_link_def_draft.
@@ -104,6 +106,15 @@ EXEC sp_create_index
 	@tname = 'meta_link_def', 
 	@iname = 'uq_meta_link_def_active', 
 	@colnames = 'original, object_owner', 
+	@uni = 'UNIQUE', 
+	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- Zajištění unikátnosti složeného klíče (from_class, link_code) pro daného vlastníka
+EXEC sp_create_index 
+	@tname = 'meta_link_def', 
+	@iname = 'uq_meta_link_def_key', 
+	@colnames = 'object_owner, from_class, link_code', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
 GO

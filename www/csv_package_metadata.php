@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-24 23:50
+ * Verze: 2026-11-12 18:40
  * Soubor: csv_package_metadata.php
  * Třída: csv_package_metadata
  * Účel: Konkrétní implementace CSV balíčku "metadata" pro přenos kompletních
@@ -18,6 +18,9 @@
  * - Ve Fázi 2 importu volá uloženou proceduru `p_csv_import_metadata`.
  *
  * Změny:
+ * 2026-11-12 18:40 - Do exportního dotazu tabulky meta_link_def doplněny sloupce
+ *                    reverse_link_def, direction_type, is_exclusive_parent,
+ *                    is_derived a diagram_uuid.
  * 2026-10-24 23:50 - Do exportního dotazu tabulky meta_class doplněn sloupec days_in_trash.
  * 2026-10-24 20:05 - Odstraněny filtrační parametry `language_filter` a `class_filter`.
  *                    Balíček vždy exportuje kompletní systémová metadata ve všech jazycích.
@@ -93,10 +96,10 @@ class csv_package_metadata extends abstract_csv_package {
 				ORDER BY codetable_name, sort_code, value_code, record_type, [language]
 			",
 			'meta_link_def' => "
-				SELECT uuid, original, record_type, [language], inactive, removed, link_code, from_class, to_class, caption_forward, caption_backward, description, helptext, is_multiple, is_mandatory, leaf_only, transfer_roles, link_weight_enabled, is_final, is_protected
+				SELECT uuid, original, record_type, [language], inactive, removed, link_code, from_class, to_class, reverse_link_def, direction_type, caption_forward, caption_backward, description, helptext, is_multiple, is_mandatory, leaf_only, is_exclusive_parent, transfer_roles, link_weight_enabled, is_derived, diagram_uuid, is_final, is_protected
 				FROM meta_link_def
 				WHERE object_owner = 0x00 AND record_type IN ('A', 'L')
-				ORDER BY link_code, record_type, [language]
+				ORDER BY from_class, link_code, record_type, [language]
 			"
 		];                                                                   // Konec kompletních exportních dotazů
 	}

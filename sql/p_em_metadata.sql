@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-12 18:30
  * Soubor: p_em_metadata.sql
  * Procedury: dbo.p_em_get_class_meta, dbo.p_em_get_columns_meta,
  *            dbo.p_em_get_select_options
@@ -16,6 +16,9 @@
  * Vazby:  - Voláno z PHP třídy entity_manager (entity_manager.php, entity_manager_ui.php),
  *           page_asset.php, page_link.php, page_link_diagram.php, page_hierarchy_item.php,
  *           page_scale_value.php a page_approval.php.
+ * Změny:  - 2026-11-12 18:30: U výběru z meta_link_def doplněn prefix zdrojové
+ *           třídy (class_name + '.' + link_code) pro jednoznačné odlišení
+ *           stejnojmenných vztahů (např. parent_to_child) napříč třídami.
  * ============================================================================= */
 
 EXECUTE dropni 'p_em_get_class_meta', 'P';
@@ -557,10 +560,15 @@ BEGIN
 
 		IF @ref_table = 'meta_link_def'
 		BEGIN
-			SELECT a.original, a.link_code AS code_col,
+			SELECT a.original,
+				ISNULL(mc_f.class_name + '.', '') + a.link_code AS code_col,
 				COALESCE(tr.caption_forward, a.caption_forward, a.link_code)
 				+ CASE WHEN a.direction_type = 'R' THEN ' [R]' WHEN a.direction_type = 'S' THEN ' [S]' ELSE '' END AS caption
 			FROM meta_link_def a
+			LEFT JOIN meta_class mc_f
+				ON mc_f.original = a.from_class
+				AND mc_f.record_type = 'A'
+				AND mc_f.removed = 0
 			OUTER APPLY (
 				SELECT TOP 1 l.caption_forward
 				FROM meta_link_def l
@@ -574,7 +582,7 @@ BEGIN
 			  AND a.removed = 0
 			  AND a.inactive = 0
 			  AND (@ref_table <> @storage_table OR @curr_guid IS NULL OR a.original <> @curr_guid)
-			ORDER BY a.is_derived ASC, a.link_code ASC;
+			ORDER BY a.is_derived ASC, mc_f.class_name ASC, a.link_code ASC;
 			RETURN;
 		END
 

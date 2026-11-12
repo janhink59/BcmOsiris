@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-12 18:30
  * Soubor: system_constant.sql
  * Tabulky: system_constant (Systémové konstanty), service_logbook (Provozní deník)
  * Popis:	1. system_constant uchovává globální konfiguraci systému v jediném
@@ -14,6 +14,7 @@
  * ani platnosti. Slouží čistě pro globální technické parametry a servisní audit.
  *
  * Změny:
+ * - 2026-11-12 18:30: Výchozí hodnota sloupce database_version povýšena na '26.11.12.0'.
  * - 2026-11-11 21:30: Výchozí hodnota sloupce database_version povýšena na '26.11.11.0'.
  * - 2026-11-09 18:30: Výchozí hodnota sloupce database_version povýšena na '26.11.09.0'.
  * ============================================================================= */
@@ -31,7 +32,7 @@ BEGIN
 		who_modified uuid NOT NULL DEFAULT 0x00,
 		
 		-- Globální verze a stavy (formát verze 'RR.MM.DD.N')
-		database_version varchar(20) NOT NULL DEFAULT '26.11.11.0',
+		database_version varchar(20) NOT NULL DEFAULT '26.11.12.0',
 		app_version varchar(20) NOT NULL DEFAULT '',
 		database_state varchar(1) NOT NULL DEFAULT 'X',
 		
@@ -82,7 +83,7 @@ GO
 
 EXEC sp_drop_default 'system_constant', 'database_version';
 ALTER TABLE system_constant
-	ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.11.11.0' FOR database_version;
+	ADD CONSTRAINT df_system_constant_db_version DEFAULT '26.11.12.0' FOR database_version;
 GO
 
 -- -----------------------------------------------------------------------------
@@ -103,7 +104,7 @@ BEGIN
 		email_sender_address
 	) VALUES (
 		NEWID(),
-		'26.11.11.0',
+		'26.11.12.0',
 		'hink@rac.cz',
 		'', -- Ponecháno prázdné, doplní se při aktivaci systému
 		'sandbox.smtp.mailtrap.io', -- Nultý bod: Vývojový SMTP server
