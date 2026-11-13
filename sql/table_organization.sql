@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-29 15:30
+ * Verze: 2026-11-13 17:30
  * Soubor: table_organization.sql
  * Tabulka: organization (Organizace a její nastavení)
  * Popis:	Základní kámen multi-tenantní architektury CRMM. Definuje jednotlivé 
@@ -13,6 +13,8 @@
  *			parametry organizace (nahrazuje dřívější tabulku organization_settings).
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
  * Změny:
+ * - 2026-11-13 17:30: Doplněna registrace třídy a sloupců do sysinit_class
+ *   a sysinit_column.
  * - 2026-10-29 15:30: Vyčleněny sloupce licence_level a login_disabled do
  *   tabulky organization_licence. Doplněny regionální, formátovací a CRMM
  *   výpočtové parametry organizace a unikátní index uq_organization_draft.
@@ -222,4 +224,92 @@ WHERE a.record_type = 'A'
 	  AND l.[language] = a.[language]
 	  AND l.removed = 0
   );
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'organization';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('organization','cs','T','organization','Organizace','Organizace','Kmenová evidence organizací (tenantů) včetně fakturačních, regionálních a metodických parametrů CRMM.','Správa identifikačních údajů organizace, formátování měn a dat a výpočtových limitů hodnocení rizik.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('organization','en','Organization','Organizations','Master registry of organizations (tenants) including billing, regional, and CRMM calculation parameters.','Manage organization identification, currency/date formatting, and risk assessment score limits.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'organization';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		hidden
+	) VALUES
+	('organization','address_city','cs','Město / obec (address_city)','Město / Obec','Město','Město nebo obec sídla organizace.',0),
+	('organization','address_name','cs','Název v adrese (address_name)','Oficiální název v adrese sídla','Název (adresa)','Obchodní jméno nebo doplněk názvu uváděný v poštovní adrese sídla.',0),
+	('organization','address_state','cs','Stát (address_state)','Stát / Země','Stát','Stát, ve kterém se nachází sídlo organizace.',0),
+	('organization','address_street','cs','Ulice a číslo (address_street)','Ulice a číslo popisné / orientační','Ulice','Ulice a číslo domu sídla organizace.',0),
+	('organization','address_zip','cs','PSČ (address_zip)','Poštovní směrovací číslo (PSČ)','PSČ','Poštovní směrovací číslo adresy sídla.',0),
+	('organization','currency_before','cs','Měna před částkou (currency_before)','Zobrazovat symbol měny před číslem','Měna před','Pokud je zaškrtnuto, symbol měny se vypisuje před číselnou částkou (např. € 100).',0),
+	('organization','currency_digits','cs','Desetinná místa měny (currency_digits)','Počet desetinných míst měny','Des. místa měny','Počet zobrazovaných desetinných míst u finančních částek.',0),
+	('organization','currency_unit','cs','Měnová jednotka (currency_unit)','Používaná měnová jednotka','Měna','Označení měnové jednotky pro finanční hodnocení dopadů a rizik (např. tis. Kč, EUR).',0),
+	('organization','decimal_separator','cs','Desetinný oddělovač (decimal_separator)','Znak desetinného oddělovače','Des. oddělovač','Znak oddělující celou a desetinnou část čísla (čárka nebo tečka).',0),
+	('organization','evaluation_method','cs','Metoda hodnocení rizik (evaluation_method)','Zvolená metodika hodnocení CRMM','Metoda hodnocení','Kód metodiky nebo výpočtového modelu používaného pro vyhodnocení rizik.',0),
+	('organization','export_delimiter','cs','Oddělovač polí v CSV (export_delimiter)','Výchozí oddělovač pro CSV export','CSV oddělovač','Znak oddělující sloupce v exportovaných CSV souborech (standardně středník ;).',0),
+	('organization','format_date','cs','Formát data (format_date)','Formát zobrazení data','Formát data','Maska pro formátování kalendářního data v uživatelském rozhraní (např. dd.MM.yyyy).',0),
+	('organization','format_time','cs','Formát času (format_time)','Formát zobrazení času','Formát času','Maska pro formátování času v uživatelském rozhraní (např. HH:mm:ss).',0),
+	('organization','invoice_info','cs','Fakturační údaje (invoice_info)','Fakturační a bankovní údaje','Fakturace','Doplňující fakturační údaje, bankovní spojení nebo poznámka na fakturu.',0),
+	('organization','login_domain','cs','Přihlašovací SSO doména (login_domain)','Doména pro SSO přihlášení','SSO doména','Internetová doména organizace pro automatické rozpoznání domovského tenanta při SSO autentizaci.',0),
+	('organization','logo_data','cs','Binární data loga (logo_data)','Soubor loga organizace','Logo (data)','Binární obsah grafického souboru s logotypem organizace.',1),
+	('organization','logo_filename','cs','Název souboru loga (logo_filename)','Původní název souboru loga','Soubor loga','Název nahraného grafického souboru s logotypem organizace.',1),
+	('organization','logo_mime_type','cs','MIME typ loga (logo_mime_type)','Formát obrázku loga (MIME)','MIME typ loga','Internetový typ média nahraného loga (např. image/png, image/svg+xml).',1),
+	('organization','max_impact_financial','cs','Finanční hodnota max. dopadu (max_impact_financial)','Finanční vyjádření nejvyššího dopadu','Max. dopad (fin.)','Finanční částka v měnové jednotce organizace odpovídající nejvyššímu stupni dopadu.',0),
+	('organization','max_impact_score','cs','Maximální skóre dopadu (max_impact_score)','Horní limit skóre velikosti dopadu','Max. dopad','Nejvyšší povolená hodnota skóre při hodnocení velikosti dopadu v organizaci.',0),
+	('organization','max_risk_score','cs','Maximální skóre rizika (max_risk_score)','Horní limit skóre výsledného rizika','Max. riziko','Nejvyšší hodnota skóre výsledného rizika v metodice organizace.',0),
+	('organization','max_threat_score','cs','Maximální skóre hrozby (max_threat_score)','Horní limit skóre velikosti hrozby','Max. hrozba','Nejvyšší povolená hodnota skóre při hodnocení velikosti hrozby v organizaci.',0),
+	('organization','max_vulnerability_score','cs','Maximální skóre zranitelnosti (max_vulnerability_score)','Horní limit skóre zranitelnosti','Max. zranitelnost','Nejvyšší povolená hodnota skóre při hodnocení zranitelnosti v organizaci.',0),
+	('organization','preferred_language','cs','Výchozí jazyk organizace (preferred_language)','Preferovaný výchozí jazyk','Výchozí jazyk','Výchozí jazyk prostředí a dat pro nově zakládané uživatele a záznamy organizace.',0),
+	('organization','register_id','cs','Identifikační číslo (register_id)','IČO organizace','IČO','Oficiální identifikační číslo organizace v obchodním nebo živnostenském rejstříku.',0),
+	('organization','residual_risk_min_financial','cs','Finanční práh zbytkového rizika (residual_risk_min_financial)','Zanedbatelná roční ztráta (skóre 1)','Min. rez. (fin.)','Finanční hodnota ročních ztrát v měně organizace považovaná za zanedbatelné zbytkové riziko.',0),
+	('organization','tax_id','cs','Daňové identifikační číslo (tax_id)','DIČ organizace','DIČ','Daňové identifikační číslo organizace pro účely fakturace a DPH.',0),
+	('organization','thousand_separator','cs','Oddělovač tisíců (thousand_separator)','Znak oddělovače tisíců','Odd. tisíců','Znak používaný pro oddělení tisíců při výpisu čísel (např. mezera).',0),
+	('organization','time_zone','cs','Časové pásmo (time_zone)','Časové pásmo organizace','Časové pásmo','Identifikátor časového pásma organizace (např. Europe/Prague).',0),
+	('organization','www_address','cs','Webová stránka (www_address)','Webová adresa (URL)','Web (WWW)','Oficiální webová prezentace organizace.',0);
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('organization','address_city','en','City / Town (address_city)','City / Municipality','City','City or municipality of the organization headquarters.'),
+	('organization','address_name','en','Address Name (address_name)','Official Name in Registered Address','Address Name','Company name or supplement used in the postal address.'),
+	('organization','address_state','en','Country / State (address_state)','Country / State','Country','Country where the organization headquarters is located.'),
+	('organization','address_street','en','Street & Number (address_street)','Street and Building Number','Street','Street and building number of the organization headquarters.'),
+	('organization','address_zip','en','Postal / ZIP Code (address_zip)','Postal / ZIP Code','ZIP Code','Postal code of the headquarters address.'),
+	('organization','currency_before','en','Currency Before Amount (currency_before)','Display Currency Symbol Before Number','Currency Before','If checked, the currency symbol is placed before the numeric amount (e.g., € 100).'),
+	('organization','currency_digits','en','Currency Decimal Places (currency_digits)','Number of Currency Decimal Places','Currency Decimals','Number of decimal places displayed for financial amounts.'),
+	('organization','currency_unit','en','Currency Unit (currency_unit)','Currency Unit Used','Currency','Currency unit label used for financial impact and risk valuation (e.g., kCZK, EUR).'),
+	('organization','decimal_separator','en','Decimal Separator (decimal_separator)','Decimal Separator Character','Decimal Sep.','Character separating integer and fractional parts of a number (comma or dot).'),
+	('organization','evaluation_method','en','Risk Evaluation Method (evaluation_method)','Selected CRMM Evaluation Method','Evaluation Method','Code of the methodology or calculation model used for risk evaluation.'),
+	('organization','export_delimiter','en','CSV Field Delimiter (export_delimiter)','Default Delimiter for CSV Export','CSV Delimiter','Character separating columns in exported CSV files (semicolon ; by default).'),
+	('organization','format_date','en','Date Format (format_date)','Date Display Format','Date Format','Formatting mask for displaying calendar dates in the UI (e.g., dd.MM.yyyy or yyyy-MM-dd).'),
+	('organization','format_time','en','Time Format (format_time)','Time Display Format','Time Format','Formatting mask for displaying time values in the UI (e.g., HH:mm:ss).'),
+	('organization','invoice_info','en','Billing Information (invoice_info)','Billing & Bank Account Details','Billing Info','Additional billing details, bank account numbers, or invoice notes.'),
+	('organization','login_domain','en','SSO Login Domain (login_domain)','Domain for SSO Login','SSO Domain','Internet domain of the organization used to automatically detect the home tenant during SSO authentication.'),
+	('organization','logo_data','en','Logo Binary Data (logo_data)','Organization Logo File Data','Logo (Data)','Binary content of the organization logo image file.'),
+	('organization','logo_filename','en','Logo Filename (logo_filename)','Original Logo Filename','Logo Filename','Filename of the uploaded organization logo image.'),
+	('organization','logo_mime_type','en','Logo MIME Type (logo_mime_type)','Logo Image Format (MIME)','Logo MIME Type','Internet media type of the uploaded logo (e.g., image/png, image/svg+xml).'),
+	('organization','max_impact_financial','en','Financial Value of Max Impact (max_impact_financial)','Financial Expression of Highest Impact','Max. Impact (Fin.)','Financial amount in the organization currency corresponding to the highest impact level.'),
+	('organization','max_impact_score','en','Maximum Impact Score (max_impact_score)','Upper Limit of Impact Score','Max. Impact','Highest allowed score value when assessing impact severity in the organization.'),
+	('organization','max_risk_score','en','Maximum Risk Score (max_risk_score)','Upper Limit of Resulting Risk Score','Max. Risk','Highest resulting risk score value in the organization methodology.'),
+	('organization','max_threat_score','en','Maximum Threat Score (max_threat_score)','Upper Limit of Threat Score','Max. Threat','Highest allowed score value when assessing threat level in the organization.'),
+	('organization','max_vulnerability_score','en','Maximum Vulnerability Score (max_vulnerability_score)','Upper Limit of Vulnerability Score','Max. Vulnerability','Highest allowed score value when assessing vulnerability in the organization.'),
+	('organization','preferred_language','en','Default Organization Language (preferred_language)','Preferred Default Language','Default Language','Default UI and data language for newly created users and records in the organization.'),
+	('organization','register_id','en','Company Registration ID (register_id)','Company Registration Number (ID)','Reg. ID','Official registration number of the organization in the commercial register.'),
+	('organization','residual_risk_min_financial','en','Financial Residual Risk Threshold (residual_risk_min_financial)','Negligible Annual Loss (Score 1)','Min. Res. (Fin.)','Financial value of annual loss in the organization currency considered negligible residual risk.'),
+	('organization','tax_id','en','Tax Identification Number (tax_id)','VAT / Tax ID of Organization','Tax ID','Tax identification number of the organization for billing and VAT purposes.'),
+	('organization','thousand_separator','en','Thousands Separator (thousand_separator)','Thousands Separator Character','Thousands Sep.','Character used to separate thousands when formatting numbers (e.g., space or comma).'),
+	('organization','time_zone','en','Time Zone (time_zone)','Organization Time Zone','Time Zone','Time zone identifier of the organization (e.g., Europe/Prague).'),
+	('organization','www_address','en','Website (www_address)','Website Address (URL)','Website','Official website URL of the organization.');
+END
 GO

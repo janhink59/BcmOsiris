@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-13 17:15
  * Soubor: table_link_diagram.sql
  * Tabulka: link_diagram (Schémata / diagramy heterogenních sítí vztahů CRMM)
  * Popis:   Uchovává definice orientovaných schémat (diagramů) sítě pro výpočet
@@ -106,4 +106,23 @@ EXEC sp_create_index
 	@colnames = 'original, object_owner, language, draft_author', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''D'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace tříd do sysinit_class
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name IN ('link_diagram', 'f_resolve_link_diagram', 'f_resolve_hierarchy');
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, sort_code, is_final, is_protected, caption, caption_plural, description, helptext) VALUES
+	('f_resolve_hierarchy','cs','F','f_resolve_hierarchy','',1,0,'Funkce výpočtu stromové hierarchie','Výpočet stromové hierarchie','Tabulková funkce pro seřazení stromové struktury, výpočet úrovně zanoření a lexikografického kódu.','Zajišťuje průchod stromem od kořenů k listům a detekci sirotků.'),
+	('f_resolve_link_diagram','cs','F','f_resolve_link_diagram','',1,0,'Funkce výpočtu orientovaného grafu sítě','Výpočet orientovaného grafu sítě','Tabulková funkce pro průchod orientovaným grafem (DAG), detekci cyklů a určení vrcholových uzlů.','Zajišťuje výpočet všech acyklických cest v heterogenních i vnitrotřídních sítích.'),
+	('link_diagram','cs','T','link_diagram','180',0,1,'Schéma sítě vztahů (Diagram)','Schémata sítí vztahů (Diagramy)','Definice orientovaných schémat heterogenních sítí pro výpočet cest přenosu rizik a závislostí mezi aktivy a útvary.','Skládá vybrané orientované vztahy do sítě a materializuje nepřímé vztahy a vazby pro okamžité vyhodnocení šíření rizik.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('f_resolve_hierarchy','en','Tree Hierarchy Resolution Function','Tree Hierarchy Resolution','Table-valued function computing tree ordering, nesting depth, and zero-padded sort paths.','Performs top-down tree traversal and orphan detection.'),
+	('f_resolve_link_diagram','en','Directed Network Graph Resolution Function','Directed Network Graph Resolution','Table-valued function for traversing directed graphs (DAGs), cycle detection, and identifying top-level root nodes.','Computes acyclic paths across heterogeneous and intra-class networks.'),
+	('link_diagram','en','Network Relationship Diagram (Schema)','Network Relationship Diagrams (Schemas)','Definitions of directed heterogeneous network schemas for calculating risk and dependency propagation paths across assets and units.','Combines selected directed relationships into a network and materializes indirect relationships and links for instant risk evaluation.');
+END
 GO

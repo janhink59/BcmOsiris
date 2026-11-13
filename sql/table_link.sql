@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-13 17:15
  * Soubor: table_link.sql
  * Tabulka: link
  * Popis:   Univerzální transakční tabulka pro uživatelské, stromové (parent_uuid)
@@ -12,7 +12,9 @@
  *            ze které tato vazba vznikla děděním po hierarchii (0x00 = přímá vazba).
  *          - diagram_uuid (UUID) ukazuje na link_diagram.original u nepřímých
  *            vazeb materializovaných ze schématu heterogenní sítě.
- * Změny:   - 2026-11-11 21:30: Přidány sloupce reverse_link_weight a diagram_uuid
+ * Změny:   - 2026-11-13 17:15: Doplněna registrace třídy a sloupců do sysinit_class
+ *            a sysinit_column.
+ *          - 2026-11-11 21:30: Přidány sloupce reverse_link_weight a diagram_uuid
  *            a index ix_link_diagram.
  *          - 2026-10-30 23:35: Přidán sloupec ancestor_link uuid NOT NULL DEFAULT 0x00,
  *            zařazen do unikátního indexu uq_link_active_definition a vytvořen
@@ -160,4 +162,48 @@ EXEC sp_create_index
 	@colnames = 'diagram_uuid, object_owner', 
 	@uni = '', 
 	@options = 'WHERE diagram_uuid IS NOT NULL';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'link';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('link','cs','T','link','Vazba mezi objekty','Vazby a závislosti objektů','Univerzální tabulka uživatelských, stromových (parent_uuid) i hierarchicky a diagramově odvozených vazeb M:N mezi záznamy entit.','Uchovává přímé vazby i vazby automaticky zmaterializované děděním po stromu nebo ze schémat sítí.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('link','en','Object Link','Object Links & Dependencies','Universal table of user-defined, tree (parent_uuid), and hierarchically or diagram-derived M:N links between entity records.','Stores direct links as well as links automatically materialized down the hierarchy tree or from network schemas.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'link';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		is_mandatory, hidden, referenced_class_code
+	) VALUES
+	('link','ancestor_link','cs','Zdrojová nadřazená vazba (ancestor_link)','Zdrojová vazba při dědění','Zdroj dědění','Identifikátor nadřízené vazby v tabulce link, ze které tato vazba vznikla děděním po hierarchii (0x00 = přímá vazba).',0,1,''),
+	('link','diagram_uuid','cs','Zdrojové schéma sítě (diagram_uuid)','Schéma sítě / diagram (link_diagram)','Schéma sítě','Odkaz na schéma heterogenní sítě (link_diagram), ze kterého byl tento nepřímý vztah nebo vazba vygenerována.',0,0,'link_diagram'),
+	('link','from_object','cs','Zdrojový objekt vazby (from_object)','Zdrojový záznam vazby (odkud)','Zdroj vazby','Identifikátor (original) výchozího záznamu propojovaného vazbou.',1,0,'asset'),
+	('link','is_derived','cs','Zděděná vazba (is_derived)','Vazba odvozená děděním','Zděděno','Příznak udávající, že vazba vznikla automatickou materializací dědění z nadřízeného uzlu hierarchie.',0,1,''),
+	('link','link_def','cs','Definice vazby (link_def)','Typ vazby (meta_link_def)','Typ vazby','Odkaz na definici typu vazby v tabulce meta_link_def.',1,0,'meta_link_def'),
+	('link','link_weight','cs','Číselná váha vazby (link_weight)','Kvantitativní váha / priorita vazby','Váha vazby','Číselná hodnota vyjadřující váhu přenosu rizika nebo prioritu konkrétní vazby.',0,0,''),
+	('link','reverse_link_weight','cs','Váha vazby v opačném směru (reverse_link_weight)','Kvantitativní váha zpětného směru vazby','Zpětná váha','Volitelná číselná váha přenosu rizika nebo priority v opačném směru vazby.',0,0,''),
+	('link','to_object','cs','Cílový objekt vazby (to_object)','Cílový záznam vazby (kam)','Cíl vazby','Identifikátor (original) cílového záznamu propojovaného vazbou.',1,0,'asset');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('link','ancestor_link','en','Ancestor Source Link (ancestor_link)','Source Link for Hierarchy Inheritance','Ancestor Link','Identifier of the parent link in the link table from which this link was derived by hierarchy inheritance (0x00 = direct link).'),
+	('link','diagram_uuid','en','Source Network Diagram (diagram_uuid)','Network Diagram / Schema (link_diagram)','Network Diagram','Reference to the heterogeneous network schema (link_diagram) from which this indirect relationship or link was projected.'),
+	('link','from_object','en','Source Link Object (from_object)','Source Linked Record (From)','From Object','Original UUID of the source record connected by the link.'),
+	('link','is_derived','en','Derived Link (is_derived)','Link Materialized by Inheritance','Derived','Flag indicating that the link was automatically materialized by inheritance from a parent hierarchy node.'),
+	('link','link_def','en','Link Definition (link_def)','Link Type (meta_link_def)','Link Type','Reference to the link type definition in meta_link_def.'),
+	('link','link_weight','en','Link Numeric Weight (link_weight)','Quantitative Link Weight / Priority','Link Weight','Numeric value expressing risk transfer weight or priority of the specific link instance.'),
+	('link','reverse_link_weight','en','Reverse Link Weight (reverse_link_weight)','Quantitative Weight of Reverse Direction','Reverse Weight','Optional numeric risk transfer weight or priority in the opposite direction of the link.'),
+	('link','to_object','en','Target Link Object (to_object)','Target Linked Record (To)','To Object','Original UUID of the target record connected by the link.');
+END
 GO

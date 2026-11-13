@@ -1,19 +1,20 @@
 /* =============================================================================
- * Verze: 2026-10-24 13:15
+ * Verze: 2026-11-13 17:15
  * Soubor: table_meta_object.sql
  * Tabulka: meta_object
  * Popis:   DDL definice tabulky pro metadata fyzických objektů v databázi
  *          (tabulky, views, funkce, stránky a systémové kontejnery).
- *          Prvotní naplnění systémových záznamů typu 'P' je vyčleněno do
- *          samostatného skriptu fillup_meta_object.sql.
+ *          Prvotní naplnění systémových záznamů typu 'P' zajišťují modulární
+ *          skripty *#phrase.sql a procedura dbo.p_sysinit_process.
  * Vazby:   - Slouží jako fyzický podklad (storage_object) pro logické třídy v meta_class.
  *          - Záznamy typu 'P' (PHP Page / třída) jsou odkazovány z meta_menu.target_object,
  *            slouží k řízení přístupu přes sloupec system_role a představují platné
  *            zdrojové objekty (source_code) pro textové fráze v tabulce meta_phrase.
- *          - Plněno skriptem fillup_meta_object.sql, procedurou p_fix_meta_column
- *            (typy T, V, F, C) a importy p_xlsx_meta_object / p_csv_import_metadata.
- * Změny:   - 2026-10-24 13:15: Oddělení DDL struktury od datového plnění
- *            (plnění přesunuto do souboru fillup_meta_object.sql).
+ *          - Plněno procedurou p_fix_meta_column (typy T, V, F, C), procedurou
+ *            p_sysinit_process (typ P) a importy p_xlsx_meta_object / p_csv_import_metadata.
+ * Změny:   - 2026-11-13 17:15: Doplněna registrace třídy a sloupců do sysinit_class
+ *            a sysinit_column.
+ *          - 2026-10-24 13:15: Oddělení DDL struktury od datového plnění.
  * ============================================================================= */
 
 -- Idempotentní odstranění staré verze (pokud neobsahuje poslední významnou změnu)
@@ -117,4 +118,30 @@ EXEC sp_create_index
 	@colnames = 'original, object_owner, language, draft_author', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''D'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'meta_object';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('meta_object','cs','T','meta_object','Systémový objekt','Systémové objekty','Registr fyzických tabulek, pohledů, funkcí, aplikačních stránek a UI tříd systému.','Definuje fyzické úložiště pro logické třídy a řízení přístupu ke stránkám aplikace podle systémové role.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('meta_object','en','System Object','System Objects','Registry of physical tables, views, functions, application pages, and UI classes.','Defines physical storage objects for logical classes and role-based access control for application pages.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'meta_object';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('meta_object','object_type','cs','Druh systémového objektu (object_type)','Druh objektu (T/V/F/P/C/M)','Druh obj.','Kategorie objektu: T = tabulka, V = pohled, F = funkce, P = PHP stránka/třída, C = globální slovník sloupců, M = modul.'),
+	('meta_object','system_role','cs','Minimální systémová role (system_role)','Minimální požadovaná role (U/A/S/D)','Min. role','Minimální efektivní role nutná pro přístup: U = User, A = Admin organizace, S = Sysadmin, D = Developer.'),
+	('meta_object','object_type','en','System Object Type (object_type)','Object Type (T/V/F/P/C/M)','Obj. Type','Object category: T = Table, V = View, F = Function, P = PHP Page/Class, C = Global Column Dictionary, M = Module.'),
+	('meta_object','system_role','en','Minimum System Role (system_role)','Minimum Required Role (U/A/S/D)','Min. Role','Minimum effective role required for access: U = User, A = Org Admin, S = Sysadmin, D = Developer.');
+END
 GO

@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-01 18:00
+ * Verze: 2026-11-13 17:30
  * Soubor: table_scenario.sql
  * Tabulka: scenario (Katalog rizikových scénářů / událostí CRMM)
  * Popis:   Hierarchický katalog rizikových scénářů (událostí).
@@ -132,4 +132,39 @@ EXEC sp_create_index
 	@colnames = 'parent_uuid, sort_code, builtin_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'scenario';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('scenario','cs','T','scenario','Rizikový scénář','Rizikové scénáře','Hierarchický katalog rizikových scénářů (událostí) propojujících hrozbu, třídu aktiv a mez reziduálního rizika.','Definuje hodnotitelné rizikové události a minimální skóre, pod které nemůže klesnout zbytkové riziko.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('scenario','en','Risk Scenario','Risk Scenarios','Hierarchical catalog of risk scenarios (events) linking a threat, target asset class, and minimum residual risk.','Defines assessable risk events and the minimum threshold below which residual risk cannot drop.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'scenario';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		referenced_class_code
+	) VALUES
+	('scenario','asset_class_uuid','cs','Cílová třída aktiv (asset_class_uuid)','Třída aktiv pro hodnocení dopadu','Třída aktiv','Odkaz na třídu aktiv v katalogu asset_class, u níž se hodnotí dopad tohoto scénáře.','asset_class'),
+	('scenario','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).','scenario'),
+	('scenario','residual_risk_min_score','cs','Minimální reziduální riziko (residual_risk_min_score)','Minimální skóre zbytkového rizika','Min. rez. riziko','Spodní mez skóre reziduálního rizika scénáře, pod kterou zbytkové riziko neklesne ani po zavedení opatření.',''),
+	('scenario','threat_uuid','cs','Působící hrozba (threat_uuid)','Hrozba vyvolávající scénář','Hrozba','Odkaz na hrozbu z katalogu hrozeb, která tuto rizikovou událost (scénář) způsobuje.','threat');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('scenario','asset_class_uuid','en','Target Asset Class (asset_class_uuid)','Asset Class for Impact Assessment','Asset Class','Reference to the asset class in asset_class on which the impact of this scenario is evaluated.'),
+	('scenario','residual_risk_min_score','en','Minimum Residual Risk (residual_risk_min_score)','Minimum Residual Risk Score','Min. Res. Risk','Lower bound of scenario residual risk score below which residual risk cannot drop even after implementing controls.'),
+	('scenario','threat_uuid','en','Causing Threat (threat_uuid)','Threat Triggering the Scenario','Threat','Reference to the threat from the threat catalog that causes this risk event (scenario).');
+END
 GO

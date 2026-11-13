@@ -1,12 +1,11 @@
 /* =============================================================================
- * Verze: 2026-11-01 18:00
+ * Verze: 2026-11-13 18:30
  * Soubor: generate_trgo.sql
  * DÁVKA: Generátor deterministických triggerů (trgo_%)
  * Účel: Hromadné odstranění a znovuvytvoření triggerů pro vazební a katalogové tabulky.
  *       Triggery nastavují deterministické identifikátory (sloupce "uuid" a "original")
  *       při vložení záznamu pro tabulky uvedené v "meta_original_keys", pokud jsou
- *       klíčové sloupce vyplněny. Pokud je klíčový sloupec (např. builtin_code
- *       u běžného tenanta) prázdný, ponechá se náhodně vygenerované UUID (NEWID()).
+ *       klíčové sloupce vyplněny a tabulka obsahuje všechny vyžadované RAC sloupce.
  *
  * Vazby na okolí:
  * - Čte seznam tabulek a klíčových sloupců z tabulky meta_original_keys
@@ -17,6 +16,10 @@
  *   to_object, ancestor_link).
  *
  * Změny:
+ * - 2026-11-13 18:30: Do kurzoru cur_tables doplněna strukturální kontrola přes
+ *   COL_LENGTH, že cílová tabulka skutečně obsahuje všechny sloupce vyžadované
+ *   triggerem (uuid, object_owner, original, record_type, removed, template
+ *   a klíčové sloupce key1_column / key2_column).
  * - 2026-11-01 18:00: Doplněna podmínka neprázdnosti klíčových sloupců
  *   (@has_key_expr): pokud je builtin_code prázdný, trigger nenapojuje parent
  *   přes prázdný řetězec a nepřepisuje uuid/original deterministickým hashem
@@ -35,10 +38,20 @@ BEGIN
 	EXEC(@drop_sql);
 END
 
--- 2. Kurzor načítá všechny hodnoty přímo do proměnných
+-- 2. Kurzor načítá pouze vyhovující fyzické tabulky, které mají všechny vyžadované RAC a klíčové sloupce
 DECLARE @table_name VARCHAR(128), @key1 VARCHAR(128), @key2 VARCHAR(128);
 DECLARE cur_tables CURSOR FOR 
-	SELECT table_name, key1_column, key2_column FROM meta_original_keys;
+	SELECT table_name, key1_column, key2_column
+	FROM meta_original_keys
+	WHERE OBJECT_ID(table_name, 'U') IS NOT NULL
+	  AND COL_LENGTH(table_name, 'uuid') IS NOT NULL
+	  AND COL_LENGTH(table_name, 'object_owner') IS NOT NULL
+	  AND COL_LENGTH(table_name, 'original') IS NOT NULL
+	  AND COL_LENGTH(table_name, 'record_type') IS NOT NULL
+	  AND COL_LENGTH(table_name, 'removed') IS NOT NULL
+	  AND COL_LENGTH(table_name, 'template') IS NOT NULL
+	  AND COL_LENGTH(table_name, key1_column) IS NOT NULL
+	  AND (key2_column IS NULL OR COL_LENGTH(table_name, key2_column) IS NOT NULL);
 
 OPEN cur_tables;
 FETCH NEXT FROM cur_tables INTO @table_name, @key1, @key2;

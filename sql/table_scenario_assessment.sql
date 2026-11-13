@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:15
+ * Verze: 2026-11-13 18:10
  * Soubor: table_scenario_assessment.sql
  * Tabulka: scenario_assessment (Hodnocení rizikových scénářů nad aktivy)
  * Popis:   Uchovává vyhodnocení velikosti hrozby, zranitelnosti, dopadu
@@ -11,6 +11,9 @@
  *          - assessor_user_uuid ukazuje na user_account.original.
  *          - Deterministický klíč original se počítá ze dvojice
  *            (asset_uuid, scenario_uuid) přes meta_original_keys.
+ * Změny:
+ * - 2026-11-13 18:10: Doplněna registrace třídy a sloupců do sysinit_class
+ *   a sysinit_column.
  * ============================================================================= */
 
 IF OBJECT_ID('scenario_assessment') IS NULL
@@ -138,4 +141,54 @@ EXEC sp_create_index
 	@colnames = 'object_owner, scenario_uuid, asset_uuid',
 	@uni = '',
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'scenario_assessment';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('scenario_assessment','cs','T','scenario_assessment','Hodnocení rizikového scénáře','Hodnocení rizikových scénářů','Vyhodnocení velikosti hrozby, zranitelnosti, dopadu a míry rizika scénářů nad aktivy organizace.','Obsahuje vstupní ohodnocení scénáře pro konkrétní aktivum i automaticky vypočtené inherentní a zbytkové riziko.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('scenario_assessment','en','Risk Scenario Assessment','Risk Scenario Assessments','Evaluation of threat level, vulnerability, impact, and resulting risk of scenarios across organization assets.','Contains input scenario scores for a specific asset as well as automatically calculated inherent and residual risk.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'scenario_assessment';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		is_mandatory, is_computed, referenced_class_code
+	) VALUES
+	('scenario_assessment','assessment_date','cs','Datum hodnocení (assessment_date)','Datum provedení hodnocení','Datum hodnocení','Datum posledního vyhodnocení nebo přezkoumání rizikového scénáře.',0,0,''),
+	('scenario_assessment','assessor_user_uuid','cs','Hodnotitel scénáře (assessor_user_uuid)','Hodnotil (odpovědná osoba)','Hodnotitel','Odkaz na uživatelský účet osoby, která provedla nebo schválila hodnocení scénáře.',0,0,'user_account'),
+	('scenario_assessment','asset_uuid','cs','Hodnocené / chráněné aktivum (asset_uuid)','Aktivum / prostor','Aktivum','Odkaz na hodnocené nebo chráněné aktivum či prostor v tabulce asset.',1,0,'asset'),
+	('scenario_assessment','impact_score','cs','Skóre dopadu scénáře v % (impact_score)','Velikost dopadu scénáře (0–100 %)','Dopad (%)','Hodnocené skóre velikosti dopadu scénáře na dané aktivum v procentech (0 až 100 %).',0,0,''),
+	('scenario_assessment','inherent_risk_score','cs','Inherentní riziko v % (inherent_risk_score)','Inherentní riziko před opatřeními (0–100 %)','Inh. riziko (%)','Vypočtené skóre inherentního (výchozího) rizika před započtením protiopatření v procentech (0 až 100 %).',0,1,''),
+	('scenario_assessment','min_risk_floor_score','cs','Spodní práh rizika v % (min_risk_floor_score)','Minimální práh zbytkového rizika (0–100 %)','Min. práh (%)','Vypočtená spodní mez, pod kterou nesmí klesnout zbytkové riziko scénáře (z definice scénáře a neimplementovaných opatření).',0,1,''),
+	('scenario_assessment','reduction_score','cs','Redukce rizika opatřeními v % (reduction_score)','Redukce rizika zavedenými opatřeními (0–100 %)','Redukce opatř. (%)','Vypočtené procentuální snížení inherentního rizika díky protiopatřením zavedeným na aktivu (0 až 100 %).',0,1,''),
+	('scenario_assessment','residual_risk_score','cs','Zbytkové riziko v % (residual_risk_score)','Zbytkové / reziduální riziko (0–100 %)','Rez. riziko (%)','Vypočtené výsledné zbytkové (reziduální) riziko po zohlednění protiopatření a spodního prahu v procentech (0 až 100 %).',0,1,''),
+	('scenario_assessment','scenario_uuid','cs','Hodnocený rizikový scénář (scenario_uuid)','Rizikový scénář z katalogu','Scénář','Odkaz na vyhodnocovaný rizikový scénář (událost) v tabulce scenario.',1,0,'scenario'),
+	('scenario_assessment','threat_score','cs','Skóre hrozby scénáře v % (threat_score)','Velikost hrozby / pravděpodobnost (0–100 %)','Hrozba (%)','Hodnocené skóre velikosti hrozby (pravděpodobnosti scénáře) v procentech (0 až 100 %).',0,0,''),
+	('scenario_assessment','vulnerability_score','cs','Skóre zranitelnosti v % (vulnerability_score)','Míra zranitelnosti aktiva (0–100 %)','Zranitelnost (%)','Hodnocené skóre zranitelnosti aktiva vůči danému scénáři v procentech (0 až 100 %).',0,0,'');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('scenario_assessment','assessment_date','en','Assessment Date (assessment_date)','Assessment Execution Date','Assessment Date','Date when the risk scenario was last assessed or reviewed.'),
+	('scenario_assessment','assessor_user_uuid','en','Scenario Assessor (assessor_user_uuid)','Assessed By (Responsible Person)','Assessor','Reference to the user account of the person who performed or approved the scenario assessment.'),
+	('scenario_assessment','asset_uuid','en','Assessed / Protected Asset (asset_uuid)','Asset / Space','Asset','Reference to the assessed or protected asset or space in the asset table.'),
+	('scenario_assessment','impact_score','en','Scenario Impact Score in % (impact_score)','Scenario Impact Severity (0–100%)','Impact (%)','Assessed impact severity score of the scenario on the given asset in percent (0 to 100%).'),
+	('scenario_assessment','inherent_risk_score','en','Inherent Risk in % (inherent_risk_score)','Inherent Risk Before Controls (0–100%)','Inh. Risk (%)','Calculated inherent (initial) risk score prior to applying countermeasures in percent (0 to 100%).'),
+	('scenario_assessment','min_risk_floor_score','en','Minimum Risk Floor in % (min_risk_floor_score)','Minimum Residual Risk Threshold (0–100%)','Min. Floor (%)','Calculated lower bound below which scenario residual risk cannot drop (from scenario definition and unimplemented controls).'),
+	('scenario_assessment','reduction_score','en','Control Risk Reduction in % (reduction_score)','Risk Reduction by Implemented Controls (0–100%)','Control Red. (%)','Calculated percentage reduction of inherent risk achieved by countermeasures implemented on the asset (0 to 100%).'),
+	('scenario_assessment','residual_risk_score','en','Residual Risk in % (residual_risk_score)','Residual Risk After Controls (0–100%)','Res. Risk (%)','Calculated resulting residual risk score after accounting for countermeasures and minimum risk floor in percent (0 to 100%).'),
+	('scenario_assessment','scenario_uuid','en','Assessed Risk Scenario (scenario_uuid)','Catalog Risk Scenario','Scenario','Reference to the evaluated risk scenario (event) in the scenario table.'),
+	('scenario_assessment','threat_score','en','Scenario Threat Score in % (threat_score)','Threat Level / Likelihood (0–100%)','Threat (%)','Assessed threat level (scenario likelihood) score in percent (0 to 100%).'),
+	('scenario_assessment','vulnerability_score','en','Vulnerability Score in % (vulnerability_score)','Asset Vulnerability Level (0–100%)','Vulnerability (%)','Assessed vulnerability score of the asset to the given scenario in percent (0 to 100%).');
+END
 GO

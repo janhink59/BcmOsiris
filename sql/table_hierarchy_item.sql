@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-13 17:00
  * Soubor: table_hierarchy_item.sql
  * Tabulka: hierarchy_item (Uzly a položky sekundárních hierarchií, číselníků a tagů)
  * Popis:   Uchovává veškeré uzly (vnitřní složky is_leaf = 0 i koncové listy
@@ -12,7 +12,9 @@
  *          - Vazby mezi položkami hierarchy_item a cílovými entitami CRMM se
  *            ukládají do univerzální tabulky link (včetně materializace dědění
  *            přes ancestor_link).
- * Změny:   - 2026-11-04 15:15: Doplněn sloupec is_default bit NOT NULL DEFAULT 0.
+ * Změny:   - 2026-11-13 17:00: Doplněna registrace třídy a sloupců do sysinit_class
+ *            a sysinit_column.
+ *          - 2026-11-04 15:15: Doplněn sloupec is_default bit NOT NULL DEFAULT 0.
  * ============================================================================= */
 
 IF OBJECT_ID('hierarchy_item') IS NULL
@@ -116,4 +118,35 @@ EXEC sp_create_index
 	@colnames = 'hierarchy, parent_uuid, sort_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'hierarchy_item';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('hierarchy_item','cs','T','hierarchy_item','Položka sekundární hierarchie','Položky sekundární hierarchie','Uzly a koncové položky jednotlivých sekundárních hierarchií, klasifikačních číselníků a štítků.','Stromový seznam hodnot patřících do vybrané sekundární hierarchie nebo sady štítků.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('hierarchy_item','en','Secondary Hierarchy Item','Secondary Hierarchy Items','Nodes and leaf items of individual secondary hierarchies, classification codetables, and tag sets.','Tree list of values belonging to the selected secondary hierarchy or tag set.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'hierarchy_item';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		is_mandatory, referenced_class_code
+	) VALUES
+	('hierarchy_item','hierarchy','cs','Nadřazená hierarchie (hierarchy)','Sekundární hierarchie / sada štítků','Hierarchie','Odkaz na definici sekundární hierarchie nebo sady štítků (tagů) v tabulce hierarchy.',1,'hierarchy'),
+	('hierarchy_item','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).',0,'hierarchy_item');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('hierarchy_item','hierarchy','en','Parent Hierarchy (hierarchy)','Secondary Hierarchy / Tag Set','Hierarchy','Reference to the secondary hierarchy or tag set definition in the hierarchy table.');
+END
 GO

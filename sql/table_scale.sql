@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-13 17:30
  * Soubor: table_scale.sql
  * Tabulka: scale (Definice hodnotících škál CRMM)
  * Popis:   Uchovává definice hodnotících škál pro jednotlivé veličiny CRMM
@@ -123,4 +123,53 @@ EXEC sp_create_index
 	@colnames = 'scale_type, priority, sort_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy, číselníku scale_type a sloupců do sysinit_*
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'scale';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('scale','cs','T','scale','Hodnotící škála','Hodnotící škály','Definice hodnotících škál pro hrozby, zranitelnosti, dopady a výsledná rizika v modulu CRMM.','Umožňuje definovat primární škály pro zadávání (priorita 0) i převodní škály pro reportování.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('scale','en','Assessment Scale','Assessment Scales','Definitions of assessment scales for threats, vulnerabilities, impacts, and resulting risks in CRMM.','Allows defining primary input scales (priority 0) and secondary conversion scales for reporting.');
+END
+
+IF OBJECT_ID('sysinit_codetable', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_codetable WHERE codetable_name = 'scale_type';
+
+	INSERT INTO sysinit_codetable (codetable_name, value_code, [language], sort_code, caption) VALUES
+	('scale_type','IMPACT','cs','030','Dopad / Kritičnost aktiv'),
+	('scale_type','RISK','cs','040','Výsledné riziko / Míra ohrožení'),
+	('scale_type','THREAT','cs','010','Hrozba / Pravděpodobnost'),
+	('scale_type','VULNERABILITY','cs','020','Zranitelnost'),
+	('scale_type','IMPACT','en','030','Impact / Asset Criticality'),
+	('scale_type','RISK','en','040','Resulting Risk / Threat Level'),
+	('scale_type','THREAT','en','010','Threat / Probability'),
+	('scale_type','VULNERABILITY','en','020','Vulnerability');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'scale';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		referenced_codetable
+	) VALUES
+	('scale','initial_levels','cs','Počet stupňů při založení (initial_levels)','Počet stupňů (pro vygenerování)','Počet stupňů','Počet rovnoměrných stupňů (2 až 20), které se automaticky vygenerují v intervalu 0 až 100 % při prvním uložení nové škály.',''),
+	('scale','priority','cs','Priorita škály (priority)','Priorita škály (0 = primární)','Priorita','0 = primární škála pro zadávání a výchozí zobrazení; > 0 = sekundární škála pro zpětný přepočet v reportech.',''),
+	('scale','scale_type','cs','Druh škály (scale_type)','Druh měřené veličiny','Druh škály','Určuje veličinu hodnocenou touto škálou (Hrozba, Zranitelnost, Dopad, Výsledné riziko).','scale_type');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('scale','initial_levels','en','Initial Level Count (initial_levels)','Number of Levels (to Generate)','Level Count','Number of even levels (2 to 20) automatically generated in the 0 to 100% range when first saving a new scale.'),
+	('scale','priority','en','Scale Priority (priority)','Scale Priority (0 = Primary)','Priority','0 = primary scale for data entry and default display; > 0 = secondary conversion scale for reporting.'),
+	('scale','scale_type','en','Scale Type (scale_type)','Measured Quantity Type','Scale Type','Determines the quantity evaluated by this scale (Threat, Vulnerability, Impact, Resulting Risk).');
+END
 GO

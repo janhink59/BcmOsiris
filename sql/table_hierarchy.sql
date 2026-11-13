@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-01 11:45
+ * Verze: 2026-11-13 17:00
  * Soubor: table_hierarchy.sql
  * Tabulka: hierarchy (Registr sekundárních hierarchií a stromových štítků / tagů)
  * Popis:   Uchovává definice dalších hierarchických struktur a štítků (tagů),
@@ -16,7 +16,9 @@
  *            (s úložným objektem hierarchy_item), včetně symetrických 'L' záznamů.
  *          - Povolené vazby na systémové třídy se evidují v meta_link_def a
  *            aplikovatelnost na uživatelské třídy aktiv (asset_class) v tabulce link.
- * Změny:   - 2026-11-01 11:45: Duplicitní SQL kód v triggeru trg_hierarchy_sync_meta_class
+ * Změny:   - 2026-11-13 17:00: Doplněna registrace třídy a sloupců do sysinit_class
+ *            a sysinit_column (včetně specifického kontextového popisku pro is_leaf).
+ *          - 2026-11-01 11:45: Duplicitní SQL kód v triggeru trg_hierarchy_sync_meta_class
  *            nahrazen voláním společné procedury dbo.p_sync_hierarchy_to_meta_class.
  *          - 2026-10-31 11:00: Trigger trg_hierarchy_sync_meta_class upraven tak,
  *            aby do meta_class promítal pouze koncové hierarchie (is_leaf = 1),
@@ -160,4 +162,35 @@ BEGIN
 		EXEC dbo.p_sync_hierarchy_to_meta_class @fix_childless_folders = 0;
 	END
 END;
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'hierarchy';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('hierarchy','cs','T','hierarchy','Sekundární hierarchie / sada štítků','Sekundární hierarchie a štítky','Registr uživatelských klasifikačních stromů, výčtových číselníků a sad štítků (tagů).','Každá koncová hierarchie (is_leaf = 1) představuje samostatný klasifikační číselník nebo strom štítků.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('hierarchy','en','Secondary Hierarchy / Tag Set','Secondary Hierarchies & Tags','Registry of custom classification trees, enumerated codetables, and tag sets.','Each leaf entry (is_leaf = 1) represents a standalone classification codetable or tag tree.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'hierarchy';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext, referenced_class_code) VALUES
+	('hierarchy','is_leaf','cs','Samostatná hierarchie / sada štítků (is_leaf)','Samostatná hierarchie (is_leaf)','Hierarchie','Zaškrtněte (1) u koncové definice hierarchie nebo sady štítků, do které budete vkládat položky. Odškrtněte (0) pouze u nadřazené organizační složky v tomto registru.',''),
+	('hierarchy','leaf_only','cs','Pouze koncové uzly (leaf_only)','Vazby pouze na koncové uzly (listy)','Jen listy','Určuje, zda lze cílové záznamy navazovat výhradně na koncové uzly (is_leaf = 1) této hierarchie.',''),
+	('hierarchy','multiple','cs','Vícenásobné přiřazení (multiple)','Povolit přiřazení více položek','Více položek','Určuje, zda cílový záznam může mít navázáno více položek z této hierarchie současně.',''),
+	('hierarchy','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).','hierarchy');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('hierarchy','is_leaf','en','Standalone Hierarchy / Tag Set (is_leaf)','Standalone Hierarchy (is_leaf)','Hierarchy','Check (1) for a terminal hierarchy or tag set definition into which you will insert items. Uncheck (0) only for a parent organizational folder in this registry.'),
+	('hierarchy','leaf_only','en','Leaf Nodes Only (leaf_only)','Allow Links to Leaf Nodes Only','Leaves Only','Indicates whether target records may be linked exclusively to terminal leaf nodes (is_leaf = 1) of this hierarchy.'),
+	('hierarchy','multiple','en','Multiple Assignment (multiple)','Allow Assigning Multiple Items','Multiple Items','Indicates whether a target record can be linked to multiple items from this hierarchy simultaneously.');
+END
 GO

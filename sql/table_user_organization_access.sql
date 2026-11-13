@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-29 15:30
+ * Verze: 2026-11-13 18:10
  * Soubor: table_user_organization_access.sql
  * Tabulka: user_organization_access
  * Popis:	Vazební tabulka definující přístup globálních uživatelů 
@@ -10,7 +10,9 @@
  * Vlastník: Záznam (object_owner) patří cílové organizaci, 
  *			která přístup uživateli uděluje.
  * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
- * Změny:	- 2026-10-29 15:30: Přesunuty organizačně závislé sloupce z user_account
+ * Změny:	- 2026-11-13 18:10: Doplněna registrace tříd user_organization_access a
+ *			  v_user_organization_access a jejich sloupců do sysinit_class a sysinit_column.
+ *			- 2026-10-29 15:30: Přesunuty organizačně závislé sloupce z user_account
  *			  (department_name, job_title, manager_uuid, note) a doplněny pracovní
  *			  parametry uživatele v organizaci (working_date, evaluation_method).
  *			- 2026-10-18: Doplněny sloupce draft_author, approval_note a import_origin
@@ -184,4 +186,60 @@ END
 UPDATE user_organization_access 
 SET original = uuid 
 WHERE user_account_uuid = 0x01 AND organization_uuid = 0x00 AND record_type = 'A' AND original <> uuid;
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace tříd a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name IN ('user_organization_access', 'v_user_organization_access');
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('user_organization_access','cs','T','user_organization_access','Přístup uživatele do organizace','Přístupy uživatelů do organizace','Vazební evidence oprávnění, rolí, pracovního zařazení a osobního nastavení uživatele v konkrétní organizaci.','Řídí přístup uživatele k organizaci, právo OrgAdmina, právo překladu a organizační zařazení.'),
+	('v_user_organization_access','cs','V','v_user_organization_access','Pohled přístupů uživatelů k organizacím','Pohled přístupů uživatelů','Spojený pohled uživatelů, jejich přístupů do organizací a stavu licencí pro rychlé vyhodnocení přihlášení.','Podkladový pohled pro přihlašování a správu uživatelů organizace.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('user_organization_access','en','User Organization Access','User Organization Accesses','Relational registry of permissions, roles, job assignment, and personal settings of a user in a specific organization.','Controls user access to an organization, OrgAdmin privileges, translation rights, and job assignment.'),
+	('v_user_organization_access','en','User Organization Access View','User Organization Access View','Joined view of users, their organization accesses, and licence states for fast login evaluation.','Underlying view for authentication and organization user management.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name IN ('user_organization_access', 'v_user_organization_access');
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		referenced_class_code
+	) VALUES
+	('user_organization_access','department_name','cs','Oddělení / útvar (department_name)','Název oddělení / útvaru','Oddělení','Organizační útvar nebo oddělení, ve kterém uživatel v rámci dané organizace působí.',''),
+	('user_organization_access','evaluation_method','cs','Metoda hodnocení rizik (evaluation_method)','Zvolená metodika hodnocení CRMM','Metoda hodnocení','Kód metodiky nebo výpočtového modelu používaného pro vyhodnocení rizik.',''),
+	('user_organization_access','is_orgadmin','cs','Administrátor organizace (is_orgadmin)','Oprávnění administrátora organizace','Admin org.','Uděluje uživateli roli administrátora (A) v rámci dané organizace.',''),
+	('user_organization_access','job_title','cs','Pracovní pozice / funkce (job_title)','Pracovní pozice / funkce','Pozice','Název pracovní pozice nebo funkčního zařazení uživatele v organizaci.',''),
+	('user_organization_access','last_role','cs','Naposledy zvolená role (last_role)','Naposledy použitá role v organizaci','Posl. role','Kód aplikační role (U, A, S, D), kterou měl uživatel naposledy aktivní v této organizaci.',''),
+	('user_organization_access','manager_uuid','cs','Nadřízený pracovník (manager_uuid)','Přímý nadřízený pracovník','Nadřízený','Odkaz na účet přímého nadřízeného pracovníka v rámci dané organizace.','user_account'),
+	('user_organization_access','organization_uuid','cs','Cílová organizace (organization_uuid)','Organizace (UUID)','Organizace','Odkaz na originální identifikátor organizace v tabulce organization.','organization'),
+	('user_organization_access','right_translate','cs','Právo překládat (right_translate)','Oprávnění pořizovat překlady','Právo překladu','Opravňuje uživatele ukládat jazykové překlady (v garantující organizaci i globálně pro systém).',''),
+	('user_organization_access','user_account_uuid','cs','Uživatelský účet (user_account_uuid)','Uživatel (UUID účtu)','Uživatel (UUID)','Odkaz na globální účet uživatele v tabulce user_account.','user_account'),
+	('user_organization_access','working_date','cs','Pracovní datum (working_date)','Osobní pracovní datum (prázdné = dnes)','Pracovní datum','Datum, ke kterému se vyhodnocuje časová platnost záznamů v relaci uživatele.',''),
+	('v_user_organization_access','access_uuid','cs','UUID přístupu (access_uuid)','Logický identifikátor přístupu','UUID přístupu','Logický identifikátor záznamu v tabulce user_organization_access.',''),
+	('v_user_organization_access','current_organization','cs','Aktuální organizace relace (current_organization)','Právě aktivní organizace v relaci','Aktuální org.','Identifikátor organizace právě aktivní v dbsession pro daného uživatele.',''),
+	('v_user_organization_access','last_login_org','cs','Poslední přihlášená organizace (last_login_org)','Naposledy navštívená organizace','Posl. organizace','Identifikátor organizace, do které se uživatel naposledy přihlásil.','');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('user_organization_access','department_name','en','Department / Unit (department_name)','Department / Unit Name','Department','Organizational unit or department in which the user works within the organization.'),
+	('user_organization_access','evaluation_method','en','Risk Evaluation Method (evaluation_method)','Selected CRMM Evaluation Method','Evaluation Method','Code of the methodology or calculation model used for risk evaluation.'),
+	('user_organization_access','is_orgadmin','en','Organization Administrator (is_orgadmin)','Organization Administrator Privilege','Org. Admin','Grants the user administrator (A) privileges within the specific organization.'),
+	('user_organization_access','job_title','en','Job Title / Position (job_title)','Job Title / Position','Job Title','Job title or functional position of the user within the organization.'),
+	('user_organization_access','last_role','en','Last Selected Role (last_role)','Last Active Role in Organization','Last Role','Application role code (U, A, S, D) last used by the user in this organization.'),
+	('user_organization_access','manager_uuid','en','Line Manager (manager_uuid)','Direct Line Manager','Manager','Reference to the user account of the direct manager within the organization.'),
+	('user_organization_access','organization_uuid','en','Target Organization (organization_uuid)','Organization (UUID)','Organization','Reference to the original identifier of the organization in the organization table.'),
+	('user_organization_access','right_translate','en','Translation Right (right_translate)','Authorized to Save Translations','Translation Right','Authorizes the user to save language translations (globally if in the guarantee translator organization).'),
+	('user_organization_access','user_account_uuid','en','User Account (user_account_uuid)','User (Account UUID)','User (UUID)','Reference to the global user account in the user_account table.'),
+	('user_organization_access','working_date','en','Working Date (working_date)','Personal Working Date (Empty = Today)','Working Date','Effective date used to evaluate temporal validity of records in the user session.'),
+	('v_user_organization_access','access_uuid','en','Access UUID (access_uuid)','Logical Access Record Identifier','Access UUID','Logical record identifier in the user_organization_access table.'),
+	('v_user_organization_access','current_organization','en','Current Session Organization (current_organization)','Currently Active Organization in Session','Current Org.','Identifier of the organization currently active in dbsession for the user.'),
+	('v_user_organization_access','last_login_org','en','Last Login Organization (last_login_org)','Last Visited Organization','Last Org.','Identifier of the organization into which the user last logged in.');
+END
 GO

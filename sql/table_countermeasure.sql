@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-13 17:00
  * Soubor: table_countermeasure.sql
  * Tabulka: countermeasure (Hierarchický katalog protiopatření CRMM)
  * Popis:   Hierarchický katalog bezpečnostních, technických a organizačních
@@ -130,4 +130,33 @@ EXEC sp_create_index
 	@colnames = 'parent_uuid, sort_code, builtin_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'countermeasure';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('countermeasure','cs','T','countermeasure','Protiopatření','Katalog protiopatření','Hierarchický katalog bezpečnostních, technických a organizačních opatření s redukčním a rizikovým faktorem.','Obsahuje opatření ke snížení rizika scénářů a prahový rizikový faktor při neimplementaci.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('countermeasure','en','Countermeasure','Countermeasure Catalog','Hierarchical catalog of security, technical, and organizational countermeasures with reduction and risk factors.','Contains controls that reduce scenario residual risk and define minimum risk thresholds when unimplemented.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'countermeasure';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext, referenced_class_code) VALUES
+	('countermeasure','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).','countermeasure'),
+	('countermeasure','reduction_factor','cs','Redukční faktor v % (reduction_factor)','Redukční faktor (0–100 %)','Redukce (%)','Udává míru snížení zbytkového rizika scénáře při aplikaci opatření (resp. váhu stavu opatření).',''),
+	('countermeasure','risk_factor','cs','Rizikový faktor / práh v % (risk_factor)','Rizikový faktor / práh (0–100 %)','Rizikový práh (%)','Udává výsledné skóre rizika, pod které nesmí riziko scénáře klesnout, pokud opatření není implementováno.','');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('countermeasure','reduction_factor','en','Reduction Factor in % (reduction_factor)','Risk Reduction Factor (0–100%)','Reduction (%)','Specifies the residual risk reduction of a scenario when the control is applied (or the state weight).'),
+	('countermeasure','risk_factor','en','Risk Factor / Threshold in % (risk_factor)','Minimum Risk Factor / Threshold (0–100%)','Risk Threshold (%)','Specifies the resulting risk score below which scenario risk cannot drop if the control is not implemented.');
+END
 GO

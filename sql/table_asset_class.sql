@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-04 10:30
+ * Verze: 2026-11-13 17:00
  * Soubor: table_asset_class.sql
  * Tabulka: asset_class (Třídy aktiv)
  * Popis:	Hierarchický katalog pro klasifikaci aktiv v modulu CRMM.
@@ -12,6 +12,8 @@
  *			  asset.primary_asset_class a z tabulky link.
  *			- Spravováno stromovou stránkou page_asset_class.php.
  * Změny:
+ * - 2026-11-13 17:00: Doplněna registrace třídy a sloupců do sysinit_class
+ *   a sysinit_column.
  * - 2026-11-04 10:30: Odstraněno vkládání umělého kořenového záznamu 0x00 (ROOT).
  * - 2026-11-01 18:00: Doplněny sloupce builtin_code, svg_icon, is_final,
  *   is_protected a index ix_asset_class_parent_sort pro sjednocení se šablonou
@@ -125,4 +127,27 @@ EXEC sp_create_index
 	@colnames = 'parent_uuid, sort_code, builtin_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'asset_class';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('asset_class','cs','T','asset_class','Třída aktiv','Třídy aktiv','Hierarchický katalog tříd a kategorií aktiv určující strukturu evidence aktiv a dědění hrozeb.','Složky (is_leaf = 0) slouží k logickému členění a dědění vazeb; do koncových tříd (is_leaf = 1) se zařazují konkrétní aktiva.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('asset_class','en','Asset Class','Asset Classes','Hierarchical catalog of asset classes and categories defining asset structure and threat inheritance.','Folders (is_leaf = 0) group classes and pass down links; leaf classes (is_leaf = 1) hold individual assets.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'asset_class';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext, referenced_class_code) VALUES
+	('asset_class','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).','asset_class');
+END
 GO

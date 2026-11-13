@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-19 23:40
+ * Verze: 2026-11-13 17:15
  * Soubor: table_meta_phrase.sql
  * Tabulka: meta_phrase
  * Popis:   Uchovává textové fráze, popisky tlačítek, chybová hlášení a šablony
@@ -12,11 +12,13 @@
  *   (source_code, builtin_code) pomocí triggeru trgo_meta_phrase.
  * - Sloupec source_code odpovídá názvu PHP třídy / souboru bez přípony .php
  *   (např. 'abstract_page', 'abstract_button', 'user_context', 'page_org_users').
- * - Plněno vývojářským importem z Excelu (p_xlsx_meta_object) a případně
- *   automatickým záchytem chybějících frází za běhu aplikace.
+ * - Plněno ze skriptů *#phrase.sql přes p_sysinit_process, vývojářským importem
+ *   z Excelu (p_xlsx_meta_object) a automatickým záchytem chybějících frází za běhu.
  * - Pro editaci v administraci využívá standardní entity_manager('meta_phrase').
  *
  * Změny:
+ * - 2026-11-13 17:15: Doplněna registrace třídy a sloupců do sysinit_class
+ *   a sysinit_column.
  * - 2026-10-19 23:40: Doplněny sloupce draft_author a approval_note přímo do
  *   CREATE TABLE, změnových příkazů p_create_missing_column a index uq_meta_phrase_draft.
  * ============================================================================= */
@@ -137,4 +139,34 @@ EXEC sp_create_index
 	@colnames = 'source_code, builtin_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0 AND inactive = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'meta_phrase';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('meta_phrase','cs','T','meta_phrase','Textová fráze','Textové fráze a překlady','Katalog lokalizovatelných textových frází, popisků tlačítek, zpráv a šablon s podporou proměnných.','Slouží k překladu uživatelského rozhraní, tlačítek a systémových hlášení do podporovaných jazyků.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('meta_phrase','en','Text Phrase','Text Phrases & Translations','Catalog of localizable UI phrases, button labels, messages, and templates supporting variables.','Used to translate the user interface, buttons, and system messages into supported languages.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'meta_phrase';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		list_order, is_mandatory
+	) VALUES
+	('meta_phrase','source_code','cs','Zdrojová třída / stránka (source_code)','Zdrojová PHP třída / stránka','Zdroj (Třída)','Název PHP třídy nebo stránky, ke které textová fráze patří (global_phrase pro celosystémové fráze).',1,1);
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('meta_phrase','source_code','en','Source Class / Page (source_code)','Source PHP Class / Page','Source (Class)','Name of the PHP class or page owning the text phrase (global_phrase for system-wide phrases).');
+END
 GO

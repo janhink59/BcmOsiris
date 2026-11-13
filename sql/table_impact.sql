@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-01 18:00
+ * Verze: 2026-11-13 17:00
  * Soubor: table_impact.sql
  * Tabulka: impact (Katalog dopadů CRMM)
  * Popis:   Hierarchický číselník dopadů kombinující druhy a oblasti dopadu
@@ -121,4 +121,27 @@ EXEC sp_create_index
 	@colnames = 'parent_uuid, sort_code, builtin_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'impact';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('impact','cs','T','impact','Dopad','Katalog dopadů','Hierarchický katalog druhů a oblastí dopadů pro hodnocení následků rizikových scénářů, výpadků služeb a kompromitace dat.','Kombinuje oblasti dopadů (finanční, pověst, obecné ohrožení, trestní odpovědnost, řízení firmy, porušení zákonů).');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('impact','en','Impact','Impact Catalog','Hierarchical catalog of impact types and areas for evaluating risk scenario consequences, service outages, and data compromises.','Combines impact areas (financial, reputation, general hazard, criminal liability, management disruption, legal breach).');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'impact';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext, referenced_class_code) VALUES
+	('impact','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).','impact');
+END
 GO

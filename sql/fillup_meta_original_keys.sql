@@ -1,11 +1,15 @@
 /* =============================================================================
- * Verze: 2026-11-12 16:45
+ * Verze: 2026-11-13 18:30
  * Soubor: fillup_meta_original_keys.sql
  * Účel: Hromadné znovunaplnění definic pro generování sloupce "original".
  * Vazby: Slouží jako podklad pro proceduru generate_trgo, která dynamicky 
  *        skládá a zakládá triggery nad všemi definovanými tabulkami.
  *        Čte systémový pohled v_syscolumns a zapisuje do tabulky meta_original_keys.
  * Změny:
+ * - 2026-11-13 18:30: Dynamické doplňování tabulek se sloupcem builtin_code
+ *   omezeno strukturální kontrolou na tabulky, které obsahují všech 6 povinných
+ *   RAC sloupců vyžadovaných triggery trgo_ (uuid, object_owner, original,
+ *   record_type, removed, template).
  * - 2026-11-12 16:45: Klíč tabulky meta_link_def rozšířen na složený klíč
  *   (from_class, link_code), aby šlo používat jednotné kódy parent_to_child
  *   a child_to_parent napříč různými třídami.
@@ -46,16 +50,23 @@ VALUES
 -- vlastním dedikovaným triggerem "trgo_link", definovaným na konci generate_trgo.sql.
 GO
 
--- 2. Dynamické doplnění všech ostatních tabulek, které obsahují sloupec builtin_code
---    (Pokud tabulka ještě není v číselníku definována, použije se builtin_code jako jediný klíč)
+-- 2. Dynamické doplnění všech ostatních RAC tabulek, které obsahují sloupec builtin_code
+--    a současně disponují všemi 6 povinnými RAC sloupci pro trigger trgo_
 INSERT INTO meta_original_keys (table_name, key1_column, key2_column)
 SELECT
-	tabname,
+	c.tabname,
 	'builtin_code',
 	NULL
-FROM v_syscolumns
-WHERE colname = 'builtin_code'
-	AND tabname NOT IN (SELECT table_name FROM meta_original_keys)
-	AND tabname NOT LIKE '%$'                                               -- Vyloučení dočasných staging tabulek z Excelu (XLSX_*$)
-	AND object_type = 'U';                                                  -- Omezí tvorbu triggerů pouze na fyzické tabulky
+FROM v_syscolumns c
+WHERE c.colname = 'builtin_code'
+	AND c.object_type = 'U'
+	AND c.tabname NOT IN (SELECT table_name FROM meta_original_keys)
+	AND c.tabname NOT LIKE '%$'
+	AND (
+		SELECT COUNT(DISTINCT r.colname)
+		FROM v_syscolumns r
+		WHERE r.tabname = c.tabname
+			AND r.object_type = 'U'
+			AND r.colname IN ('uuid', 'object_owner', 'original', 'record_type', 'removed', 'template')
+	) = 6;
 GO

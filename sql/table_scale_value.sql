@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-13 17:30
  * Soubor: table_scale_value.sql
  * Tabulka: scale_value (Stupně hodnotících škál CRMM v intervalu 0 až 100 %)
  * Popis:   Uchovává jednotlivé stupně hodnotících škál definovaných v tabulce scale.
@@ -120,4 +120,38 @@ EXEC sp_create_index
 	@colnames = 'scale, object_owner, threshold_value', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'scale_value';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('scale_value','cs','T','scale_value','Stupeň hodnotící škály','Stupně hodnotících škál','Jednotlivé stupně hodnotících škál s dolní prahovou hodnotou a výpočtovým skóre v intervalu 0 až 100 %.','Stupně jsou řazeny vzestupně podle dolního prahu (threshold_value) a musí tvořit monotónně rostoucí řadu.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('scale_value','en','Assessment Scale Level','Assessment Scale Levels','Individual levels of assessment scales with lower threshold and calculation score in the 0 to 100% range.','Levels are sorted ascending by lower threshold (threshold_value) and must form a strictly monotonic sequence.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'scale_value';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		is_mandatory, referenced_class_code
+	) VALUES
+	('scale_value','scale','cs','Hodnotící škála (scale)','Hodnotící škála','Škála','Odkaz na definici hodnotící škály v tabulce scale.',1,'scale'),
+	('scale_value','score_value','cs','Hodnota skóre v % (score_value)','Hodnota skóre (0–100 %)','Skóre (%)','Výpočtové skóre stupně v procentech (0 až 100 %). Musí ležet uvnitř intervalu daného stupně a tvořit rostoucí řadu.',0,''),
+	('scale_value','threshold_value','cs','Dolní práh intervalu v % (threshold_value)','Dolní práh intervalu (0–100 %)','Práh (%)','Dolní mez intervalu stupně v procentech (0 až 100 %). Určuje pořadí stupňů ve škále (nejnižší stupeň začíná na 0).',0,'');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('scale_value','scale','en','Assessment Scale (scale)','Assessment Scale','Scale','Reference to the assessment scale definition in the scale table.'),
+	('scale_value','score_value','en','Score Value in % (score_value)','Calculation Score Value (0–100%)','Score (%)','Calculation score of the level in percent (0 to 100%). Must lie within the level interval and form an increasing sequence.'),
+	('scale_value','threshold_value','en','Lower Threshold in % (threshold_value)','Lower Interval Threshold (0–100%)','Threshold (%)','Lower bound of the level interval in percent (0 to 100%). Determines level ordering (the lowest level starts at 0).');
+END
 GO

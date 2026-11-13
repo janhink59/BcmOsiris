@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-09 18:30
+ * Verze: 2026-11-13 17:30
  * Soubor: table_organization_licence.sql
  * Tabulka: organization_licence
  * Popis:   Evidence licencí organizací. Každá organizace (včetně systémové 0x00)
@@ -18,6 +18,8 @@
  *          - Zpracováváno procedurou p_process_organization_licence a čteno
  *            při přihlášení v p_set_login a v_user_organization_access.
  * Změny:
+ * - 2026-11-13 17:30: Doplněna registrace třídy a sloupců do sysinit_class
+ *   a sysinit_column.
  * - 2026-11-09 18:30: Sjednocen builtin_code systémové licence na 'sys' (snake_case).
  * - 2026-10-30 23:35: Při vkládání výchozího záznamu systémové organizace (0x00)
  *   se admin_email načítá ze system_constant.sysadmin_email.
@@ -204,5 +206,59 @@ BEGIN
 	  AND removed = 0
 	  AND who_modified = 0x00
 	  AND admin_email = '';
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'organization_licence';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('organization_licence','cs','T','organization_licence','Licence organizace','Licence organizací','Evidence licencí organizací, licenčních úrovní, stavů aktivace a výchozích správcovských účtů.','Slouží k založení a aktivaci nové organizace, nastavení úrovně licence (Demo až Developer) a případné blokaci přihlášení.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('organization_licence','en','Organization Licence','Organization Licences','Registry of organization licences, licence levels, activation states, and initial administrator accounts.','Used to create and activate new organizations, assign licence levels (Demo to Developer), or disable login.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'organization_licence';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('organization_licence','activation_date','cs','Datum aktivace (activation_date)','Datum aktivace licence','Aktivováno dne','Datum, kdy byla licence zpracována a organizace aktivována.'),
+	('organization_licence','admin_email','cs','E-mail správce (admin_email)','E-mail administrátora organizace','E-mail admina','Kontaktní e-mailová adresa administrátora organizace.'),
+	('organization_licence','admin_first_name','cs','Jméno správce (admin_first_name)','Křestní jméno administrátora','Jméno admina','Křestní jméno výchozího administrátora organizace.'),
+	('organization_licence','admin_last_name','cs','Příjmení správce (admin_last_name)','Příjmení administrátora','Příjmení admina','Příjmení výchozího administrátora organizace.'),
+	('organization_licence','admin_login','cs','Login správce organizace (admin_login)','Login prvního administrátora','Login admina','Přihlašovací jméno výchozího administrátora zakládané organizace.'),
+	('organization_licence','authorization_code','cs','Autorizační kód (authorization_code)','Autorizační kód aktivace','Autorizační kód','Unikátní identifikátor pro autorizaci licenčního požadavku.'),
+	('organization_licence','digital_signature','cs','Digitální podpis (digital_signature)','Kontrolní digitální podpis','Podpis','Binární kontrolní součet nebo podpis záznamu.'),
+	('organization_licence','ip_address','cs','IP adresa (ip_address)','Klientská IP adresa','IP adresa','Síťová IP adresa klienta (včetně případné cesty X-Forwarded-For).'),
+	('organization_licence','licence_level','cs','Úroveň licence (licence_level)','Úroveň licence organizace','Úroveň licence','Rozsah oprávnění organizace: 0 = Demo, 10 = Standard, 20 = Expert, 30 = Custom, 40 = Enterprise, 255 = Developer.'),
+	('organization_licence','licence_state','cs','Stav licence (licence_state)','Stav licenčního záznamu','Stav licence','Životní cyklus licence: DRAFT = koncept, APPROVED = schváleno k aktivaci, PROCESSED = aktivní, REJECTED = zamítnuto.'),
+	('organization_licence','login_disabled','cs','Zablokovat přihlášení (login_disabled)','Zablokovat přihlašování organizaci','Přihlášení blok.','Pokud je zaškrtnuto, žádný uživatel se nemůže přihlásit do kontextu této organizace.'),
+	('organization_licence','login_domain','cs','Přihlašovací SSO doména (login_domain)','Doména pro SSO přihlášení','SSO doména','Internetová doména organizace pro automatické rozpoznání domovského tenanta při SSO autentizaci.'),
+	('organization_licence','organization_note','cs','Poznámka k licenci (organization_note)','Interní poznámka k licenci organizace','Pozn. k licenci','Doplňující poznámka vydavatele licence k licencované organizaci.'),
+	('organization_licence','organization_uuid','cs','Cílová organizace (organization_uuid)','Organizace (UUID)','Organizace','Odkaz na originální identifikátor organizace v tabulce organization.'),
+	('organization_licence','preferred_language','cs','Výchozí jazyk organizace (preferred_language)','Preferovaný výchozí jazyk','Výchozí jazyk','Výchozí jazyk prostředí a dat pro nově zakládané uživatele a záznamy organizace.'),
+	('organization_licence','server_licence','cs','Licence serveru (server_licence)','Identifikátor serverové licence','Licence serveru','Kód nebo klíč serverové licence.'),
+	('organization_licence','activation_date','en','Activation Date (activation_date)','Licence Activation Date','Activated On','Date when the licence was processed and the organization activated.'),
+	('organization_licence','admin_email','en','Admin Email (admin_email)','Organization Administrator Email','Admin Email','Contact email address of the organization administrator.'),
+	('organization_licence','admin_first_name','en','Admin First Name (admin_first_name)','Administrator First Name','Admin First Name','First name of the initial organization administrator.'),
+	('organization_licence','admin_last_name','en','Admin Last Name (admin_last_name)','Administrator Last Name','Admin Last Name','Last name of the initial organization administrator.'),
+	('organization_licence','admin_login','en','Organization Admin Login (admin_login)','Initial Administrator Login','Admin Login','Login name of the initial administrator of the newly created organization.'),
+	('organization_licence','authorization_code','en','Authorization Code (authorization_code)','Activation Authorization Code','Auth. Code','Unique identifier for authorizing the licence request.'),
+	('organization_licence','digital_signature','en','Digital Signature (digital_signature)','Verification Digital Signature','Signature','Binary checksum or digital signature of the record.'),
+	('organization_licence','ip_address','en','IP Address (ip_address)','Client IP Address','IP Address','Network IP address of the client (including X-Forwarded-For path).'),
+	('organization_licence','licence_level','en','Licence Level (licence_level)','Organization Licence Level','Licence Level','Organization permission tier: 0 = Demo, 10 = Standard, 20 = Expert, 30 = Custom, 40 = Enterprise, 255 = Developer.'),
+	('organization_licence','licence_state','en','Licence State (licence_state)','Licence Lifecycle State','Licence State','Licence lifecycle state: DRAFT, APPROVED (triggers activation), PROCESSED (active), REJECTED.'),
+	('organization_licence','login_disabled','en','Disable Login (login_disabled)','Disable Login for Organization','Login Disabled','If checked, no user can log into the context of this organization.'),
+	('organization_licence','login_domain','en','SSO Login Domain (login_domain)','Domain for SSO Login','SSO Domain','Internet domain of the organization used to automatically detect the home tenant during SSO authentication.'),
+	('organization_licence','organization_note','en','Licence Note (organization_note)','Internal Note on Organization Licence','Licence Note','Additional note by the licence issuer regarding the licensed organization.'),
+	('organization_licence','organization_uuid','en','Target Organization (organization_uuid)','Organization (UUID)','Organization','Reference to the original identifier of the organization in the organization table.'),
+	('organization_licence','preferred_language','en','Default Organization Language (preferred_language)','Preferred Default Language','Default Language','Default UI and data language for newly created users and records in the organization.'),
+	('organization_licence','server_licence','en','Server Licence (server_licence)','Server Licence Identifier','Server Licence','Code or key of the server licence.');
 END
 GO

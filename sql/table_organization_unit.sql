@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-12 18:30
+ * Verze: 2026-11-13 17:30
  * Soubor: table_organization_unit.sql
  * Tabulka: organization_unit (Organizační jednotky a útvary)
  * Popis:   Hierarchický číselník vnitřních organizačních útvarů a oddělení
@@ -9,6 +9,8 @@
  *          - Vazby na personál (asset_personnel) a spravovaná aktiva (asset)
  *            se ukládají do tabulky link.
  * Změny:
+ * - 2026-11-13 17:30: Doplněna registrace třídy a sloupců do sysinit_class
+ *   a sysinit_column.
  * - 2026-11-12 18:30: Doplněny sloupce builtin_code, parent_uuid, sort_code,
  *   is_leaf, svg_icon, is_final, is_protected, draft_author, approval_note,
  *   import_origin a indexy uq_organization_unit_draft a ix_organization_unit_parent_sort.
@@ -122,4 +124,27 @@ EXEC sp_create_index
 	@colnames = 'parent_uuid, sort_code, builtin_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'organization_unit';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('organization_unit','cs','T','organization_unit','Organizační jednotka','Organizační jednotky','Číselník vnitřních organizačních útvarů a oddělení v rámci organizace.','Evidence organizační struktury tenanta.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('organization_unit','en','Organizational Unit','Organizational Units','Directory of internal organizational units and departments within an organization.','Registry of the tenant organizational structure.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'organization_unit';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext, referenced_class_code) VALUES
+	('organization_unit','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).','organization_unit');
+END
 GO

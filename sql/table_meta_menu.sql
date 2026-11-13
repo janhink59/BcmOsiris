@@ -1,16 +1,18 @@
 /* =============================================================================
- * Verze: 2026-10-24 13:15
+ * Verze: 2026-11-13 17:15
  * Soubor: table_meta_menu.sql
  * Tabulka: meta_menu
  * Popis:   DDL definice tabulky pro strukturu uživatelského menu s vazbou na stránky.
- *          Prvotní naplnění položek menu je vyčleněno do skriptu fillup_meta_menu.sql.
+ *          Prvotní naplnění položek menu zajišťují modulární skripty *#phrase.sql
+ *          a procedura dbo.p_sysinit_process.
  * Vazby:   - target_object (UUID) ukazuje na meta_object.original (stránka 'P')
  *          - parent_uuid (UUID) ukazuje na nadřízený uzel v téže tabulce (original)
  *          - Čteno procedurou p_get_menu_hierarchy (p_get_menu_hierarchy.sql),
- *            spravováno stránkou page_meta_menu.php a plněno skriptem
- *            fillup_meta_menu.sql nebo importem p_xlsx_meta_object / p_csv_import_metadata.
- * Změny:   - 2026-10-24 13:15: Oddělení DDL struktury od datového plnění
- *            (plnění přesunuto do souboru fillup_meta_menu.sql).
+ *            spravováno stránkou page_meta_menu.php a plněno procedurou
+ *            p_sysinit_process nebo importem p_xlsx_meta_object / p_csv_import_metadata.
+ * Změny:   - 2026-11-13 17:15: Doplněna registrace třídy a sloupců do sysinit_class
+ *            a sysinit_column.
+ *          - 2026-10-24 13:15: Oddělení DDL struktury od datového plnění.
  * ============================================================================= */
 
 IF OBJECT_ID('meta_menu') IS NULL
@@ -108,4 +110,45 @@ EXEC sp_create_index
 	@colnames = 'original, object_owner, language, draft_author', 
 	@uni = 'UNIQUE', 
 	@options = 'WHERE record_type = ''D'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'meta_menu';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('meta_menu','cs','T','meta_menu','Položka menu (Navigace)','Položky menu (Navigace)','Stromová struktura hlavní aplikační navigace a rozcestníků s řízením přístupu podle rolí.','Určuje hierarchii menu, cílové stránky, ikony a oprávnění pro zobrazení navigačních položek.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('meta_menu','en','Menu Item (Navigation)','Menu Items (Navigation)','Tree structure of the main application navigation and dashboards with role-based access control.','Defines menu hierarchy, target pages, SVG icons, and required access roles.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'meta_menu';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		referenced_class_code
+	) VALUES
+	('meta_menu','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).','meta_menu'),
+	('meta_menu','permanent','cs','Trvale viditelná položka (permanent)','Trvale zobrazit i prázdnou složku','Trvalé','Ponechá složku menu viditelnou (jako neaktivní) i tehdy, když uživatel nemá přístup k žádné její podpoložce.',''),
+	('meta_menu','system_role','cs','Minimální systémová role (system_role)','Minimální požadovaná role (U/A/S/D)','Min. role','Minimální efektivní role nutná pro přístup: U = User, A = Admin organizace, S = Sysadmin, D = Developer.',''),
+	('meta_menu','target_object','cs','Cílová stránka (target_object)','Cílová stránka aplikace (meta_object)','Cílová stránka','Odkaz na registrovanou PHP stránku (object_type = P), kterou otevře kliknutí na koncovou položku menu.','meta_object'),
+	('meta_menu','target_url','cs','Externí URL odkaz (target_url)','Externí nebo pevná URL adresa','Externí URL','Přímá URL adresa pro položky menu směřující mimo standardní aplikační stránky.',''),
+	('meta_menu','target_window','cs','Cílové okno odkazu (target_window)','Cílové okno prohlížeče (např. _blank)','Cílové okno','Určuje způsob otevření odkazu (prázdné = totéž okno, _blank = nová záložka prohlížeče).',''),
+	('meta_menu','url_parameters','cs','Parametry URL (url_parameters)','Dodatečné GET parametry URL','Parametry URL','Volitelné parametry připojované za URL cílové stránky (např. &hierarchy=...).','');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('meta_menu','permanent','en','Permanently Visible Item (permanent)','Always Show Even When Empty','Permanent','Keeps a menu folder visible (as disabled) even when the user has no access to any child items.'),
+	('meta_menu','system_role','en','Minimum System Role (system_role)','Minimum Required Role (U/A/S/D)','Min. Role','Minimum effective role required for access: U = User, A = Org Admin, S = Sysadmin, D = Developer.'),
+	('meta_menu','target_object','en','Target Page (target_object)','Target Application Page (meta_object)','Target Page','Reference to the registered PHP page (object_type = P) opened when clicking a leaf menu item.'),
+	('meta_menu','target_url','en','External URL Link (target_url)','External or Fixed URL Address','External URL','Direct URL address for menu items pointing outside standard application pages.'),
+	('meta_menu','target_window','en','Link Target Window (target_window)','Browser Target Window (e.g., _blank)','Target Window','Specifies how the link opens (empty = same window, _blank = new browser tab).'),
+	('meta_menu','url_parameters','en','URL Parameters (url_parameters)','Additional GET URL Parameters','URL Parameters','Optional query string parameters appended to the target page URL (e.g., &hierarchy=...).');
+END
 GO

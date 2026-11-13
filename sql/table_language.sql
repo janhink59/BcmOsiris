@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-10-04
+ * Verze: 2026-11-13 17:15
  * Soubor: table_language.sql
  * Tabulka: language
  * Popis:   Statický číselník podporovaných jazyků aplikace (bez plné RAC/SSC zátěže).
@@ -50,5 +50,33 @@ BEGIN
 		('lt', 'Lietuvių', 'en', '08', 0, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><mask id="mask-lt"><circle cx="256" cy="256" r="256" fill="#fff"/></mask><g mask="url(#mask-lt)"><rect width="512" height="170" fill="#fdb913"/><rect y="170" width="512" height="172" fill="#006a44"/><rect y="342" width="512" height="170" fill="#c1272d"/></g></svg>'),
 		('ro', 'Română', 'en', '09', 0, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><mask id="mask-ro"><circle cx="256" cy="256" r="256" fill="#fff"/></mask><g mask="url(#mask-ro)"><rect width="170" height="512" fill="#002b7f"/><rect x="170" width="172" height="512" fill="#fcd116"/><rect x="342" width="170" height="512" fill="#ce1126"/></g></svg>'),
 		('es', 'Español', 'en', '10', 0, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><mask id="mask-es"><circle cx="256" cy="256" r="256" fill="#fff"/></mask><g mask="url(#mask-es)"><rect width="512" height="128" fill="#aa151b"/><rect y="128" width="512" height="256" fill="#f1bf00"/><rect y="384" width="512" height="128" fill="#aa151b"/></g></svg>');
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace tříd a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name IN ('language', 'f_language_list');
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('f_language_list','cs','F','f_language_list','Funkce seznamu jazyků s fallbackem','Seznam jazyků s pořadím dědičnosti','Tabulková funkce vracející podporované jazyky seřazené podle řetězce dědičnosti (fallback_order).','Určuje pořadí prohledávání jazykových mutací pro aktuální relaci.'),
+	('language','cs','T','language','Jazyk aplikace','Podporované jazyky','Číselník jazyků podporovaných v aplikaci včetně pořadí fallbacku a garantující překladatelské organizace.','Definuje dostupné jazykové mutace uživatelského rozhraní a dat.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('f_language_list','en','Language Fallback List Function','Languages with Fallback Order','Table-valued function returning supported languages ordered by the active fallback chain.','Determines translation lookup order for the current session.'),
+	('language','en','Application Language','Supported Languages','Codetable of supported application languages including fallback order and guarantee translator organization.','Defines available language mutations for UI and data.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'language';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('language','fallback_language','cs','Záložní jazyk (fallback_language)','Nadřazený záložní jazyk (fallback)','Fallback jazyk','Kód náhradního jazyka, který se použije, pokud text není do daného jazyka přeložen.'),
+	('language','translator_org','cs','Garant překladu (translator_org)','Organizace garantující globální překlad','Garant překladu','Organizace, jejíž překladatelé mají právo zapisovat překlady tohoto jazyka přímo do systémových záznamů (0x00).'),
+	('language','fallback_language','en','Fallback Language (fallback_language)','Parent Fallback Language','Fallback Lang.','Code of the fallback language used when a text is not translated into the active language.'),
+	('language','translator_org','en','Translation Guarantee Org (translator_org)','Organization Guaranteeing Global Translation','Translator Org.','Organization whose translators are authorized to write translations of this language directly to system records (0x00).');
 END
 GO

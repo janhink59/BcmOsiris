@@ -1,6 +1,6 @@
 /* =============================================================================
  * Soubor: table_meta_codetable.sql
- * Verze: 2026-10-21 14:25
+ * Verze: 2026-11-13 17:15
  * Tabulka: meta_codetable
  * Popis:   Univerzální tabulka pro definici uživatelských a systémových číselníků.
  *          Tato data primárně krmí <select> prvky v uživatelském rozhraní, 
@@ -8,7 +8,9 @@
  *          Nahrazuje původní tabulky repo_codetable a částečně repo_object.
  * Vazby:   - Odkazována z meta_column.referenced_codetable v entity_manager.php
  *            a page_approval.php pro generování a překlad položek roletek.
- * Změny:   - 2026-10-21 14:25: Sloupec iconname nahrazen sjednoceným sloupcem
+ * Změny:   - 2026-11-13 17:15: Doplněna registrace třídy a sloupců do sysinit_class
+ *            a sysinit_column.
+ *          - 2026-10-21 14:25: Sloupec iconname nahrazen sjednoceným sloupcem
  *            svg_icon varchar(max) NOT NULL DEFAULT '' a doplněny SSC sloupce
  *            draft_author, approval_note a import_origin.
  * ============================================================================= */
@@ -114,4 +116,36 @@ EXEC sp_create_index
 	@colnames = 'codetable_name, sort_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0 AND inactive = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'meta_codetable';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('meta_codetable','cs','T','meta_codetable','Položka systémového číselníku','Systémové číselníky','Univerzální úložiště pevných systémových a metodických výčtových číselníků pro rozevírací seznamy.','Obsahuje položky pevných výčtových číselníků odkazovaných ze sloupců metadat.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('meta_codetable','en','System Codetable Item','System Codetables','Universal storage of fixed system and methodological enumerated codetables for dropdown selects.','Contains items of fixed enumerated codetables referenced by metadata columns.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'meta_codetable';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		is_mandatory
+	) VALUES
+	('meta_codetable','codetable_name','cs','Název číselníku (codetable_name)','Kód číselníku (codetable_name)','Kód číselníku','Technický identifikátor skupiny položek v tabulce meta_codetable.',1),
+	('meta_codetable','value_code','cs','Kód hodnoty číselníku (value_code)','Ukládaná hodnota (value_code)','Hodnota','Interní kód položky číselníku ukládaný do databáze při výběru v roletce.',1);
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('meta_codetable','codetable_name','en','Codetable Name (codetable_name)','Codetable Code (codetable_name)','Codetable Code','Technical identifier of the codetable group in meta_codetable.'),
+	('meta_codetable','value_code','en','Codetable Value Code (value_code)','Stored Value Code (value_code)','Value Code','Internal item code stored in the database when selected in a dropdown.');
+END
 GO

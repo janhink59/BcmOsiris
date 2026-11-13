@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-13 17:00
  * Soubor: table_countermeasure_state.sql
  * Tabulka: countermeasure_state (Číselník stavů protiopatření CRMM)
  * Popis:   Plochý (nehierarchický) číselník stavů implementace protiopatření
@@ -122,4 +122,30 @@ EXEC sp_create_index
 	@colnames = 'sort_code, builtin_code', 
 	@uni = '', 
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'countermeasure_state';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('countermeasure_state','cs','T','countermeasure_state','Stav protiopatření','Stavy protiopatření','Číselník stavů implementace protiopatření určující míru započtení redukčního a rizikového faktoru.','Definuje stavy zavedení opatření (např. Navrženo, V realizaci, Zavedeno, Neaplikovatelné) a jejich váhy v procentech.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('countermeasure_state','en','Countermeasure State','Countermeasure States','Codetable of countermeasure implementation states determining reduction and risk factor weights.','Defines implementation states (e.g., Proposed, In Progress, Implemented, N/A) and their percentage weights.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'countermeasure_state';
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('countermeasure_state','reduction_factor','cs','Redukční faktor v % (reduction_factor)','Redukční faktor (0–100 %)','Redukce (%)','Udává míru snížení zbytkového rizika scénáře při aplikaci opatření (resp. váhu stavu opatření).'),
+	('countermeasure_state','risk_factor','cs','Rizikový faktor / práh v % (risk_factor)','Rizikový faktor / práh (0–100 %)','Rizikový práh (%)','Udává výsledné skóre rizika, pod které nesmí riziko scénáře klesnout, pokud opatření není implementováno.'),
+	('countermeasure_state','reduction_factor','en','Reduction Factor in % (reduction_factor)','Risk Reduction Factor (0–100%)','Reduction (%)','Specifies the residual risk reduction of a scenario when the control is applied (or the state weight).'),
+	('countermeasure_state','risk_factor','en','Risk Factor / Threshold in % (risk_factor)','Minimum Risk Factor / Threshold (0–100%)','Risk Threshold (%)','Specifies the resulting risk score below which scenario risk cannot drop if the control is not implemented.');
+END
 GO

@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-09 14:15
+ * Verze: 2026-11-13 17:00
  * Soubor: table_countermeasure_implementation.sql
  * Tabulka: countermeasure_implementation (Implementace protiopatření na aktivech)
  * Popis:   Eviduje skutečný stav zavedení bezpečnostního, technického nebo
@@ -129,4 +129,48 @@ EXEC sp_create_index
 	@colnames = 'object_owner, countermeasure_uuid, asset_uuid',
 	@uni = '',
 	@options = 'WHERE record_type = ''A'' AND removed = 0';
+GO
+
+-- -----------------------------------------------------------------------------
+-- Registrace třídy a sloupců do sysinit_class a sysinit_column
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('sysinit_class', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_class WHERE class_name = 'countermeasure_implementation';
+
+	INSERT INTO sysinit_class (class_name, [language], storage_type, storage_code, caption, caption_plural, description, helptext) VALUES
+	('countermeasure_implementation','cs','T','countermeasure_implementation','Implementace protiopatření','Implementace protiopatření','Evidence stavu zavedení jednotlivých bezpečnostních protiopatření u konkrétních aktiv a prostorů.','Sleduje skutečný stav implementace opatření na aktivech a jeho vliv na snížení zbytkového rizika.');
+
+	INSERT INTO sysinit_class (class_name, [language], caption, caption_plural, description, helptext) VALUES
+	('countermeasure_implementation','en','Countermeasure Implementation','Countermeasure Implementations','Registry of the implementation state of security countermeasures on specific assets and spaces.','Tracks actual implementation status of controls on assets and its effect on residual risk reduction.');
+END
+
+IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL
+BEGIN
+	DELETE FROM sysinit_column WHERE table_name = 'countermeasure_implementation';
+
+	INSERT INTO sysinit_column (
+		table_name, column_name, [language],
+		caption, label, header, helptext,
+		is_mandatory, is_computed, referenced_class_code
+	) VALUES
+	('countermeasure_implementation','asset_uuid','cs','Hodnocené / chráněné aktivum (asset_uuid)','Aktivum / prostor','Aktivum','Odkaz na hodnocené nebo chráněné aktivum či prostor v tabulce asset.',1,0,'asset'),
+	('countermeasure_implementation','completion_date','cs','Datum dokončení (completion_date)','Skutečné datum dokončení / ověření','Dokončeno dne','Skutečné datum zavedení a ověření funkčnosti protiopatření.',0,0,''),
+	('countermeasure_implementation','countermeasure_uuid','cs','Aplikované protiopatření (countermeasure_uuid)','Protiopatření z katalogu','Protiopatření','Odkaz na bezpečnostní, technické nebo organizační opatření v tabulce countermeasure.',1,0,'countermeasure'),
+	('countermeasure_implementation','effective_reduction_factor','cs','Efektivní redukční faktor v % (effective_reduction_factor)','Efektivní redukce rizika (0–100 %)','Ef. redukce (%)','Vypočtený součin redukčního faktoru opatření a váhy jeho stavu v procentech (0 až 100 %).',0,1,''),
+	('countermeasure_implementation','effective_risk_factor','cs','Efektivní prahový rizikový faktor v % (effective_risk_factor)','Efektivní spodní práh rizika (0–100 %)','Ef. práh rizika (%)','Vypočtený součin rizikového faktoru opatření a váhy jeho stavu při neimplementaci (0 až 100 %).',0,1,''),
+	('countermeasure_implementation','responsible_user_uuid','cs','Odpovědná osoba (responsible_user_uuid)','Osoba odpovědná za opatření','Odpovědná osoba','Odkaz na uživatelský účet osoby odpovědné za zavedení a provoz protiopatření.',0,0,'user_account'),
+	('countermeasure_implementation','state_uuid','cs','Stav zavedení opatření (state_uuid)','Stav implementace protiopatření','Stav opatření','Odkaz na aktuální stav realizace opatření v číselníku countermeasure_state.',0,0,'countermeasure_state'),
+	('countermeasure_implementation','target_date','cs','Cílový termín realizace (target_date)','Plánovaný termín zavedení','Termín (plán)','Plánované datum dokončení implementace protiopatření.',0,0,'');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('countermeasure_implementation','asset_uuid','en','Assessed / Protected Asset (asset_uuid)','Asset / Space','Asset','Reference to the assessed or protected asset or space in the asset table.'),
+	('countermeasure_implementation','completion_date','en','Completion Date (completion_date)','Actual Completion / Verification Date','Completed On','Actual date when the countermeasure was implemented and verified.'),
+	('countermeasure_implementation','countermeasure_uuid','en','Applied Countermeasure (countermeasure_uuid)','Catalog Countermeasure','Countermeasure','Reference to the security, technical, or organizational control in the countermeasure table.'),
+	('countermeasure_implementation','effective_reduction_factor','en','Effective Reduction Factor in % (effective_reduction_factor)','Effective Risk Reduction (0–100%)','Eff. Reduction (%)','Calculated product of the countermeasure reduction factor and its state weight in percent (0 to 100%).'),
+	('countermeasure_implementation','effective_risk_factor','en','Effective Risk Floor Factor in % (effective_risk_factor)','Effective Minimum Risk Floor (0–100%)','Eff. Risk Floor (%)','Calculated product of the countermeasure risk factor and its state weight when unimplemented (0 to 100%).'),
+	('countermeasure_implementation','responsible_user_uuid','en','Responsible Person (responsible_user_uuid)','Person Responsible for Countermeasure','Responsible Person','Reference to the user account of the person responsible for implementing and operating the countermeasure.'),
+	('countermeasure_implementation','state_uuid','en','Countermeasure Implementation State (state_uuid)','Countermeasure Implementation State','Control State','Reference to the current implementation state in the countermeasure_state codetable.'),
+	('countermeasure_implementation','target_date','en','Target Implementation Date (target_date)','Planned Implementation Date','Target Date','Planned completion date for countermeasure implementation.');
+END
 GO

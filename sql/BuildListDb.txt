@@ -3,7 +3,9 @@
 #
 
 F:\EclipseWorkspaces\Ramses\sql\HinkMSSQLLibrary.sql
-exclude=p_create_standard_views.sql 
+exclude=p_create_standard_views.sql
+exclude=changes_2026.sql
+sysinit_reset.sql
 changes_*.sql
 
 system_constant.sql
@@ -14,8 +16,8 @@ fillup_meta_original_keys.sql
 generate_trgo.sql
 v_*.sql
 p_fix_meta_column.sql
-fillup_meta_object.sql
 fillup_*.sql
+*#phrase.sql
 #output=BcmOsirisDb2.txt
 p_*.sql
 page_*.sql
