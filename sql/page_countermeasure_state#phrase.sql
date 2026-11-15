@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:15
+ * Verze: 2026-11-15 19:55
  * Soubor: page_countermeasure_state#phrase.sql
  * Účel:   Registrace stránky page_countermeasure_state do sysinit_object,
  *         položky menu countermeasure_state do sysinit_menu a frází
@@ -25,32 +25,30 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 ('countermeasure_state','en','Countermeasure States','Management of the codetable of countermeasure implementation states and their reduction and risk factors','Management of the codetable of countermeasure implementation states and their reduction and risk factors');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
-('page_countermeasure_state','btn_new_cm_state','cs','+ Nový stav protiopatření','Založí nový stav implementace protiopatření',''),
-('page_countermeasure_state','grp_factors','cs','Váhy redukčního a rizikového faktoru (0 až 100 %)','',''),
-('page_countermeasure_state','grp_identification','cs','Kód, pořadí a vizuální označení','',''),
-('page_countermeasure_state','grp_presentation','cs','Název a popis stavu','',''),
-('page_countermeasure_state','grp_protection','cs','Platnost a ochrana záznamu','',''),
+('page_countermeasure_state','btn_new_cm_state','cs','+ Nový stav opatření','Založí nový stav implementace protiopatření',''),
+('page_countermeasure_state','grp_factors_ordering','cs','Výpočtové faktory stavu (0 až 100 %) a řazení','',''),
+('page_countermeasure_state','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_countermeasure_state','grp_visual_validity','cs','Vizuální atributy, platnost a ochrana','',''),
 ('page_countermeasure_state','header_edit_cm_state','cs','Stav protiopatření','',''),
 ('page_countermeasure_state','header_new_cm_state','cs','Nový stav protiopatření','',''),
 ('page_countermeasure_state','page_title','cs','Stavy protiopatření (CRMM)','',''),
-('page_countermeasure_state','th_builtin_code','cs','Kód','',''),
-('page_countermeasure_state','th_caption','cs','Stav protiopatření','',''),
-('page_countermeasure_state','th_reduction_factor','cs','Redukce (%)','',''),
-('page_countermeasure_state','th_risk_factor','cs','Riziko (%)','',''),
-('page_countermeasure_state','th_sort_code','cs','Pořadí','','');
+('page_countermeasure_state','th_is_default','cs','Výchozí','',''),
+('page_countermeasure_state','th_reduction_pct','cs','Redukce (%)','',''),
+('page_countermeasure_state','th_risk_pct','cs','Riziko (%)','',''),
+('page_countermeasure_state','th_sort_code','cs','Pořadí','',''),
+('page_countermeasure_state','th_state_caption','cs','Stav opatření','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_countermeasure_state','btn_new_cm_state','en','+ New Countermeasure State','Create a new countermeasure implementation state'),
-('page_countermeasure_state','grp_factors','en','Reduction & Risk Factor Weights (0 to 100%)',''),
-('page_countermeasure_state','grp_identification','en','Code, Sort Order & Visual Styling',''),
-('page_countermeasure_state','grp_presentation','en','State Name & Description',''),
-('page_countermeasure_state','grp_protection','en','Validity & Record Protection',''),
+('page_countermeasure_state','grp_factors_ordering','en','State Calculation Factors (0 to 100%) & Ordering',''),
+('page_countermeasure_state','grp_presentation','en','Presentation Texts & Help',''),
+('page_countermeasure_state','grp_visual_validity','en','Visual Attributes, Validity & Protection',''),
 ('page_countermeasure_state','header_edit_cm_state','en','Countermeasure State',''),
 ('page_countermeasure_state','header_new_cm_state','en','New Countermeasure State',''),
 ('page_countermeasure_state','page_title','en','Countermeasure States (CRMM)',''),
-('page_countermeasure_state','th_builtin_code','en','Code',''),
-('page_countermeasure_state','th_caption','en','Countermeasure State',''),
-('page_countermeasure_state','th_reduction_factor','en','Reduction (%)',''),
-('page_countermeasure_state','th_risk_factor','en','Risk (%)',''),
-('page_countermeasure_state','th_sort_code','en','Order','');
+('page_countermeasure_state','th_is_default','en','Default',''),
+('page_countermeasure_state','th_reduction_pct','en','Reduction (%)',''),
+('page_countermeasure_state','th_risk_pct','en','Risk (%)',''),
+('page_countermeasure_state','th_sort_code','en','Order',''),
+('page_countermeasure_state','th_state_caption','en','Control State','');
 GO

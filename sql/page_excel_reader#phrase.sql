@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:30
+ * Verze: 2026-11-15 19:15
  * Soubor: page_excel_reader#phrase.sql
  * Účel:   Registrace stránky page_excel_reader do sysinit_object, položky menu
  *         excel_reader do sysinit_menu a frází do sysinit_phrase.
@@ -24,28 +24,40 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 ('excel_reader','en','Import Data from Excel','Bulk import and verification of metadata from an XLSX file','Bulk import and verification of metadata from an XLSX file');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
-('page_excel_reader','btn_distribute','cs','Distribuovat do systémových metadat','Spustí uloženou proceduru pro rozpad importovaných listů do tabulek meta_*','btn-success'),
-('page_excel_reader','btn_upload','cs','Nahrát a importovat do DB','Nahraje vybraný sešit XLSX a uloží jeho listy do databázových tabulek _excel_*',''),
-('page_excel_reader','chk_drop_tables','cs','Smazat existující tabulky _excel_* před importem','',''),
-('page_excel_reader','err_upload_failed','cs','Chyba při nahrávání souboru.','',''),
-('page_excel_reader','heading_main','cs','Import a kontrola dat z Excelu (XLSX)','',''),
-('page_excel_reader','lbl_select_file','cs','Vyberte soubor Excel (.xlsx):','',''),
-('page_excel_reader','lbl_sheets_overview','cs','Přehled listů v databázi:','',''),
-('page_excel_reader','msg_distribute_done','cs','Distribuce dat do systémových tabulek byla dokončena.','',''),
-('page_excel_reader','msg_import_done','cs','Import sešitu do tabulek _excel_* byl úspěšně dokončen.','',''),
+('page_excel_reader','btn_goto_export_meta','cs','Přejít na export metadat do Excelu →','Přejde na stránku pro vygenerování a stažení souboru meta_object.xlsx','btn-secondary'),
+('page_excel_reader','btn_submit_excel','cs','Načíst a zpracovat','Nahraje vybraný soubor XLSX a provede zvolený režim zpracování','btn-success'),
+('page_excel_reader','err_pkg_not_ready','cs','Balíček není připraven pro distribuci','',''),
+('page_excel_reader','form_heading','cs','Načtení dat z excelu pro účely distribuce a importu','',''),
+('page_excel_reader','form_intro','cs','Vyberte zdrojový soubor XLSX a zvolte požadovaný režim zpracování.','',''),
+('page_excel_reader','lbl_import_mode','cs','Režim zpracování:','',''),
+('page_excel_reader','lbl_input_file','cs','Vstupní soubor','',''),
+('page_excel_reader','lbl_xlsx_file','cs','Soubor XLSX:','',''),
+('page_excel_reader','msg_data_outside_table','cs','Data jsou i mimo tabulku','',''),
+('page_excel_reader','msg_processing_data','cs','Zpracování dat','',''),
 ('page_excel_reader','msg_rows_truncated','cs','... Zobrazeno pouze prvních {$max} z celkových {$total} řádků ...','',''),
-('page_excel_reader','page_title','cs','Import dat z Excelu - BCM Osiris','','');
+('page_excel_reader','opt_mode_commit','cs','Import se zápisem (Commit)','',''),
+('page_excel_reader','opt_mode_dist','cs','Distribuce (SQL skript)','',''),
+('page_excel_reader','opt_mode_preview','cs','Pouze zobrazit data','',''),
+('page_excel_reader','opt_mode_rollback','cs','Kontrolní běh (Rollback)','',''),
+('page_excel_reader','page_title','cs','Import dat z Excelu - BCM Osiris','',''),
+('page_excel_reader','warn_mode_switched','cs','Režim byl automaticky přepnut na zobrazení dat','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
-('page_excel_reader','btn_distribute','en','Distribute into System Metadata','Run the stored procedure to distribute imported sheets into meta_* tables'),
-('page_excel_reader','btn_upload','en','Upload & Import into DB','Upload the selected XLSX workbook and store its sheets into _excel_* tables'),
-('page_excel_reader','chk_drop_tables','en','Drop existing _excel_* tables before import',''),
-('page_excel_reader','err_upload_failed','en','File upload failed.',''),
-('page_excel_reader','heading_main','en','Import & Verify Data from Excel (XLSX)',''),
-('page_excel_reader','lbl_select_file','en','Select Excel file (.xlsx):',''),
-('page_excel_reader','lbl_sheets_overview','en','Database Sheets Overview:',''),
-('page_excel_reader','msg_distribute_done','en','Distribution of data into system metadata tables completed.',''),
-('page_excel_reader','msg_import_done','en','Workbook import into _excel_* tables completed successfully.',''),
+('page_excel_reader','btn_goto_export_meta','en','Go to Export Metadata to Excel →','Open the page for generating and downloading meta_object.xlsx'),
+('page_excel_reader','btn_submit_excel','en','Upload & Process','Upload the selected XLSX file and execute the chosen processing mode'),
+('page_excel_reader','err_pkg_not_ready','en','Package is not ready for distribution',''),
+('page_excel_reader','form_heading','en','Load Data from Excel for Distribution and Import',''),
+('page_excel_reader','form_intro','en','Select a source XLSX workbook and choose the desired processing mode.',''),
+('page_excel_reader','lbl_import_mode','en','Processing Mode:',''),
+('page_excel_reader','lbl_input_file','en','Input File',''),
+('page_excel_reader','lbl_xlsx_file','en','XLSX File:',''),
+('page_excel_reader','msg_data_outside_table','en','Data detected outside the table boundary',''),
+('page_excel_reader','msg_processing_data','en','Processing data',''),
 ('page_excel_reader','msg_rows_truncated','en','... Displaying only the first {$max} of {$total} total rows ...',''),
-('page_excel_reader','page_title','en','Import Data from Excel - BCM Osiris','');
+('page_excel_reader','opt_mode_commit','en','Import with Write (Commit)',''),
+('page_excel_reader','opt_mode_dist','en','Distribution (SQL Script)',''),
+('page_excel_reader','opt_mode_preview','en','Preview Data Only',''),
+('page_excel_reader','opt_mode_rollback','en','Validation Run (Rollback)',''),
+('page_excel_reader','page_title','en','Import Data from Excel - BCM Osiris',''),
+('page_excel_reader','warn_mode_switched','en','Mode was automatically switched to data preview','');
 GO

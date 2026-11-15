@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-25 11:05
+ * Verze: 2026-11-15 19:00
  * Soubor: page_xlsx_export_meta.php
  * Třída: page_xlsx_export_meta
  * Účel: Samostatná stránka pro zpětný export systémových metadat (meta_object,
@@ -11,7 +11,7 @@
  *
  * Vazby na okolí:
  * - Instancována dynamicky z index.php při požadavku ?page=page_xlsx_export_meta.
- * - Dědí z abstract_page (využívá $this->page_title, $this->access_denied,
+ * - Dědí z abstract_page (využívá $this->page_title,$this->access_denied,
  *   $this->phrase(), parent::render() a implementuje render_body()).
  * - Využívá komponentu abstract_button pro vykreslení tlačítek.
  * - Čte číselník [language] a systémové záznamy (object_owner = 0x00) z tabulek
@@ -23,6 +23,11 @@
  *   ve sloupcích s příponou _l (pokud je definován second_language) uzavírá <do stříšek>.
  *
  * Změny:
+ * 2026-11-15 19:00 - Oprava pádu PhpSpreadsheet (TypeError v Calculation.php) při exportu
+ *                    textů začínajících znakem '=' (např. '= (Nezadaná hodnota / NULL)'):
+ *                    doplněn vlastní ValueBinder (bcm_xlsx_text_value_binder) potlačující
+ *                    DataType::TYPE_FORMULA, zapnuto setPreCalculateFormulas(false),
+ *                    vyčištěn výstupní buffer a optimalizován JOIN na meta_object u phrase.
  * 2026-10-25 11:05 - Oprava mizení číselných nul (0) v buňkách Excelu: do všech volání
  *                    metody fromArray() doplněn 4. parametr $strictNullComparison = true,
  *                    aby PhpSpreadsheet nevyhodnocoval (int)0 == null jako prázdnou buňku.
@@ -47,12 +52,25 @@ require_once __DIR__ . '/vendor/autoload.php';
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
+use PhpOffice\PhpSpreadsheet\Cell\Cell;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use PhpOffice\PhpSpreadsheet\Cell\DefaultValueBinder;
+
+class bcm_xlsx_text_value_binder extends DefaultValueBinder {
+
+	public static function dataTypeForValue(mixed $value): string { // Určení datového typu buňky bez vzorců
+		if (is_string($value) AND strlen($value) > 1 AND$value[0] === '=') { // Text začínající znakem rovnítka
+			return DataType::TYPE_STRING;           // Vždy uložit jako prostý text, nikoliv vzorec
+		}
+		return parent::dataTypeForValue($value);    // Standardní určení typu pro ostatní hodnoty
+	}
+}
 
 class page_xlsx_export_meta extends abstract_page {
 
 	public function __construct() {
 		parent::__construct();                          // Inicializace správce frází a kontroly přístupu v předkovi
-		$this->page_title = $this->phrase('page_title', [], 'Export systémových metadat do Excelu - BCM Osiris'); // Titulek stránky
+		$this->page_title =$this->phrase('page_title', [], 'Export systémových metadat do Excelu - BCM Osiris'); // Titulek stránky
 	}
 
 	/**
@@ -105,11 +123,11 @@ class page_xlsx_export_meta extends abstract_page {
 
 		$btn_export = new abstract_button('btn_export_excel', 'Stáhnout meta_object.xlsx', 'page_xlsx_export_meta', '', 'btn-success'); // Tlačítko exportu
 		$btn_export->set_type('submit')->set_name_value('btn_export_excel', '1'); // Nastavení odesílacích atributů tlačítka
-		$export_html = $btn_export->render();           // Vykreslení tlačítka exportu
+		$export_html =$btn_export->render();           // Vykreslení tlačítka exportu
 
 		$btn_import = new abstract_button('btn_goto_import_excel', '← Přejít na import z Excelu', 'page_xlsx_export_meta', '', 'btn-secondary'); // Tlačítko přechodu na import
 		$btn_import->set_href('index.php?page=page_excel_reader')->set_style('margin-left: 10px;'); // Cílová adresa importu
-		$import_link_html = $btn_import->render();      // Vykreslení odkazu na import
+		$import_link_html =$btn_import->render();      // Vykreslení odkazu na import
 
 		echo <<<HTML
 		<style>
@@ -203,6 +221,7 @@ HTML;
 		$safe_lang = charliteral($lang, 2);             // Bezpečný SQL literál primárního jazyka
 		$safe_sec_lang = charliteral($sec_lang, 2);     // Bezpečný SQL literál druhého jazyka
 
+		Cell::setValueBinder(new bcm_xlsx_text_value_binder()); // Zákaz vyhodnocování textů začínajících '=' jako vzorců
 		$spreadsheet = new Spreadsheet();               // Vytvoření nové instance sešitu PhpSpreadsheet
 
 		// =====================================================================
@@ -361,7 +380,8 @@ HTML;
 				CAST(l2.caption AS NVARCHAR(MAX)) AS own_caption_l, CAST(l2.helptext AS NVARCHAR(MAX)) AS own_helptext_l
 			FROM meta_phrase a
 			LEFT JOIN meta_object mo
-				ON mo.original = dbo.f_generate_original('meta_object', CAST(0x00 AS uniqueidentifier), 'P', CASE WHEN ISNULL(LTRIM(RTRIM(a.source_code)), '') = '' THEN 'global_phrase' ELSE LTRIM(RTRIM(a.source_code)) END)
+				ON mo.object_type = 'P'
+				AND mo.builtin_code = CASE WHEN ISNULL(LTRIM(RTRIM(a.source_code)), '') = '' THEN 'global_phrase' ELSE LTRIM(RTRIM(a.source_code)) END
 				AND mo.object_owner = 0x00
 				AND mo.record_type = 'A'
 			LEFT JOIN meta_phrase l1 ON l1.original = a.original AND l1.object_owner = 0x00 AND l1.record_type = 'L' AND l1.[language] = {$safe_lang} AND l1.removed = 0
@@ -582,11 +602,16 @@ HTML;
 		$file_suffix = ($sec_lang !== '') ? "_{$lang}_{$sec_lang}" : "_{$lang}"; // Přípona souboru dle zvolených jazyků
 		$filename = "meta_object{$file_suffix}.xlsx";   // Výsledný název stahovaného souboru
 
+		while (ob_get_level() > 0) {                    // Vyčištění případného výstupního bufferu před hlavičkami
+			ob_end_clean();                             // Odstranění úrovně bufferu
+		}
+
 		header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 		header('Content-Disposition: attachment; filename="' . $filename . '"'); // Hlavička s názvem souboru
 		header('Cache-Control: max-age=0');
 
 		$writer = new Xlsx($spreadsheet);               // Inicializace XLSX zapisovače
+		$writer->setPreCalculateFormulas(false);        // Vypnutí vyhodnocování vzorců při ukládání sešitu
 		$writer->save('php://output');                  // Streamování vygenerovaného sešitu do prohlížeče
 		exit;                                           // Okamžité ukončení skriptu po odeslání souboru
 	}

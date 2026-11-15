@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:30
+ * Verze: 2026-11-15 20:05
  * Soubor: page_impact#phrase.sql
  * Účel:   Registrace stránky page_impact do sysinit_object, položky menu
  *         impact do sysinit_menu a frází do sysinit_phrase.
@@ -25,23 +25,23 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_impact','btn_new_impact','cs','+ Nový dopad','Založí novou oblast nebo položku dopadu v katalogu',''),
-('page_impact','grp_identification','cs','Kód, zařazení ve stromu a ikona','',''),
-('page_impact','grp_permissions_protection','cs','Oprávnění, platnost a ochrana záznamu','',''),
-('page_impact','grp_presentation','cs','Prezentační texty a popis dopadu','',''),
+('page_impact','grp_hierarchy_placement','cs','Zařazení ve stromu a identifikace','',''),
+('page_impact','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_impact','grp_validity_protection','cs','Platnost, vzhled a ochrana','',''),
 ('page_impact','header_edit_impact','cs','Dopad','',''),
 ('page_impact','header_new_impact','cs','Nový dopad','',''),
 ('page_impact','master_heading','cs','Strom katalogu dopadů','',''),
 ('page_impact','page_title','cs','Katalog dopadů (CRMM)','',''),
-('page_impact','th_impact_caption','cs','Druh / Oblast dopadu','','');
+('page_impact','th_impact_caption','cs','Dopad / Oblast dopadu','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_impact','btn_new_impact','en','+ New Impact','Create a new impact area or item in the catalog'),
-('page_impact','grp_identification','en','Code, Tree Placement & Icon',''),
-('page_impact','grp_permissions_protection','en','Permissions, Validity & Record Protection',''),
-('page_impact','grp_presentation','en','Presentation Texts & Impact Description',''),
+('page_impact','grp_hierarchy_placement','en','Tree Placement & Identification',''),
+('page_impact','grp_presentation','en','Presentation Texts & Help',''),
+('page_impact','grp_validity_protection','en','Validity, Appearance & Protection',''),
 ('page_impact','header_edit_impact','en','Impact',''),
 ('page_impact','header_new_impact','en','New Impact',''),
 ('page_impact','master_heading','en','Impact Catalog Tree',''),
 ('page_impact','page_title','en','Impact Catalog (CRMM)',''),
-('page_impact','th_impact_caption','en','Impact Type / Area','');
+('page_impact','th_impact_caption','en','Impact / Impact Area','');
 GO

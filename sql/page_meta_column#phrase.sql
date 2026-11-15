@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:30
+ * Verze: 2026-11-15 20:05
  * Soubor: page_meta_column#phrase.sql
  * Účel:   Registrace stránky page_meta_column do sysinit_object, položky menu
  *         meta_column do sysinit_menu a frází do sysinit_phrase.
@@ -25,25 +25,23 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_meta_column','btn_back_to_class','cs','← Zpět na třídu: {$parent}','Návrat do detailu nadřízené logické třídy','btn-secondary'),
-('page_meta_column','grp_behavior','cs','Chování, překlad, historie a ochrana','',''),
-('page_meta_column','grp_form_ui','cs','Formulářový prvek a zobrazení v seznamu','',''),
-('page_meta_column','grp_identification','cs','Technická identifikace a dědičnost','',''),
-('page_meta_column','grp_presentation','cs','Popisky, záhlaví a nápověda','',''),
-('page_meta_column','grp_relations','cs','Vazby na číselníky a logické třídy','',''),
-('page_meta_column','header_detail','cs','Sloupec metadat','',''),
-('page_meta_column','lbl_select_class','cs','Zvolte logickou třídu (objekt):','',''),
-('page_meta_column','page_title','cs','Sloupce metadat - BCM Osiris','',''),
+('page_meta_column','grp_behavior','cs','Behaviorální příznaky a ochrana','',''),
+('page_meta_column','grp_presentation','cs','Základní prezentační údaje','',''),
+('page_meta_column','grp_ui_props','cs','Formulářové vlastnosti a vazby (UI)','',''),
+('page_meta_column','header_column','cs','Sloupec','',''),
+('page_meta_column','lbl_select_class','cs','Logická třída (objekt):','',''),
+('page_meta_column','msg_inherited_column','cs','Poznámka: Tento sloupec dědí vlastnosti od svého předka. Můžete zde upravit jeho překlady (nebo v roli Developer přepsat jeho vlastnosti).','',''),
+('page_meta_column','page_title','cs','Správa metadat sloupce','',''),
 ('page_meta_column','page_title_class','cs','Sloupce: {$class}','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_meta_column','btn_back_to_class','en','← Back to Class: {$parent}','Return to the parent logical class detail'),
-('page_meta_column','grp_behavior','en','Behavior, Translation, History & Protection',''),
-('page_meta_column','grp_form_ui','en','Form Control & Master List Display',''),
-('page_meta_column','grp_identification','en','Technical Identification & Inheritance',''),
-('page_meta_column','grp_presentation','en','Labels, Headers & Help Text',''),
-('page_meta_column','grp_relations','en','Codetable & Logical Class References',''),
-('page_meta_column','header_detail','en','Metadata Column',''),
-('page_meta_column','lbl_select_class','en','Select Logical Class (Object):',''),
-('page_meta_column','page_title','en','Metadata Columns - BCM Osiris',''),
+('page_meta_column','grp_behavior','en','Behavioral Flags & Protection',''),
+('page_meta_column','grp_presentation','en','Basic Presentation Details',''),
+('page_meta_column','grp_ui_props','en','Form Properties & References (UI)',''),
+('page_meta_column','header_column','en','Column',''),
+('page_meta_column','lbl_select_class','en','Logical Class (Object):',''),
+('page_meta_column','msg_inherited_column','en','Note: This column inherits properties from its ancestor. You can customize its translations here (or override its properties in the Developer role).',''),
+('page_meta_column','page_title','en','Column Metadata Management',''),
 ('page_meta_column','page_title_class','en','Columns: {$class}','');
 GO

@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:30
+ * Verze: 2026-11-15 19:55
  * Soubor: page_hierarchy_item#phrase.sql
  * Účel:   Registrace stránky page_hierarchy_item do sysinit_object, položky
  *         menu hierarchy_item do sysinit_menu a frází do sysinit_phrase.
@@ -26,30 +26,32 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_hierarchy_item','btn_back_to_hierarchy','cs','← Zpět na hierarchii: {$parent}','Návrat do registru sekundárních hierarchií','btn-secondary'),
 ('page_hierarchy_item','btn_new_hierarchy_item','cs','+ Nová položka hierarchie','Založí nový uzel nebo koncovou položku ve vybrané hierarchii',''),
-('page_hierarchy_item','grp_identification','cs','Nadřazená hierarchie, kód a zařazení ve stromu','',''),
-('page_hierarchy_item','grp_presentation','cs','Prezentační texty, barva a ikona','',''),
-('page_hierarchy_item','grp_protection','cs','Oprávnění, platnost a ochrana záznamu','',''),
+('page_hierarchy_item','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_hierarchy_item','grp_tree_placement','cs','Zařazení v hierarchii a stromová struktura','',''),
+('page_hierarchy_item','grp_visual_validity','cs','Vizuální atributy a platnost','',''),
 ('page_hierarchy_item','header_edit_item','cs','Položka hierarchie','',''),
-('page_hierarchy_item','header_new_item','cs','Nová položka sekundární hierarchie','',''),
-('page_hierarchy_item','lbl_select_hierarchy','cs','Zvolte sekundární hierarchii / sadu štítků:','',''),
+('page_hierarchy_item','header_new_item','cs','Nová položka hierarchie','',''),
+('page_hierarchy_item','lbl_select_hierarchy','cs','Zvolená hierarchie / sada štítků:','',''),
 ('page_hierarchy_item','master_heading','cs','Strom položek hierarchie','',''),
-('page_hierarchy_item','msg_no_leaf_hierarchy_defined','cs','V registru sekundárních hierarchií zatím není definována žádná koncová hierarchie (is_leaf = 1). Založte ji nejprve na stránce Sekundární hierarchie a štítky.','',''),
-('page_hierarchy_item','page_title','cs','Položky sekundárních hierarchií (CRMM)','',''),
+('page_hierarchy_item','opt_no_hierarchy_defined','cs','--- Nejprve založte koncovou hierarchii v registru ---','',''),
+('page_hierarchy_item','page_title','cs','Položky sekundární hierarchie','',''),
 ('page_hierarchy_item','page_title_with_hier','cs','Položky hierarchie: {$hierarchy}','',''),
-('page_hierarchy_item','th_item_caption','cs','Položka hierarchie / Štítek','','');
+('page_hierarchy_item','th_is_default','cs','Výchozí','',''),
+('page_hierarchy_item','th_item_caption','cs','Uzel hierarchie (Strom)','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_hierarchy_item','btn_back_to_hierarchy','en','← Back to Hierarchy: {$parent}','Return to the secondary hierarchies registry'),
 ('page_hierarchy_item','btn_new_hierarchy_item','en','+ New Hierarchy Item','Create a new node or terminal item in the selected hierarchy'),
-('page_hierarchy_item','grp_identification','en','Parent Hierarchy, Code & Tree Placement',''),
-('page_hierarchy_item','grp_presentation','en','Presentation Texts, Color & Icon',''),
-('page_hierarchy_item','grp_protection','en','Permissions, Validity & Record Protection',''),
+('page_hierarchy_item','grp_presentation','en','Presentation Texts & Help',''),
+('page_hierarchy_item','grp_tree_placement','en','Hierarchy Assignment & Tree Structure',''),
+('page_hierarchy_item','grp_visual_validity','en','Visual Attributes & Validity',''),
 ('page_hierarchy_item','header_edit_item','en','Hierarchy Item',''),
-('page_hierarchy_item','header_new_item','en','New Secondary Hierarchy Item',''),
-('page_hierarchy_item','lbl_select_hierarchy','en','Select Secondary Hierarchy / Tag Set:',''),
+('page_hierarchy_item','header_new_item','en','New Hierarchy Item',''),
+('page_hierarchy_item','lbl_select_hierarchy','en','Selected Hierarchy / Tag Set:',''),
 ('page_hierarchy_item','master_heading','en','Hierarchy Items Tree',''),
-('page_hierarchy_item','msg_no_leaf_hierarchy_defined','en','No terminal hierarchy (is_leaf = 1) is defined in the registry yet. Please create one first on the Secondary Hierarchies & Tags page.',''),
-('page_hierarchy_item','page_title','en','Secondary Hierarchy Items (CRMM)',''),
+('page_hierarchy_item','opt_no_hierarchy_defined','en','--- Create a terminal hierarchy in the registry first ---',''),
+('page_hierarchy_item','page_title','en','Secondary Hierarchy Items',''),
 ('page_hierarchy_item','page_title_with_hier','en','Hierarchy Items: {$hierarchy}',''),
-('page_hierarchy_item','th_item_caption','en','Hierarchy Item / Tag','');
+('page_hierarchy_item','th_is_default','en','Default',''),
+('page_hierarchy_item','th_item_caption','en','Hierarchy Node (Tree)','');
 GO

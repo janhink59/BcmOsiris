@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:45
+ * Verze: 2026-11-15 20:05
  * Soubor: page_scale_value#phrase.sql
  * Účel:   Registrace stránky page_scale_value do sysinit_object, položky menu
  *         scale_value do sysinit_menu a frází do sysinit_phrase.
@@ -26,38 +26,36 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_scale_value','btn_back_to_scale','cs','← Zpět na škálu: {$parent}','Návrat do detailu nadřazené hodnotící škály','btn-secondary'),
 ('page_scale_value','btn_new_scale_value','cs','+ Nový stupeň škály','Přidá nový stupeň do vybrané hodnotící škály',''),
-('page_scale_value','grp_identification','cs','Nadřazená škála a unikátní kód stupně','',''),
-('page_scale_value','grp_presentation','cs','Název, zkratka, barva a popis stupně','',''),
-('page_scale_value','grp_protection','cs','Platnost a ochrana záznamu','',''),
-('page_scale_value','grp_thresholds','cs','Dolní práh intervalu a výpočtové skóre (0 až 100 %)','',''),
-('page_scale_value','header_edit_level','cs','Stupeň hodnotící škály','',''),
-('page_scale_value','header_new_level','cs','Nový stupeň hodnotící škály','',''),
-('page_scale_value','lbl_interval_preview','cs','Platný interval stupně:','',''),
-('page_scale_value','lbl_select_scale','cs','Zvolte hodnotící škálu:','',''),
-('page_scale_value','master_heading','cs','Stupně škály (seřazeno podle prahu)','',''),
-('page_scale_value','msg_no_scale_defined','cs','V systému zatím není definována žádná hodnotící škála. Založte ji nejprve na stránce Hodnotící škály.','',''),
+('page_scale_value','grp_presentation','cs','Prezentační texty a metodický popis stupně','',''),
+('page_scale_value','grp_thresholds_scores','cs','Zařazení do škály, prahová hodnota a skóre (0 až 100 %)','',''),
+('page_scale_value','grp_visual_validity','cs','Vizuální atributy (semafor), platnost a ochrana','',''),
+('page_scale_value','header_edit_scale_value','cs','Stupeň škály','',''),
+('page_scale_value','header_new_scale_value','cs','Nový stupeň škály','',''),
+('page_scale_value','lbl_select_scale','cs','Zvolená hodnotící škála:','',''),
+('page_scale_value','msg_scale_value_monotonic_hint','cs','Pravidlo škály: Stupně jsou vždy seřazeny vzestupně podle dolní prahové hodnoty (threshold_value v %). Nejnižší stupeň musí začínat na 0 % a hodnoty prahů i skóre (0 až 100 %) musí tvořit monotónně rostoucí řadu.','',''),
+('page_scale_value','opt_no_scale_defined','cs','--- Nejprve založte hodnotící škálu ---','',''),
 ('page_scale_value','page_title','cs','Stupně hodnotících škál (CRMM)','',''),
 ('page_scale_value','page_title_with_scale','cs','Stupně škály: {$scale}','',''),
-('page_scale_value','th_level_caption','cs','Stupeň škály','',''),
-('page_scale_value','th_score_value','cs','Skóre (%)','',''),
-('page_scale_value','th_threshold_value','cs','Od prahu (%)','','');
+('page_scale_value','th_level_caption','cs','Název stupně','',''),
+('page_scale_value','th_score_pct','cs','Skóre (%)','',''),
+('page_scale_value','th_shortname','cs','Zkratka','',''),
+('page_scale_value','th_threshold_pct','cs','Práh (%)','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_scale_value','btn_back_to_scale','en','← Back to Scale: {$parent}','Return to the parent assessment scale detail'),
 ('page_scale_value','btn_new_scale_value','en','+ New Scale Level','Add a new level to the selected assessment scale'),
-('page_scale_value','grp_identification','en','Parent Scale & Unique Level Code',''),
-('page_scale_value','grp_presentation','en','Name, Short Name, Color & Level Description',''),
-('page_scale_value','grp_protection','en','Validity & Record Protection',''),
-('page_scale_value','grp_thresholds','en','Lower Interval Threshold & Calculation Score (0 to 100%)',''),
-('page_scale_value','header_edit_level','en','Assessment Scale Level',''),
-('page_scale_value','header_new_level','en','New Assessment Scale Level',''),
-('page_scale_value','lbl_interval_preview','en','Effective Level Interval:',''),
-('page_scale_value','lbl_select_scale','en','Select Assessment Scale:',''),
-('page_scale_value','master_heading','en','Scale Levels (Sorted by Threshold)',''),
-('page_scale_value','msg_no_scale_defined','en','No assessment scale is defined in the system yet. Please create one first on the Assessment Scales page.',''),
+('page_scale_value','grp_presentation','en','Presentation Texts & Methodological Level Description',''),
+('page_scale_value','grp_thresholds_scores','en','Scale Assignment, Threshold Value & Score (0 to 100%)',''),
+('page_scale_value','grp_visual_validity','en','Visual Attributes (Traffic Light), Validity & Protection',''),
+('page_scale_value','header_edit_scale_value','en','Scale Level',''),
+('page_scale_value','header_new_scale_value','en','New Scale Level',''),
+('page_scale_value','lbl_select_scale','en','Selected Assessment Scale:',''),
+('page_scale_value','msg_scale_value_monotonic_hint','en','Scale rule: Levels are always sorted ascending by their lower threshold value (threshold_value in %). The lowest level must start at 0%, and both thresholds and scores (0 to 100%) must form a strictly monotonic increasing sequence.',''),
+('page_scale_value','opt_no_scale_defined','en','--- Create an assessment scale first ---',''),
 ('page_scale_value','page_title','en','Assessment Scale Levels (CRMM)',''),
 ('page_scale_value','page_title_with_scale','en','Scale Levels: {$scale}',''),
-('page_scale_value','th_level_caption','en','Scale Level',''),
-('page_scale_value','th_score_value','en','Score (%)',''),
-('page_scale_value','th_threshold_value','en','Threshold (%)','');
+('page_scale_value','th_level_caption','en','Level Name',''),
+('page_scale_value','th_score_pct','en','Score (%)',''),
+('page_scale_value','th_shortname','en','Short Name',''),
+('page_scale_value','th_threshold_pct','en','Threshold (%)','');
 GO

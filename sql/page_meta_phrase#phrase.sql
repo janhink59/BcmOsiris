@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:45
+ * Verze: 2026-11-15 20:05
  * Soubor: page_meta_phrase#phrase.sql
  * Účel:   Registrace stránky page_meta_phrase do sysinit_object, položky menu
  *         meta_phrase do sysinit_menu a frází do sysinit_phrase.
@@ -24,24 +24,26 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 ('meta_phrase','en','Text Phrases & Translations','Management of text phrases, buttons, and language mutations','Management of text phrases, buttons, and language mutations');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
-('page_meta_phrase','btn_new_phrase','cs','+ Nová textová fráze','Založí novou lokalizovatelnou textovou frázi nebo tlačítko',''),
-('page_meta_phrase','grp_ai_protection','cs','Kontext pro překlad (AI) a ochrana','',''),
-('page_meta_phrase','grp_identification','cs','Zdrojová třída a unikátní kód fráze','',''),
-('page_meta_phrase','grp_presentation','cs','Text fráze, tooltip a vzhled tlačítka','',''),
-('page_meta_phrase','header_edit_phrase','cs','Textová fráze','',''),
+('page_meta_phrase','btn_new_phrase','cs','+ Nová fráze','Založí novou lokalizovatelnou textovou frázi nebo tlačítko',''),
+('page_meta_phrase','grp_identification','cs','Identifikace a zařazení fráze','',''),
+('page_meta_phrase','grp_texts','cs','Texty a kontext pro překlad','',''),
+('page_meta_phrase','grp_visual','cs','Vizuální atributy a ochrana','',''),
 ('page_meta_phrase','header_new_phrase','cs','Nová textová fráze','',''),
-('page_meta_phrase','lbl_filter_source','cs','Filtrovat podle zdroje (source_code):','',''),
-('page_meta_phrase','opt_all_sources','cs','--- Všechny zdroje (stránky a třídy) ---','',''),
-('page_meta_phrase','page_title','cs','Textové fráze a překlady - BCM Osiris','','');
+('page_meta_phrase','header_phrase','cs','Fráze','',''),
+('page_meta_phrase','lbl_filter_source','cs','Zdrojová třída / stránka (source_code):','',''),
+('page_meta_phrase','opt_all_sources','cs','--- Všechny třídy a stránky ---','',''),
+('page_meta_phrase','opt_global_phrases','cs','global_phrase (Globální fráze systému)','',''),
+('page_meta_phrase','page_title','cs','Správa textových frází a překladů','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
-('page_meta_phrase','btn_new_phrase','en','+ New Text Phrase','Create a new localizable text phrase or button label'),
-('page_meta_phrase','grp_ai_protection','en','Translation Context (AI) & Protection',''),
-('page_meta_phrase','grp_identification','en','Source Class & Unique Phrase Code',''),
-('page_meta_phrase','grp_presentation','en','Phrase Text, Tooltip & Button Styling',''),
-('page_meta_phrase','header_edit_phrase','en','Text Phrase',''),
+('page_meta_phrase','btn_new_phrase','en','+ New Phrase','Create a new localizable text phrase or button label'),
+('page_meta_phrase','grp_identification','en','Phrase Identification & Classification',''),
+('page_meta_phrase','grp_texts','en','Texts & Translation Context',''),
+('page_meta_phrase','grp_visual','en','Visual Attributes & Protection',''),
 ('page_meta_phrase','header_new_phrase','en','New Text Phrase',''),
-('page_meta_phrase','lbl_filter_source','en','Filter by Source (source_code):',''),
-('page_meta_phrase','opt_all_sources','en','--- All Sources (Pages & Classes) ---',''),
-('page_meta_phrase','page_title','en','Text Phrases & Translations - BCM Osiris','');
+('page_meta_phrase','header_phrase','en','Phrase',''),
+('page_meta_phrase','lbl_filter_source','en','Source Class / Page (source_code):',''),
+('page_meta_phrase','opt_all_sources','en','--- All Classes & Pages ---',''),
+('page_meta_phrase','opt_global_phrases','en','global_phrase (System Global Phrases)',''),
+('page_meta_phrase','page_title','en','Text Phrases & Translations Management','');
 GO

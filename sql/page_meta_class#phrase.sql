@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:30
+ * Verze: 2026-11-15 20:05
  * Soubor: page_meta_class#phrase.sql
  * Účel:   Registrace stránky page_meta_class do sysinit_object, položky menu
  *         meta_class do sysinit_menu a frází do sysinit_phrase.
@@ -25,17 +25,15 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_meta_class','btn_manage_columns','cs','Spravovat sloupce ({$count}) →','Přejde do správy sloupců vybrané logické třídy','btn-secondary'),
-('page_meta_class','grp_identification','cs','Technická identifikace a úložiště','',''),
-('page_meta_class','grp_presentation','cs','Prezentační texty a překlady','',''),
-('page_meta_class','grp_settings','cs','Nastavení koše, oprávnění a ochrany','',''),
-('page_meta_class','header_detail','cs','Logická třída','',''),
-('page_meta_class','page_title','cs','Logické třídy (Objekty) - BCM Osiris','','');
+('page_meta_class','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_meta_class','grp_technical','cs','Dědičnost, vzhled a ochrana třídy','',''),
+('page_meta_class','header_edit_class','cs','Editace třídy','',''),
+('page_meta_class','page_title','cs','Správa metadat logických tříd','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_meta_class','btn_manage_columns','en','Manage Columns ({$count}) →','Open column definitions for the selected logical class'),
-('page_meta_class','grp_identification','en','Technical Identification & Storage',''),
-('page_meta_class','grp_presentation','en','Presentation Texts & Translations',''),
-('page_meta_class','grp_settings','en','Trash Retention, Permissions & Protection',''),
-('page_meta_class','header_detail','en','Logical Class',''),
-('page_meta_class','page_title','en','Logical Classes (Objects) - BCM Osiris','');
+('page_meta_class','grp_presentation','en','Presentation Texts & Help',''),
+('page_meta_class','grp_technical','en','Class Inheritance, Appearance & Protection',''),
+('page_meta_class','header_edit_class','en','Edit Class',''),
+('page_meta_class','page_title','en','Logical Class Metadata Management','');
 GO

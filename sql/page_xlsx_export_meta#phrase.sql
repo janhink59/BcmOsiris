@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:45
+ * Verze: 2026-11-15 19:15
  * Soubor: page_xlsx_export_meta#phrase.sql
  * Účel:   Registrace stránky page_xlsx_export_meta do sysinit_object, položky
  *         menu xlsx_export_meta do sysinit_menu a frází do sysinit_phrase.
@@ -24,16 +24,24 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 ('xlsx_export_meta','en','Export Metadata to Excel','Reverse export of system metadata into an XLSX file','Reverse export of system metadata into an XLSX file');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
-('page_xlsx_export_meta','btn_download_xlsx','cs','Vygenerovat a stáhnout XLSX','Sestaví sešit Excel se systémovými metadaty a odešle jej ke stažení','btn-success'),
-('page_xlsx_export_meta','heading_export','cs','Export systémových metadat do Excelu (XLSX)','',''),
-('page_xlsx_export_meta','intro_export','cs','Tento nástroj vygeneruje vícezáložkový sešit XLSX obsahující aktuální stav systémových metadat (meta_object, meta_class, meta_column, meta_menu, meta_phrase, meta_codetable, meta_link_def).','',''),
-('page_xlsx_export_meta','lbl_filter_only_custom','cs','Exportovat pouze záznamy upravené v rozhraní (who_modified <> 0x00)','',''),
-('page_xlsx_export_meta','page_title','cs','Export metadat do Excelu - BCM Osiris','','');
+('page_xlsx_export_meta','btn_export_excel','cs','Stáhnout meta_object.xlsx','Sestaví sešit Excel se systémovými metadaty a odešle jej ke stažení','btn-success'),
+('page_xlsx_export_meta','btn_goto_import_excel','cs','← Přejít na import z Excelu','Přejde na stránku pro nahrání a import sešitu XLSX','btn-secondary'),
+('page_xlsx_export_meta','export_heading','cs','Export systémových metadat do Excelu (meta_object.xlsx)','',''),
+('page_xlsx_export_meta','export_intro','cs','Vygeneruje aktuální soubor meta_object.xlsx přímo z databáze (záložky page, menu, phrase, class, column; zděděné hodnoty jsou uzavřeny <do stříšek>).','',''),
+('page_xlsx_export_meta','lbl_import_origin','cs','Označení původu (import_origin):','',''),
+('page_xlsx_export_meta','lbl_primary_language','cs','Základní jazyk (language):','',''),
+('page_xlsx_export_meta','lbl_second_language','cs','Druhý jazyk (*_l):','',''),
+('page_xlsx_export_meta','opt_no_second_lang','cs','--- Bez druhého jazyka (režim jádra) ---','',''),
+('page_xlsx_export_meta','page_title','cs','Export systémových metadat do Excelu - BCM Osiris','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
-('page_xlsx_export_meta','btn_download_xlsx','en','Generate & Download XLSX','Build the Excel workbook with system metadata and download it'),
-('page_xlsx_export_meta','heading_export','en','Export System Metadata to Excel (XLSX)',''),
-('page_xlsx_export_meta','intro_export','en','This tool generates a multi-sheet XLSX workbook containing the current state of system metadata (meta_object, meta_class, meta_column, meta_menu, meta_phrase, meta_codetable, meta_link_def).',''),
-('page_xlsx_export_meta','lbl_filter_only_custom','en','Export only records customized in the UI (who_modified <> 0x00)',''),
-('page_xlsx_export_meta','page_title','en','Export Metadata to Excel - BCM Osiris','');
+('page_xlsx_export_meta','btn_export_excel','en','Download meta_object.xlsx','Build the Excel workbook with system metadata and download it'),
+('page_xlsx_export_meta','btn_goto_import_excel','en','← Go to Excel Import','Open the page for uploading and importing an XLSX workbook'),
+('page_xlsx_export_meta','export_heading','en','Export System Metadata to Excel (meta_object.xlsx)',''),
+('page_xlsx_export_meta','export_intro','en','Generates the current meta_object.xlsx workbook directly from the database (sheets page, menu, phrase, class, column; inherited values are enclosed <in angle brackets>).',''),
+('page_xlsx_export_meta','lbl_import_origin','en','Data Origin Label (import_origin):',''),
+('page_xlsx_export_meta','lbl_primary_language','en','Primary Language (language):',''),
+('page_xlsx_export_meta','lbl_second_language','en','Second Language (*_l):',''),
+('page_xlsx_export_meta','opt_no_second_lang','en','--- No Second Language (Core Mode) ---',''),
+('page_xlsx_export_meta','page_title','en','Export System Metadata to Excel - BCM Osiris','');
 GO

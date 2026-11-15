@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:45
+ * Verze: 2026-11-15 20:05
  * Soubor: page_scale#phrase.sql
  * Účel:   Registrace stránky page_scale do sysinit_object, položky menu
  *         scale do sysinit_menu a frází do sysinit_phrase.
@@ -26,34 +26,30 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_scale','btn_manage_scale_values','cs','Spravovat stupně škály ({$count}) →','Přejde do správy jednotlivých stupňů, prahů a skóre této škály','btn-secondary'),
 ('page_scale','btn_new_scale','cs','+ Nová hodnotící škála','Založí novou hodnotící škálu a automaticky vygeneruje výchozí stupně',''),
-('page_scale','grp_identification','cs','Kód, druh veličiny, priorita a výchozí počet stupňů','',''),
-('page_scale','grp_presentation','cs','Název a metodický popis škály','',''),
-('page_scale','grp_protection','cs','Platnost a ochrana záznamu','',''),
+('page_scale','grp_methodology','cs','Metodické zařazení a generování stupňů','',''),
+('page_scale','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_scale','grp_validity_protection','cs','Platnost, vzhled a ochrana','',''),
 ('page_scale','header_edit_scale','cs','Hodnotící škála','',''),
 ('page_scale','header_new_scale','cs','Nová hodnotící škála','',''),
-('page_scale','lbl_filter_scale_type','cs','Filtrovat podle druhu škály:','',''),
-('page_scale','msg_initial_levels_hint','cs','Při prvním uložení nové škály systém automaticky vygeneruje zadaný počet stupňů (initial_levels) rovnoměrně rozložených v intervalu 0 až 100 %.','',''),
-('page_scale','opt_all_scale_types','cs','--- Všechny druhy škál ---','',''),
+('page_scale','msg_scale_generation_hint','cs','Tip: Při prvním uložení nové škály se podle pole „Počet stupňů (initial_levels)“ automaticky vygeneruje odpovídající počet rovnoměrných stupňů v procentuálním intervalu 0 až 100 % (např. pro 4 stupně prahy 0, 25, 50, 75 % a skóre uprostřed intervalů 12.5, 37.5, 62.5, 87.5 %). Stupně lze následně upravit tlačítkem „Spravovat stupně škály“.','',''),
 ('page_scale','page_title','cs','Hodnotící škály (CRMM)','',''),
 ('page_scale','th_builtin_code','cs','Kód','',''),
-('page_scale','th_caption','cs','Název škály','',''),
 ('page_scale','th_priority','cs','Priorita','',''),
-('page_scale','th_scale_type','cs','Druh','','');
+('page_scale','th_scale_caption','cs','Název škály','',''),
+('page_scale','th_scale_type','cs','Veličina','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_scale','btn_manage_scale_values','en','Manage Scale Levels ({$count}) →','Open management of individual levels, thresholds, and scores for this scale'),
 ('page_scale','btn_new_scale','en','+ New Assessment Scale','Create a new assessment scale and automatically generate default levels'),
-('page_scale','grp_identification','en','Code, Quantity Type, Priority & Initial Level Count',''),
-('page_scale','grp_presentation','en','Scale Name & Methodological Description',''),
-('page_scale','grp_protection','en','Validity & Record Protection',''),
+('page_scale','grp_methodology','en','Methodological Classification & Level Generation',''),
+('page_scale','grp_presentation','en','Presentation Texts & Help',''),
+('page_scale','grp_validity_protection','en','Validity, Appearance & Protection',''),
 ('page_scale','header_edit_scale','en','Assessment Scale',''),
 ('page_scale','header_new_scale','en','New Assessment Scale',''),
-('page_scale','lbl_filter_scale_type','en','Filter by Scale Type:',''),
-('page_scale','msg_initial_levels_hint','en','When saving a new scale for the first time, the system automatically generates the specified number of levels (initial_levels) evenly distributed across the 0 to 100% range.',''),
-('page_scale','opt_all_scale_types','en','--- All Scale Types ---',''),
+('page_scale','msg_scale_generation_hint','en','Tip: Upon first saving a new scale, the system automatically generates the specified number of even levels (initial_levels) in the 0 to 100% range (e.g., for 4 levels: thresholds 0, 25, 50, 75% and midpoint scores 12.5, 37.5, 62.5, 87.5%). Levels can then be customized via "Manage Scale Levels".',''),
 ('page_scale','page_title','en','Assessment Scales (CRMM)',''),
 ('page_scale','th_builtin_code','en','Code',''),
-('page_scale','th_caption','en','Scale Name',''),
 ('page_scale','th_priority','en','Priority',''),
-('page_scale','th_scale_type','en','Type','');
+('page_scale','th_scale_caption','en','Scale Name',''),
+('page_scale','th_scale_type','en','Quantity','');
 GO

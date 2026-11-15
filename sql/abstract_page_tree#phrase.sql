@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:15
+ * Verze: 2026-11-15 19:55
  * Soubor: abstract_page_tree#phrase.sql
  * Účel:   Registrace stromové šablony abstract_page_tree do sysinit_object
  *         a naplnění jejích českých a anglických frází do sysinit_phrase.
@@ -25,10 +25,10 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('abstract_page_tree','btn_expand_all','cs','Rozbalit vše','Rozbalí všechny složky stromu v levém panelu',''),
 ('abstract_page_tree','btn_new_tree_item','cs','+ Nová položka','Založí novou položku ve stromové struktuře',''),
 ('abstract_page_tree','btn_split_node_oth','cs','Rozčlenit na podtřídy (+ _oth)','Vytvoří pod tímto uzlem koncovou položku „Ostatní (*_oth)“, převede na ni navázané záznamy a uvolní tento uzel jako složku','btn-secondary'),
-('abstract_page_tree','confirm_split_node_oth','cs','Opravdu chcete tento koncový uzel změnit na složku a převést jeho přímé vazby a záznamy na novou podřízenou položku „Ostatní ({$code}_oth)“?','',''),
+('abstract_page_tree','confirm_split_node_oth','cs','Tento koncový uzel má již navázané záznamy. Chcete jej proměnit na složku (is_leaf = 0) a stávající záznamy automaticky převést na nový podřízený uzel s příponou „_oth“ (… – ostatní)?','',''),
 ('abstract_page_tree','default_tree_heading','cs','Strom záznamů','',''),
 ('abstract_page_tree','lbl_show_removed','cs','Zobrazit i zrušené','',''),
-('abstract_page_tree','msg_auto_split_parent_info','cs','Nadřízený koncový uzel byl automaticky změněn na složku a jeho původní přímé záznamy byly převedeny na novou položku „{$code}“.','',''),
+('abstract_page_tree','msg_auto_split_parent_info','cs','Nadřízená položka „{$parent}“ je dosud koncovým listem. Při uložení této nové podpoložky se nadřízená položka automaticky promění na složku (is_leaf = 0) a případné stávající záznamy na ní navázané se převedou na podřízený uzel s příponou „_oth“ (… – ostatní).','',''),
 ('abstract_page_tree','msg_dnd_unsaved_notice','cs','Nadřízená položka (parent_uuid) a pořadí (sort_code) byly upraveny přetažením. Zkontrolujte údaje a potvrďte je tlačítkem Uložit změny (příp. Uložit koncept / Předat ke schválení).','',''),
 ('abstract_page_tree','msg_node_locked_notice','cs','🔒 Tento uzel (nebo jeho podřízený uzel) má již navázané platné záznamy. Změna nadřízeného uzlu (přepodřízení) a smazání jsou uzamčeny; pokud potřebujete tento koncový uzel dále členit na podtřídy, použijte tlačítko „Rozčlenit na podtřídy (+ _oth)“ v záhlaví detailu (nebo pod něj rovnou přidejte novou položku).','',''),
 ('abstract_page_tree','placeholder_search','cs','Hledat ve stromu...','',''),
@@ -49,10 +49,10 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('abstract_page_tree','btn_expand_all','en','Expand All','Expand all tree folders in the left panel'),
 ('abstract_page_tree','btn_new_tree_item','en','+ New Item','Create a new item in the tree hierarchy'),
 ('abstract_page_tree','btn_split_node_oth','en','Split into Subclasses (+ _oth)','Creates a terminal "Other (*_oth)" item under this node, moves linked records to it, and converts this node into a folder'),
-('abstract_page_tree','confirm_split_node_oth','en','Are you sure you want to convert this leaf node into a folder and move its direct links and records to a new child item "Other ({$code}_oth)"?',''),
+('abstract_page_tree','confirm_split_node_oth','en','This leaf node already has linked records. Do you want to convert it into a folder (is_leaf = 0) and automatically move existing records to a new child node with the "_oth" suffix (... – other)?',''),
 ('abstract_page_tree','default_tree_heading','en','Record Tree',''),
 ('abstract_page_tree','lbl_show_removed','en','Show removed',''),
-('abstract_page_tree','msg_auto_split_parent_info','en','The parent leaf node was automatically converted into a folder and its original direct records were moved to the new item "{$code}".',''),
+('abstract_page_tree','msg_auto_split_parent_info','en','The parent item "{$parent}" is currently a leaf node. Upon saving this new child item, the parent item will automatically be converted into a folder (is_leaf = 0) and any existing records linked to it will be moved to a child node with the "_oth" suffix (... – other).',''),
 ('abstract_page_tree','msg_dnd_unsaved_notice','en','Parent item (parent_uuid) and sort order (sort_code) were adjusted via Drag & Drop. Review the details and confirm by clicking Save Changes (or Save Draft / Submit for Approval).',''),
 ('abstract_page_tree','msg_node_locked_notice','en','🔒 This node (or its child node) already has active linked records. Changing its parent node (reparenting) and deletion are locked; if you need to subdivide this leaf node into subclasses, use the "Split into Subclasses (+ _oth)" button in the detail header (or add a new child item directly under it).',''),
 ('abstract_page_tree','placeholder_search','en','Search tree...',''),

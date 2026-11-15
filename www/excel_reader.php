@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /**
  * =============================================================================
- * Verze: 2026-10-19 14:45
+ * Verze: 2026-11-15 19:00
  * Soubor: excel_reader.php
  * Třída: excel_reader
  *
@@ -30,6 +30,10 @@ declare(strict_types=1);
  * 4. Spuštění obslužné SQL procedury pro finální zpracování dat v databázi.
  *
  * Změny:
+ * 2026-11-15 19:00 - V metodě formatCellValue() doplněn fallback na $cell->getValue()
+ *                    pro buňky vyhodnocené Excelem jako FormulaCell (např. texty
+ *                    začínající znakem '='), u nichž je předpočítaný výsledek prázdný
+ *                    nebo chybový (#NAME?).
  * 2026-10-19 14:45 - Doplněno require_once __DIR__ . '/xlsx_abstract.php' pro zajištění
  *                    registrace autoloaderu balíčkových tříd xlsx_*.
  *                  - Opravena detekce konce tabulky v get_data(): řádek s prázdnou
@@ -344,6 +348,9 @@ class excel_reader {
 		// Detekce vzorce a získání jeho předpočítaného výsledku
 		if ($cell instanceof FormulaCell) {
 			$v = $cell->getComputedValue();     // Získání vyhodnoceného výsledku vzorce
+			if ($v === null OR $v === '' OR (is_string($v) AND str_starts_with($v, '#'))) { // Fallback při chybě vzorce
+				$v = $cell->getValue();         // Převzetí surového textu buňky začínající znakem =
+			}
 		} else {
 			$v = $cell->getValue();             // Získání přímé hodnoty buňky
 		}

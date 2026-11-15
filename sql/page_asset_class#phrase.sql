@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:15
+ * Verze: 2026-11-15 19:55
  * Soubor: page_asset_class#phrase.sql
  * Účel:   Registrace stránky page_asset_class do sysinit_object, položky menu
  *         asset_class do sysinit_menu a frází do sysinit_phrase.
@@ -25,23 +25,25 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_asset_class','btn_new_asset_class','cs','+ Nová třída aktiv','Založí novou složku nebo koncovou třídu aktiv v katalogu',''),
-('page_asset_class','grp_identification','cs','Kód a zařazení ve stromu','',''),
-('page_asset_class','grp_permissions_protection','cs','Oprávnění, platnost a ochrana záznamu','',''),
-('page_asset_class','grp_presentation','cs','Prezentační texty a popis','',''),
-('page_asset_class','header_edit_class','cs','Třída aktiv','',''),
-('page_asset_class','header_new_class','cs','Nová třída aktiv','',''),
+('page_asset_class','grp_hierarchy_placement','cs','Zařazení ve stromu a identifikace','',''),
+('page_asset_class','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_asset_class','grp_validity_protection','cs','Platnost, vzhled a ochrana','',''),
+('page_asset_class','header_edit_asset_class','cs','Třída aktiv','',''),
+('page_asset_class','header_new_asset_class','cs','Nová třída aktiv','',''),
 ('page_asset_class','master_heading','cs','Strom tříd aktiv','',''),
+('page_asset_class','msg_asset_class_leaf_hint','cs','Tip: Konkrétní aktiva lze zařazovat pouze do koncových tříd aktiv (is_leaf = 1). Vnitřní uzly (is_leaf = 0) slouží jako nadřazené složky, na které však lze vázat společné hrozby a scénáře děděné do podřízených tříd.','',''),
 ('page_asset_class','page_title','cs','Třídy aktiv (Katalog CRMM)','',''),
-('page_asset_class','th_class_caption','cs','Třída aktiv','','');
+('page_asset_class','th_asset_class_caption','cs','Třída aktiv / Složka','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_asset_class','btn_new_asset_class','en','+ New Asset Class','Create a new folder or leaf asset class in the catalog'),
-('page_asset_class','grp_identification','en','Code & Tree Placement',''),
-('page_asset_class','grp_permissions_protection','en','Permissions, Validity & Record Protection',''),
-('page_asset_class','grp_presentation','en','Presentation Texts & Description',''),
-('page_asset_class','header_edit_class','en','Asset Class',''),
-('page_asset_class','header_new_class','en','New Asset Class',''),
+('page_asset_class','grp_hierarchy_placement','en','Tree Placement & Identification',''),
+('page_asset_class','grp_presentation','en','Presentation Texts & Help',''),
+('page_asset_class','grp_validity_protection','en','Validity, Appearance & Protection',''),
+('page_asset_class','header_edit_asset_class','en','Asset Class',''),
+('page_asset_class','header_new_asset_class','en','New Asset Class',''),
 ('page_asset_class','master_heading','en','Asset Class Tree',''),
+('page_asset_class','msg_asset_class_leaf_hint','en','Tip: Specific assets can only be assigned to leaf asset classes (is_leaf = 1). Internal nodes (is_leaf = 0) serve as parent folders onto which shared threats and scenarios inherited by child classes can be linked.',''),
 ('page_asset_class','page_title','en','Asset Classes (CRMM Catalog)',''),
-('page_asset_class','th_class_caption','en','Asset Class','');
+('page_asset_class','th_asset_class_caption','en','Asset Class / Folder','');
 GO

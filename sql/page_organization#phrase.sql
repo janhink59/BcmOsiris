@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:45
+ * Verze: 2026-11-15 20:05
  * Soubor: page_organization#phrase.sql
  * Účel:   Registrace stránky page_organization do sysinit_object, položky menu
  *         organization do sysinit_menu a frází do sysinit_phrase.
@@ -24,32 +24,26 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 ('organization','en','Organization Management & Settings','Overview, organization settings, and CRMM calculation parameters','Overview, organization settings, and CRMM calculation parameters');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
-('page_organization','btn_delete_logo','cs','Odstranit logo','Vymaže uložené grafické logo organizace','btn-danger'),
-('page_organization','grp_address_contact','cs','Adresa sídla, identifikace a fakturace','',''),
-('page_organization','grp_crmm_limits','cs','Metodické parametry a horní limity skóre CRMM','',''),
-('page_organization','grp_general','cs','Název, zkratka, SSO doména a popis organizace','',''),
-('page_organization','grp_logo','cs','Grafické logo organizace','',''),
-('page_organization','grp_regional_formats','cs','Regionální formáty, měna a oddělovače','',''),
-('page_organization','header_edit_org','cs','Nastavení organizace','',''),
-('page_organization','lbl_current_logo','cs','Aktuální logo:','',''),
-('page_organization','lbl_upload_logo','cs','Nahrát nové logo (PNG, SVG, JPG, max. 512 KB):','',''),
-('page_organization','msg_logo_deleted','cs','Logo organizace bylo odstraněno.','',''),
-('page_organization','msg_logo_too_large','cs','Soubor loga překračuje povolenou velikost 512 KB.','',''),
-('page_organization','msg_logo_uploaded','cs','Logo organizace bylo úspěšně aktualizováno.','',''),
-('page_organization','page_title','cs','Správa a nastavení organizace - BCM Osiris','','');
+('page_organization','btn_goto_licences','cs','Správa licencí (založení organizace) →','Přejde do správy licencí pro vytvoření a aktivaci nové organizace','btn-secondary'),
+('page_organization','grp_address_info','cs','Sídlo a kontaktní údaje','',''),
+('page_organization','grp_basic_info','cs','Základní identifikace organizace','',''),
+('page_organization','grp_billing_info','cs','Registrační, daňové a fakturační údaje','',''),
+('page_organization','grp_crmm_parameters','cs','Metodické a výpočtové parametry CRMM','',''),
+('page_organization','grp_regional_settings','cs','Regionální a formátovací nastavení','',''),
+('page_organization','grp_texts_notes','cs','Popis, nápověda a interní poznámky','',''),
+('page_organization','header_edit_org','cs','Organizace','',''),
+('page_organization','msg_system_org_notice','cs','Toto je systémová master organizace (0x00). Slouží jako globální kontejner pro systémové administrátory a vývojáře.','',''),
+('page_organization','page_title','cs','Správa a nastavení organizace','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
-('page_organization','btn_delete_logo','en','Delete Logo','Remove the stored organization logo image'),
-('page_organization','grp_address_contact','en','Headquarters Address, Identification & Billing',''),
-('page_organization','grp_crmm_limits','en','CRMM Methodology Parameters & Score Limits',''),
-('page_organization','grp_general','en','Name, Short Name, SSO Domain & Description',''),
-('page_organization','grp_logo','en','Organization Graphic Logo',''),
-('page_organization','grp_regional_formats','en','Regional Formats, Currency & Separators',''),
-('page_organization','header_edit_org','en','Organization Settings',''),
-('page_organization','lbl_current_logo','en','Current Logo:',''),
-('page_organization','lbl_upload_logo','en','Upload New Logo (PNG, SVG, JPG, max. 512 KB):',''),
-('page_organization','msg_logo_deleted','en','Organization logo has been removed.',''),
-('page_organization','msg_logo_too_large','en','Logo file exceeds the maximum allowed size of 512 KB.',''),
-('page_organization','msg_logo_uploaded','en','Organization logo has been updated successfully.',''),
-('page_organization','page_title','en','Organization Management & Settings - BCM Osiris','');
+('page_organization','btn_goto_licences','en','Licence Management (Create Organization) →','Open licence management to create and activate a new organization'),
+('page_organization','grp_address_info','en','Headquarters & Contact Information',''),
+('page_organization','grp_basic_info','en','Basic Organization Identification',''),
+('page_organization','grp_billing_info','en','Registration, Tax & Billing Information',''),
+('page_organization','grp_crmm_parameters','en','CRMM Methodological & Calculation Parameters',''),
+('page_organization','grp_regional_settings','en','Regional & Formatting Settings',''),
+('page_organization','grp_texts_notes','en','Description, Help & Internal Notes',''),
+('page_organization','header_edit_org','en','Organization',''),
+('page_organization','msg_system_org_notice','en','This is the system master organization (0x00). It serves as the global container for system administrators and developers.',''),
+('page_organization','page_title','en','Organization Management & Settings','');
 GO

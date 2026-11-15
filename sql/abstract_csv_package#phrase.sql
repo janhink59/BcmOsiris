@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-13 16:15
+ * Verze: 2026-11-15 19:15
  * Soubor: abstract_csv_package#phrase.sql
  * Účel:   Registrace třídy abstract_csv_package do sysinit_object a naplnění
  *         jejích výchozích českých a anglických frází do sysinit_phrase.
@@ -37,15 +37,16 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('abstract_csv_package','lbl_param_verify_data','cs','Vyžadovat nezměnitelnost dat (podpis celého souboru)','',''),
 ('abstract_csv_package','msg_import_committed','cs','Import balíčku byl úspěšně dokončen a uložen (Commit).','',''),
 ('abstract_csv_package','msg_same_org_only_verified','cs','Kontrola organizace (same_org_only = 1) proběhla úspěšně – import probíhá do stejné organizace.','',''),
-('abstract_csv_package','msg_signature_verified','cs','Bezpečnostní podpis souboru je platný (integrita ověřena).','',''),
-('abstract_csv_package','opt_status_active','cs','Zapsat přímo jako platné schválené záznamy (A)','',''),
-('abstract_csv_package','opt_status_draft','cs','Uložit jako rozpracované koncepty (D)','',''),
-('abstract_csv_package','opt_status_forward','cs','Předat schvalovateli ke schválení (F)','',''),
-('abstract_csv_package','th_col_list','cs','Načtené sloupce','',''),
-('abstract_csv_package','th_param_code','cs','Parametr','',''),
-('abstract_csv_package','th_param_val','cs','Hodnota v souboru','',''),
+('abstract_csv_package','msg_signature_ok_full','cs','Bezpečnostní podpis souboru (parametry i data) je platný.','',''),
+('abstract_csv_package','msg_signature_ok_header','cs','Bezpečnostní podpis parametrů je platný (kontrola dat byla při exportu vypnuta).','',''),
+('abstract_csv_package','msg_table_loaded_rows','cs','Tabulka načtena do staging úložiště.','',''),
+('abstract_csv_package','opt_status_direct','cs','Přímý přepis schválených záznamů (A)','',''),
+('abstract_csv_package','opt_status_forward','cs','Uložit do návrhů ke schválení (F)','',''),
+('abstract_csv_package','th_col_count','cs','Počet sloupců','',''),
+('abstract_csv_package','th_param_code','cs','Parametr balíčku','',''),
+('abstract_csv_package','th_param_val','cs','Hodnota','',''),
 ('abstract_csv_package','th_row_count','cs','Počet řádků','',''),
-('abstract_csv_package','th_table_name','cs','Tabulka v balíčku','','');
+('abstract_csv_package','th_table_name','cs','Načtená tabulka','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('abstract_csv_package','btn_export_csv','en','Export Package (CSV)','Generate and download the multi-block CSV package'),
@@ -68,13 +69,14 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('abstract_csv_package','lbl_param_verify_data','en','Enforce data immutability (full file cryptographic signature)',''),
 ('abstract_csv_package','msg_import_committed','en','Package import was completed and committed successfully.',''),
 ('abstract_csv_package','msg_same_org_only_verified','en','Organization check (same_org_only = 1) passed – importing into the same organization.',''),
-('abstract_csv_package','msg_signature_verified','en','File security signature is valid (integrity verified).',''),
-('abstract_csv_package','opt_status_active','en','Write directly as approved active records (A)',''),
-('abstract_csv_package','opt_status_draft','en','Save as work-in-progress drafts (D)',''),
-('abstract_csv_package','opt_status_forward','en','Submit to approver for review (F)',''),
-('abstract_csv_package','th_col_list','en','Loaded Columns',''),
-('abstract_csv_package','th_param_code','en','Parameter',''),
-('abstract_csv_package','th_param_val','en','File Value',''),
+('abstract_csv_package','msg_signature_ok_full','en','File security signature (parameters and data) is valid.',''),
+('abstract_csv_package','msg_signature_ok_header','en','Parameter security signature is valid (data verification was disabled during export).',''),
+('abstract_csv_package','msg_table_loaded_rows','en','Table loaded into staging storage.',''),
+('abstract_csv_package','opt_status_direct','en','Direct overwrite of approved records (A)',''),
+('abstract_csv_package','opt_status_forward','en','Save as proposals pending approval (F)',''),
+('abstract_csv_package','th_col_count','en','Column Count',''),
+('abstract_csv_package','th_param_code','en','Package Parameter',''),
+('abstract_csv_package','th_param_val','en','Value',''),
 ('abstract_csv_package','th_row_count','en','Row Count',''),
-('abstract_csv_package','th_table_name','en','Package Table','');
+('abstract_csv_package','th_table_name','en','Loaded Table','');
 GO

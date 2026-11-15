@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:30
+ * Verze: 2026-11-15 20:05
  * Soubor: page_main#phrase.sql
  * Účel:   Registrace stránky page_main do sysinit_object, kořenové položky
  *         home a hlavních rozcestníkových složek menu (crmm_analysis_folder,
@@ -34,12 +34,14 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 ('metadata_folder','en','Metadata Management','Management of logical classes, columns, text phrases, navigation, and developer metadata packages','Management of logical classes, columns, text phrases, navigation, and developer metadata packages');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
-('page_main','empty_menu','cs','Pro vaši roli nejsou v této složce dostupné žádné položky.','',''),
-('page_main','heading_dashboard','cs','Hlavní rozcestník aplikace','',''),
+('page_main','default_description','cs','Vyberte požadovanou akci z níže uvedených modulů.','',''),
+('page_main','default_heading','cs','Rozcestník','',''),
+('page_main','msg_folder_empty','cs','Tato složka momentálně neobsahuje žádné dostupné moduly.','',''),
 ('page_main','page_title','cs','Hlavní panel - BCM Osiris','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
-('page_main','empty_menu','en','No items are available in this folder for your current role.',''),
-('page_main','heading_dashboard','en','Application Dashboard',''),
+('page_main','default_description','en','Select the desired action from the modules below.',''),
+('page_main','default_heading','en','Dashboard',''),
+('page_main','msg_folder_empty','en','This folder currently contains no available modules.',''),
 ('page_main','page_title','en','Main Dashboard - BCM Osiris','');
 GO

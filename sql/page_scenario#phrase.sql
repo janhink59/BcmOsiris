@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:45
+ * Verze: 2026-11-15 20:05
  * Soubor: page_scenario#phrase.sql
  * Účel:   Registrace stránky page_scenario do sysinit_object, položky menu
  *         scenario do sysinit_menu a frází do sysinit_phrase.
@@ -24,28 +24,26 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 ('scenario','en','Risk Scenarios','Management of the hierarchical catalog of risk scenarios (events) and minimum residual risk thresholds','Management of the hierarchical catalog of risk scenarios (events) and minimum residual risk thresholds');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
-('page_scenario','btn_new_scenario','cs','+ Nový rizikový scénář','Založí novou skupinu nebo koncový rizikový scénář v katalogu',''),
-('page_scenario','grp_identification','cs','Kód, zařazení ve stromu a ikona','',''),
-('page_scenario','grp_permissions_protection','cs','Oprávnění, platnost a ochrana záznamu','',''),
-('page_scenario','grp_presentation','cs','Prezentační texty a popis scénáře','',''),
-('page_scenario','grp_relations_risk','cs','Působící hrozba, cílová třída aktiv a mez reziduálního rizika','',''),
-('page_scenario','header_edit_scenario','cs','Rizikový scénář','',''),
+('page_scenario','btn_new_scenario','cs','+ Nový scénář','Založí novou skupinu nebo koncový rizikový scénář v katalogu',''),
+('page_scenario','grp_hierarchy_relations','cs','Zařazení ve stromu, vazby a reziduální riziko','',''),
+('page_scenario','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_scenario','grp_validity_protection','cs','Platnost, vzhled a ochrana','',''),
+('page_scenario','header_edit_scenario','cs','Scénář','',''),
 ('page_scenario','header_new_scenario','cs','Nový rizikový scénář','',''),
 ('page_scenario','master_heading','cs','Strom rizikových scénářů','',''),
 ('page_scenario','page_title','cs','Rizikové scénáře (Katalog CRMM)','',''),
 ('page_scenario','th_min_res_risk','cs','Min. rez.','',''),
-('page_scenario','th_scenario_caption','cs','Rizikový scénář','','');
+('page_scenario','th_scenario_caption','cs','Scénář / Skupina','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
-('page_scenario','btn_new_scenario','en','+ New Risk Scenario','Create a new group or leaf risk scenario in the catalog'),
-('page_scenario','grp_identification','en','Code, Tree Placement & Icon',''),
-('page_scenario','grp_permissions_protection','en','Permissions, Validity & Record Protection',''),
-('page_scenario','grp_presentation','en','Presentation Texts & Scenario Description',''),
-('page_scenario','grp_relations_risk','en','Causing Threat, Target Asset Class & Minimum Residual Risk',''),
-('page_scenario','header_edit_scenario','en','Risk Scenario',''),
+('page_scenario','btn_new_scenario','en','+ New Scenario','Create a new group or leaf risk scenario in the catalog'),
+('page_scenario','grp_hierarchy_relations','en','Tree Placement, Relations & Residual Risk',''),
+('page_scenario','grp_presentation','en','Presentation Texts & Help',''),
+('page_scenario','grp_validity_protection','en','Validity, Appearance & Protection',''),
+('page_scenario','header_edit_scenario','en','Scenario',''),
 ('page_scenario','header_new_scenario','en','New Risk Scenario',''),
 ('page_scenario','master_heading','en','Risk Scenario Tree',''),
 ('page_scenario','page_title','en','Risk Scenarios (CRMM Catalog)',''),
 ('page_scenario','th_min_res_risk','en','Min. Res.',''),
-('page_scenario','th_scenario_caption','en','Risk Scenario','');
+('page_scenario','th_scenario_caption','en','Scenario / Group','');
 GO

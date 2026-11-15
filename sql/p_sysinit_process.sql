@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-13 18:30
+ * Verze: 2026-11-15 19:15
  * Soubor: p_sysinit_process.sql
  * Procedura: dbo.p_sysinit_process
  * Účel:   Závěrečný procesor inicializačních tabulek sysinit_* (sysinit_object,
@@ -10,13 +10,17 @@
  *            ostatní jazyky jako záznamy 'L') do cílových tabulek meta_*
  *            (object_owner = 0x00) při plném respektování ručních úprav v UI
  *            (who_modified <> 0x00) a s Delta kontrolou změn přes EXCEPT.
- *         2. V závěru automaticky promítne nativní 1:N cizí klíče (referenced_class)
+ *         2. Odstraní z meta_phrase osiřelé záznamy s import_origin = 'AUTO_DISCOVERED'
+ *            (who_modified = 0x00), jejichž kódy již byly nahrazeny v sysinit_phrase.
+ *         3. V závěru automaticky promítne nativní 1:N cizí klíče (referenced_class)
  *            a stromové sloupce parent_uuid (parent_to_child 'P' / child_to_parent 'R')
  *            do tabulky meta_link_def jako odvozené vztahy (is_derived = 1).
  * Vazby:  - Volána ze závěrečné dávky final_scripts.sql (po p_fix_meta_column),
  *           případně samostatně v SSMS po spuštění dílčího skriptu *#phrase.sql
  *           nebo table_*.sql.
  * Změny:
+ * - 2026-11-15 19:15: Do sekce 6 doplněno čištění osiřelých AUTO_DISCOVERED
+ *   záznamů v meta_phrase pro zdroje spravované v sysinit_phrase.
  * - 2026-11-13 18:30: Do sekce 3b doplněno generování a aktualizace jazykových
  *   'L' záznamů pro lokální odchylky sloupců konkrétních tříd a přidána sekce 8
  *   pro automatickou projekci nativních 1:N vztahů do meta_link_def.
@@ -771,9 +775,13 @@ BEGIN
 			OR mp.import_origin = 'AUTO_DISCOVERED'
 		  )
 		  AND EXISTS (
-			SELECT mp.caption, mp.helptext, mp.css_class, mp.[language]
+			SELECT mp.caption, mp.helptext, mp.css_class, mp.[language], mp.import_origin
 			EXCEPT
-			SELECT s.caption, CASE WHEN s.helptext <> '' THEN s.helptext ELSE mp.helptext END, CASE WHEN s.css_class <> '' THEN s.css_class ELSE mp.css_class END, 'cs'
+			SELECT s.caption,
+				CASE WHEN s.helptext <> '' THEN s.helptext ELSE mp.helptext END,
+				CASE WHEN s.css_class <> '' THEN s.css_class ELSE mp.css_class END,
+				'cs',
+				CASE WHEN mp.import_origin = 'AUTO_DISCOVERED' THEN NULL ELSE mp.import_origin END
 		  );
 
 		INSERT INTO meta_phrase (
@@ -819,9 +827,12 @@ BEGIN
 			OR l.import_origin = 'AUTO_DISCOVERED'
 		  )
 		  AND EXISTS (
-			SELECT l.caption, l.helptext, l.css_class
+			SELECT l.caption, l.helptext, l.css_class, l.import_origin
 			EXCEPT
-			SELECT s.caption, CASE WHEN s.helptext <> '' THEN s.helptext ELSE l.helptext END, a.css_class
+			SELECT s.caption,
+				CASE WHEN s.helptext <> '' THEN s.helptext ELSE l.helptext END,
+				a.css_class,
+				CASE WHEN l.import_origin = 'AUTO_DISCOVERED' THEN NULL ELSE l.import_origin END
 		  );
 
 		INSERT INTO meta_phrase (
@@ -845,6 +856,21 @@ BEGIN
 			SELECT 1 FROM meta_phrase l
 			WHERE l.original = a.original AND l.object_owner = @sys_owner AND l.record_type = 'L' AND l.[language] = s.[language]
 		);
+
+		-- 6d. Vyčištění osiřelých AUTO_DISCOVERED záznamů v meta_phrase u zdrojů spravovaných v sysinit_phrase
+		DELETE mp
+		FROM meta_phrase mp
+		WHERE mp.object_owner = @sys_owner
+		  AND mp.import_origin = 'AUTO_DISCOVERED'
+		  AND EXISTS (
+			SELECT 1 FROM sysinit_phrase sp_src
+			WHERE sp_src.source_code = mp.source_code
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM sysinit_phrase sp
+			WHERE sp.source_code = mp.source_code
+			  AND sp.builtin_code = mp.builtin_code
+		  );
 	END
 
 	-- =========================================================================

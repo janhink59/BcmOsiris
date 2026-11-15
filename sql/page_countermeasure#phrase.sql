@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:15
+ * Verze: 2026-11-15 19:55
  * Soubor: page_countermeasure#phrase.sql
  * Účel:   Registrace stránky page_countermeasure do sysinit_object, položky
  *         menu countermeasure do sysinit_menu a frází do sysinit_phrase.
@@ -25,29 +25,27 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_countermeasure','btn_new_countermeasure','cs','+ Nové protiopatření','Založí novou skupinu nebo koncové protiopatření v katalogu',''),
-('page_countermeasure','grp_factors','cs','Redukční a prahový rizikový faktor (0 až 100 %)','',''),
-('page_countermeasure','grp_identification','cs','Kód, zařazení ve stromu a ikona','',''),
-('page_countermeasure','grp_permissions_protection','cs','Oprávnění, platnost a ochrana záznamu','',''),
-('page_countermeasure','grp_presentation','cs','Prezentační texty a popis opatření','',''),
-('page_countermeasure','header_edit_countermeasure','cs','Protiopatření','',''),
-('page_countermeasure','header_new_countermeasure','cs','Nové protiopatření','',''),
+('page_countermeasure','grp_hierarchy_factors','cs','Zařazení ve stromu a výpočtové faktory (0 až 100 %)','',''),
+('page_countermeasure','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_countermeasure','grp_validity_protection','cs','Platnost, vzhled a ochrana','',''),
+('page_countermeasure','header_edit_cm','cs','Protiopatření','',''),
+('page_countermeasure','header_new_cm','cs','Nové protiopatření','',''),
 ('page_countermeasure','master_heading','cs','Strom katalogu protiopatření','',''),
 ('page_countermeasure','page_title','cs','Katalog protiopatření (CRMM)','',''),
-('page_countermeasure','th_cm_caption','cs','Protiopatření','',''),
-('page_countermeasure','th_reduction_factor','cs','Redukce (%)','',''),
-('page_countermeasure','th_risk_factor','cs','Práh (%)','','');
+('page_countermeasure','th_cm_caption','cs','Protiopatření / Skupina','',''),
+('page_countermeasure','th_reduction_pct','cs','Redukce','',''),
+('page_countermeasure','th_risk_pct','cs','Min. riz.','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_countermeasure','btn_new_countermeasure','en','+ New Countermeasure','Create a new group or leaf countermeasure in the catalog'),
-('page_countermeasure','grp_factors','en','Reduction & Minimum Risk Threshold Factors (0 to 100%)',''),
-('page_countermeasure','grp_identification','en','Code, Tree Placement & Icon',''),
-('page_countermeasure','grp_permissions_protection','en','Permissions, Validity & Record Protection',''),
-('page_countermeasure','grp_presentation','en','Presentation Texts & Countermeasure Description',''),
-('page_countermeasure','header_edit_countermeasure','en','Countermeasure',''),
-('page_countermeasure','header_new_countermeasure','en','New Countermeasure',''),
+('page_countermeasure','grp_hierarchy_factors','en','Tree Placement & Calculation Factors (0 to 100%)',''),
+('page_countermeasure','grp_presentation','en','Presentation Texts & Help',''),
+('page_countermeasure','grp_validity_protection','en','Validity, Appearance & Protection',''),
+('page_countermeasure','header_edit_cm','en','Countermeasure',''),
+('page_countermeasure','header_new_cm','en','New Countermeasure',''),
 ('page_countermeasure','master_heading','en','Countermeasure Catalog Tree',''),
 ('page_countermeasure','page_title','en','Countermeasure Catalog (CRMM)',''),
-('page_countermeasure','th_cm_caption','en','Countermeasure',''),
-('page_countermeasure','th_reduction_factor','en','Reduction (%)',''),
-('page_countermeasure','th_risk_factor','en','Floor (%)','');
+('page_countermeasure','th_cm_caption','en','Countermeasure / Group',''),
+('page_countermeasure','th_reduction_pct','en','Reduction',''),
+('page_countermeasure','th_risk_pct','en','Min. Risk','');
 GO

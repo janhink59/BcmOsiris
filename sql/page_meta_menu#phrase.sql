@@ -1,5 +1,5 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:45
+ * Verze: 2026-11-15 20:05
  * Soubor: page_meta_menu#phrase.sql
  * Účel:   Registrace stránky page_meta_menu do sysinit_object, položky menu
  *         meta_menu do sysinit_menu a frází do sysinit_phrase.
@@ -25,25 +25,27 @@ INSERT INTO sysinit_menu (builtin_code, [language], caption, description, helpte
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('page_meta_menu','btn_new_menu_item','cs','+ Nová položka menu','Založí novou složku nebo odkaz v navigačním menu',''),
-('page_meta_menu','grp_identification','cs','Kód, nadřízená složka a pořadí ve stromu','',''),
-('page_meta_menu','grp_navigation','cs','Cílová stránka, parametry URL a oprávnění','',''),
-('page_meta_menu','grp_presentation','cs','Název, nápověda a vektorová ikona','',''),
-('page_meta_menu','grp_protection','cs','Platnost a ochrana záznamu','',''),
-('page_meta_menu','header_edit_menu','cs','Položka menu','',''),
-('page_meta_menu','header_new_menu','cs','Nová položka menu','',''),
-('page_meta_menu','master_heading','cs','Strom navigačního menu','',''),
-('page_meta_menu','page_title','cs','Položky menu (Navigace) - BCM Osiris','',''),
-('page_meta_menu','th_menu_caption','cs','Položka menu','','');
+('page_meta_menu','grp_access_visual','cs','Oprávnění, vzhled a ochrana položky','',''),
+('page_meta_menu','grp_hierarchy_target','cs','Zařazení ve stromu a cíl navigace','',''),
+('page_meta_menu','grp_presentation','cs','Prezentační texty a nápověda','',''),
+('page_meta_menu','header_edit_menu_item','cs','Položka menu','',''),
+('page_meta_menu','header_new_menu_item','cs','Nová položka menu','',''),
+('page_meta_menu','master_heading','cs','Strom položek menu','',''),
+('page_meta_menu','msg_menu_hierarchy_hint','cs','Tip: Položky, které mají podřízené uzly, fungují v navigaci automaticky jako složky (rozcestníky). Cílová stránka (target_object) se uplatní u koncových položek.','',''),
+('page_meta_menu','page_title','cs','Správa položek menu (Navigace)','',''),
+('page_meta_menu','th_menu_caption','cs','Položka menu (Strom)','',''),
+('page_meta_menu','th_system_role','cs','Role','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_meta_menu','btn_new_menu_item','en','+ New Menu Item','Create a new folder or link in the navigation menu'),
-('page_meta_menu','grp_identification','en','Code, Parent Folder & Tree Order',''),
-('page_meta_menu','grp_navigation','en','Target Page, URL Parameters & Permissions',''),
-('page_meta_menu','grp_presentation','en','Caption, Help Text & Vector Icon',''),
-('page_meta_menu','grp_protection','en','Validity & Record Protection',''),
-('page_meta_menu','header_edit_menu','en','Menu Item',''),
-('page_meta_menu','header_new_menu','en','New Menu Item',''),
-('page_meta_menu','master_heading','en','Navigation Menu Tree',''),
-('page_meta_menu','page_title','en','Menu Items (Navigation) - BCM Osiris',''),
-('page_meta_menu','th_menu_caption','en','Menu Item','');
+('page_meta_menu','grp_access_visual','en','Permissions, Appearance & Item Protection',''),
+('page_meta_menu','grp_hierarchy_target','en','Tree Placement & Navigation Target',''),
+('page_meta_menu','grp_presentation','en','Presentation Texts & Help',''),
+('page_meta_menu','header_edit_menu_item','en','Menu Item',''),
+('page_meta_menu','header_new_menu_item','en','New Menu Item',''),
+('page_meta_menu','master_heading','en','Menu Items Tree',''),
+('page_meta_menu','msg_menu_hierarchy_hint','en','Tip: Items with child nodes automatically act as navigation folders (dashboards). Target page (target_object) applies to leaf items.',''),
+('page_meta_menu','page_title','en','Menu Items Management (Navigation)',''),
+('page_meta_menu','th_menu_caption','en','Menu Item (Tree)',''),
+('page_meta_menu','th_system_role','en','Role','');
 GO

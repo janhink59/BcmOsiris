@@ -1,8 +1,8 @@
 /* =============================================================================
- * Verze: 2026-11-13 16:00
+ * Verze: 2026-11-15 19:55
  * Soubor: changes_2611.sql
  * Účel:   Jednorázové změny struktury a dat databáze za období 11/2026
- *         (aktuální cílová verze '26.11.12.0').
+ *         (aktuální cílová verze '26.11.15.0').
  *         Spouští se v abecedním pořadí v rámci masky changes_*.sql.
  *
  * Pravidla pro údržbu a přidávání změn:
@@ -454,6 +454,47 @@ BEGIN
 		@version = '26.11.12.0',
 		@script_name = 'changes_2611.sql',
 		@content = 'Kompletní vyčištění tabulek link a meta_link_def pro přechod na složený klíč (from_class, link_code) a rozšíření organization_unit';
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Verze 26.11.15.0: Kompletní vyčištění systémových metadat (object_owner = 0x00)
+--                   od opuštěných sloupců, zrušených objektů a starých frází
+--                   před čistým naplněním přes p_fix_meta_column a p_sysinit_process
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('system_constant', 'U') IS NOT NULL AND EXISTS (
+	SELECT 1
+	FROM system_constant
+	WHERE database_version < '26.11.15.0'
+)
+BEGIN
+	PRINT '15.11.2026 (26.11.15.0): Vyčištění systémových záznamů (0x00) v meta_* tabulkách před novou inicializací';
+
+	IF OBJECT_ID('meta_phrase', 'U') IS NOT NULL
+		DELETE FROM meta_phrase WHERE object_owner = 0x00;
+
+	IF OBJECT_ID('meta_menu', 'U') IS NOT NULL
+		DELETE FROM meta_menu WHERE object_owner = 0x00;
+
+	IF OBJECT_ID('meta_codetable', 'U') IS NOT NULL
+		DELETE FROM meta_codetable WHERE object_owner = 0x00;
+
+	IF OBJECT_ID('meta_link_def', 'U') IS NOT NULL
+		DELETE FROM meta_link_def WHERE object_owner = 0x00;
+
+	IF OBJECT_ID('meta_column', 'U') IS NOT NULL
+		DELETE FROM meta_column WHERE object_owner = 0x00;
+
+	IF OBJECT_ID('meta_class', 'U') IS NOT NULL
+		DELETE FROM meta_class WHERE object_owner = 0x00;
+
+	IF OBJECT_ID('meta_object', 'U') IS NOT NULL
+		DELETE FROM meta_object WHERE object_owner = 0x00;
+
+	EXEC dbo.p_update_database_version
+		@version = '26.11.15.0',
+		@script_name = 'changes_2611.sql',
+		@content = 'Kompletní vyčištění systémových záznamů (object_owner = 0x00) v tabulkách meta_* před čistou inicializací přes sysinit_*';
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
 	COMMIT;
@@ -469,7 +510,7 @@ GO
 
 IF OBJECT_ID('system_constant', 'U') IS NOT NULL
 BEGIN
-	DECLARE @expected_version varchar(20) = '26.11.12.0';                      -- Požadovaná cílová verze tohoto skriptu
+	DECLARE @expected_version varchar(20) = '26.11.15.0';                      -- Požadovaná cílová verze tohoto skriptu
 	DECLARE @current_version varchar(20) = '';                                 -- Skutečná verze zjištěná v system_constant
 
 	SELECT TOP 1 @current_version = ISNULL(database_version, '')
