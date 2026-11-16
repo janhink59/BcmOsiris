@@ -1,18 +1,33 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-09 16:30
+ * Verze: 2026-11-16 15:45
  * Soubor: page_scenario_assessment.php
  * Třída: page_scenario_assessment
- * Účel: Hodnocení velikosti hrozby, zranitelnosti, dopadu a vypočteného
- *       inherentního i reziduálního rizika scénářů (scenario) nad konkrétními
- *       aktivy (asset) se zařazením do stupňů primární škály rizika (semaforu).
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z routeru `index.php` při `?page=page_scenario_assessment`.
- * - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou `'scenario_assessment'`.
- * - Při uložení záznamu (nebo stisku tlačítka Přepočítat rizika CRMM) volá
- *   proceduru `dbo.p_crmm_recalculate` (`p_crmm_recalculate.sql`).
+ * 1. Role souboru v celém systému:
+ *    Hodnocení velikosti hrozby, zranitelnosti, dopadu a vypočteného
+ *    inherentního i reziduálního rizika scénářů (scenario) nad konkrétními
+ *    aktivy (asset) se zařazením do stupňů primární škály rizika (semaforu).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z routeru index.php při ?page=page_scenario_assessment.
+ *    - Dědí z abstract_page_master_detail a pracuje s logickou třídou 'scenario_assessment'.
+ *    - Při uložení záznamu (nebo stisku tlačítka Přepočítat rizika CRMM) volá
+ *      proceduru dbo.p_crmm_recalculate (p_crmm_recalculate.sql).
+ *    - Pro zařazení výsledného skóre do stupně škály využívá sdílenou kešovanou
+ *      funkci resolve_scale_level_badge() z new_functions.php.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Využívá kontext přihlášeného uživatele v globálním poli $dbsession
+ *      (v databázi v tabulce dbsession pro aktuální @@SPID) a volitelný GET
+ *      parametr asset_uuid.
+ *
+ * Změny:
+ * 2026-11-16 15:45 - Odstraněna lokální metoda resolve_scale_level_badge()
+ *                    provádějící opakované SQL dotazy do scale / scale_value;
+ *                    nahrazeno voláním kešované globální funkce z new_functions.php.
+ * 2026-11-09 16:30 - První verze obrazovky hodnocení rizikových scénářů.
  * =============================================================================
  */
 
@@ -94,55 +109,6 @@ class page_scenario_assessment extends abstract_page_master_detail {
 		}
 
 		parent::process_save();                                              // Standardní uložení záznamu v předkovi
-	}
-
-	/**
-	 * Zařadí procentuální skóre (0..100 %) do stupně primární hodnotící škály daného typu (`scale_type`).
-	 *
-	 * @return array{caption: string, shortname: string, color_code: string}
-	 */
-	private function resolve_scale_level_badge(string $scale_type, float $score): array { // Vyhodnocení stupně škály
-		$org_sql = guidliteral(get_session_org());                           // SQL literál aktivní organizace
-		$lang_sql = charliteral(get_session_lang(), 2);                      // SQL literál jazyka relace
-		$safe_type = charliteral($scale_type, 20);                           // SQL literál druhu škály
-		$score_sql = number_format(max(0.0, min(100.0, $score)), 4, '.', ''); // Ošetřené skóre v rozsahu 0..100
-
-		$row = sqlfirstrow("
-			SELECT TOP 1
-				COALESCE(NULLIF(l.caption, ''), sv.caption, sv.builtin_code) AS caption,
-				COALESCE(NULLIF(l.shortname, ''), sv.shortname, '') AS shortname,
-				sv.color_code
-			FROM scale sc
-			JOIN scale_value sv
-				ON sv.scale = sc.original
-				AND sv.object_owner IN ({$org_sql}, 0x00)
-				AND sv.record_type = 'A'
-				AND sv.removed = 0
-				AND sv.inactive = 0
-			LEFT JOIN scale_value l
-				ON l.original = sv.original
-				AND l.object_owner IN ({$org_sql}, 0x00)
-				AND l.record_type = 'L'
-				AND l.[language] = {$lang_sql}
-				AND l.removed = 0
-			WHERE sc.scale_type = {$safe_type}
-			  AND sc.object_owner IN ({$org_sql}, 0x00)
-			  AND sc.record_type = 'A'
-			  AND sc.removed = 0
-			  AND sc.inactive = 0
-			  AND sv.threshold_value <= {$score_sql}
-			ORDER BY
-				CASE WHEN sc.is_default = 1 THEN 0 ELSE 1 END ASC,
-				sc.priority ASC,
-				CASE WHEN sc.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC,
-				sv.threshold_value DESC
-		");                                                                  // Nalezení stupně škály podle dolního prahu threshold_value
-
-		return [                                                             // Vrácení názvu, zkratky a barvy stupně
-			'caption'    => (string) ($row['caption'] ?? ''),
-			'shortname'  => (string) ($row['shortname'] ?? ''),
-			'color_code' => (string) ($row['color_code'] ?? '')
-		];
 	}
 
 	/**
@@ -243,7 +209,7 @@ HTML;
 			$flr_fmt = number_format($flr_val, 2, '.', ' ');                 // Formátovaný spodní práh
 			$res_fmt = number_format($res_val, 2, '.', ' ');                 // Formátované zbytkové riziko
 
-			$lvl_info = $this->resolve_scale_level_badge('RISK', $res_val);  // Zařazení zbytkového rizika do stupně škály RISK
+			$lvl_info = resolve_scale_level_badge('RISK', $res_val);         // Zařazení zbytkového rizika do stupně škály RISK přes keš
 			$lvl_html = '';                                                  // HTML štítku stupně škály
 			if ($lvl_info['caption'] !== '') {                               // Pokud existuje primární škála pro RISK
 				$bg_col = ($lvl_info['color_code'] !== '') ? htmlspecialchars($lvl_info['color_code']) : '#004488'; // Barva semaforu

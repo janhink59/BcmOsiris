@@ -1,28 +1,34 @@
 /* =============================================================================
- * Verze: 2026-10-24 11:30
+ * Verze: 2026-11-16 14:40
  * Soubor: p_csv_fill_table.sql
  * Funkce: dbo.f_csv_param
  * Procedura: dbo.p_csv_fill_table
- * Účel:   1. Funkce f_csv_param vrátí hodnotu parametru CSV balíčku z tabulky
- *            session_import_parameter pro aktuální relaci (podle @@SPID).
- *         2. Procedura p_csv_fill_table naplní cílovou (typicky #dočasnou)
- *            tabulku daty ze staging tabulek session_import_* pro aktuální relaci.
- *            Garantuje vložení přesně takového počtu řádků (row_count), jaký byl
- *            zjištěn v CSV bloku dané tabulky. Vkládá data stejnojmenných sloupců
- *            (dle dbo.f_syscolumns) a u #dočasných tabulek (vytvořených přes
- *            SELECT TOP 0 * INTO #..., které v tempdb nemají DEFAULT constrainty)
- *            automaticky doplní typově bezpečné výchozí hodnoty pro vynechané
- *            NOT NULL sloupce.
  *
- * Vazby na okolí:
- * - Čte kontext relace (wwwsession) z tabulky dbsession pro aktuální @@SPID.
- * - Čte rozpitvané CSV tabulky session_import_parameter, session_import_table,
- *   session_import_column a session_import_data (z table_session_import.sql).
- * - Využívá funkci dbo.f_syscolumns z HinkMSSQLLibrary.sql pro zjištění sloupců
- *   a datových typů cílové tabulky (podporuje i #dočasné tabulky v tempdb).
- * - Volána z uložených procedur jednotlivých balíčků p_csv_import_<package_code>.
+ * 1. Role souboru v celém systému:
+ *    - Funkce f_csv_param vrátí hodnotu parametru CSV balíčku z tabulky
+ *      session_import_parameter pro aktuální relaci (podle @@SPID).
+ *    - Procedura p_csv_fill_table naplní cílovou (typicky #dočasnou)
+ *      tabulku daty ze staging tabulek session_import_* pro aktuální relaci.
+ *      Garantuje vložení přesně takového počtu řádků (row_count), jaký byl
+ *      zjištěn v CSV bloku dané tabulky. Vkládá data stejnojmenných sloupců
+ *      (dle dbo.f_syscolumns) a u #dočasných tabulek automaticky doplní
+ *      typově bezpečné výchozí hodnoty pro vynechané NOT NULL sloupce.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Čte rozpitvané CSV tabulky session_import_parameter, session_import_table,
+ *      session_import_column a session_import_data (z table_session_import.sql).
+ *    - Využívá funkci dbo.f_syscolumns a pomocnou tabulku rowgenerator
+ *      (z HinkMSSQLLibrary.sql) a proceduru p_print_longvarchar.
+ *    - Volána z uložených procedur jednotlivých balíčků p_csv_import_metadata
+ *      a p_csv_import_simple_class.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte aktivní identifikátor webové relace (wwwsession) z tabulky dbsession
+ *      pro aktuální @@SPID.
  *
  * Změny:
+ * - 2026-11-16 14:40: Odstraněno rekurzivní CTE (;WITH nums) v kroku 7 a nahrazeno
+ *   množinovým generátorem přes tabulku rowgenerator (CROSS JOIN r1, r2).
  * - 2026-10-24 11:30: Doplněna podpora pro #dočasné tabulky v tempdb vytvořené
  *   přes SELECT TOP 0 * INTO #tab, u nichž SQL Server nepřenáší DEFAULT constrainty:
  *   neexportované NOT NULL sloupce (např. object_owner, date_created) dostanou
@@ -238,18 +244,31 @@ BEGIN
 	SET @select_exprs = SUBSTRING(@select_exprs, 2, 2000000);
 	SET @col_ids_list = SUBSTRING(@col_ids_list, 2, 2000000);
 
-	-- 7. Vygenerování přesné sekvence řádků 1..@row_count, aby se vložily i případné zcela prázdné řádky z CSV
+	-- 7. Vygenerování přesné sekvence řádků 1..@row_count bez rekurzivního CTE (s využitím tabulky rowgenerator)
 	IF OBJECT_ID('tempdb..#csv_row_seq') IS NOT NULL DROP TABLE #csv_row_seq;
 	CREATE TABLE #csv_row_seq (row_id int NOT NULL PRIMARY KEY);
 
-	;WITH nums AS (
-		SELECT 1 AS n
-		UNION ALL
-		SELECT n + 1 FROM nums WHERE n < @row_count
-	)
-	INSERT INTO #csv_row_seq (row_id)
-	SELECT n FROM nums
-	OPTION (MAXRECURSION 0);
+	IF OBJECT_ID('rowgenerator', 'U') IS NOT NULL AND @row_count <= 1048576
+	BEGIN
+		INSERT INTO #csv_row_seq (row_id)
+		SELECT TOP (@row_count)
+			(CAST(r1.row_num AS int) * 1024) + CAST(r2.row_num AS int) + 1
+		FROM rowgenerator r1
+		CROSS JOIN rowgenerator r2
+		WHERE r1.row_num < 1024
+		  AND r2.row_num < 1024
+		  AND (CAST(r1.row_num AS int) * 1024) + CAST(r2.row_num AS int) + 1 <= @row_count
+		ORDER BY r1.row_num ASC, r2.row_num ASC;
+	END
+	ELSE
+	BEGIN
+		DECLARE @seq_i int = 1;
+		WHILE @seq_i <= @row_count
+		BEGIN
+			INSERT INTO #csv_row_seq (row_id) VALUES (@seq_i);
+			SET @seq_i = @seq_i + 1;
+		END
+	END
 
 	-- 8. Sestavení a provedení dynamického příkazu INSERT INTO @target_table
 	DECLARE @sql nvarchar(max) = N'

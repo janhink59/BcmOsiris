@@ -1,26 +1,30 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-09 13:00
+ * Verze: 2026-11-16 15:40
  * Soubor: page_audit_login_session.php
  * Třída: page_audit_login_session
- * Účel: Přehledová stránka pro zobrazení aktivity uživatelů z forenzní tabulky
- *       audit_login_session a navazujících informací účtu (user_account)
- *       a organizace (user_organization_access / organization).
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z centrálního routeru index.php při ?page=page_audit_login_session.
- * - Dědí z třídy abstract_page (abstract_page.php), využívá vlastnosti page_title,
- *   access_denied, full_width a lokalizaci přes metodu phrase().
- * - Dostupná pro administrátory (active_role IN ('A', 'S', 'D')), v meta_object
- *   a meta_menu je registrována pod system_role = 'A'.
- * - Využívá komponentu abstract_button (abstract_button.php) pro vykreslení tlačítek
- *   filtrace a obnovy výchozího stavu.
- * - V systémové organizaci (0x00) zobrazuje navíc sloupec s názvem cílové organizace,
- *   do které se uživatel v dané relaci přihlásil. Podporuje rovněž filtrování pouze
- *   právě aktivních (neukončených) relací.
+ * 1. Role souboru v celém systému:
+ *    Přehledová stránka pro zobrazení aktivity uživatelů z forenzní tabulky
+ *    audit_login_session a navazujících informací účtu (user_account)
+ *    a organizace (user_organization_access / organization).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z centrálního routeru index.php při ?page=page_audit_login_session.
+ *    - Dědí z třídy abstract_page (abstract_page.php) a využívá komponentu
+ *      abstract_button (abstract_button.php).
+ *    - Veškeré databázové operace (úklid expirovaných relací i načtení přehledu)
+ *      provádí voláním uložené procedury dbo.page_audit_login_session
+ *      (page_audit_login_session.sql).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole $dbsession (naplněné z tabulky dbsession pro @@SPID),
+ *      zejména klíče active_role ('A', 'S', 'D') a organization.
  *
  * Změny:
+ * 2026-11-16 15:40 - Inline SQL dotazy vyčleněny do uložené procedury
+ *                    dbo.page_audit_login_session (page_audit_login_session.sql).
  * 2026-11-09 13:00 - Doplněno automatické uzavření expirovaných a osiřelých relací
  *                    v audit_login_session před načtením přehledu, zobrazení štítku
  *                    Expirováno u relací ukončených vypršením timeoutu a zpřesnění
@@ -41,14 +45,13 @@ class page_audit_login_session extends abstract_page {
 	private string $user_filter = '';                                        // Textový filtr pro jméno nebo login uživatele
 	private bool $only_open = false;                                         // Filtr pouze právě aktivních (neukončených) relací
 	private bool $is_sys_org = false;                                        // Příznak přihlášení v systémové organizaci (0x00)
-	private string $current_org_sql = '0x00';                                // SQL literál aktuální organizace v relaci
 
 	public function __construct() {
 		parent::__construct();                                               // Inicializace správce frází a kontroly přístupu v předkovi
 
 		global $dbsession;                                                   // Globální kontext relace přihlášeného uživatele
 
-		$this->page_title = $this->phrase('page_title', [], 'Aktivita uživatelů - BCM Osiris'); // Lokalizovaný titulek stránky
+		$this->page_title =$this->phrase('page_title', [], 'Aktivita uživatelů - BCM Osiris'); // Lokalizovaný titulek stránky
 		$this->full_width = true;                                            // Roztažení hlavního panelu na plnou šířku okna
 
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální efektivní role v relaci
@@ -58,15 +61,14 @@ class page_audit_login_session extends abstract_page {
 		}
 
 		$org_raw = (string)($dbsession['organization'] ?? '0x00');           // Surové UUID aktivní organizace z relace
-		$this->is_sys_org = ($org_raw === '0x00' OR $org_raw === '00000000-0000-0000-0000-000000000000'); // Detekce systémové organizace
-		$this->current_org_sql = guidliteral($org_raw);                      // Bezpečný SQL literál aktivní organizace
+		$this->is_sys_org = ($org_raw === '0x00' OR$org_raw === '00000000-0000-0000-0000-000000000000'); // Detekce systémové organizace
 
 		// Načtení a validace filtru počtu zobrazených řádků (výchozí 100, rozsah 1 až 10 000)
 		$raw_limit = trim((string)getinput('limit'));                        // Surová hodnota limitu z požadavku
 		if ($raw_limit !== '' AND is_numeric($raw_limit)) {                  // Pokud byl zadán číselný limit
 			$parsed_limit = intval($raw_limit);                              // Převod limitu na celé číslo
-			if ($parsed_limit >= 1 AND $parsed_limit <= 10000) {             // Kontrola povoleného rozsahu řádků
-				$this->limit = $parsed_limit;                                // Uložení platného limitu záznamů
+			if ($parsed_limit >= 1 AND$parsed_limit <= 10000) {             // Kontrola povoleného rozsahu řádků
+				$this->limit =$parsed_limit;                                // Uložení platného limitu záznamů
 			}
 		}
 
@@ -84,37 +86,6 @@ class page_audit_login_session extends abstract_page {
 
 		echo "<h1 class=\"page-heading\">{$heading}</h1>\n";                 // Výpis hlavního nadpisu stránky
 		echo "<p style=\"margin-bottom: 18px; color: #475569; font-size: 13px;\">{$intro}</p>\n"; // Výpis úvodního popisu
-
-		// Dodatečné ukončení expirovaných a osiřelých relací před čtením přehledu
-		sqlrun("
-			UPDATE a
-			SET a.logout_time = DATEADD(minute, c.session_timeout, u.request_date)
-			FROM audit_login_session a
-			JOIN wwwsession u ON u.login_session_uuid = a.uuid
-			CROSS JOIN system_constant c
-			WHERE a.logout_time IS NULL
-			  AND DATEADD(minute, c.session_timeout, u.request_date) < GETDATE();
-
-			DELETE u
-			FROM wwwsession u
-			CROSS JOIN system_constant c
-			WHERE DATEADD(minute, c.session_timeout, u.request_date) < GETDATE();
-
-			UPDATE a
-			SET a.logout_time = CASE
-				WHEN DATEADD(minute, c.session_timeout, a.last_request_time) < GETDATE()
-					THEN DATEADD(minute, c.session_timeout, a.last_request_time)
-				ELSE a.last_request_time
-			END
-			FROM audit_login_session a
-			CROSS JOIN system_constant c
-			LEFT JOIN wwwsession w ON w.login_session_uuid = a.uuid
-			WHERE a.logout_time IS NULL
-			  AND (
-				w.wwwsession IS NULL
-				OR DATEADD(minute, c.session_timeout, a.last_request_time) < GETDATE()
-			  );
-		");                                                                  // Uzavření expirovaných relací v databázi
 
 		// Sestavení filtračního formuláře (GET)
 		$menu_code = trim((string)getinput('menu_code'));                    // Kód položky menu pro zachování drobečkové navigace
@@ -161,82 +132,12 @@ class page_audit_login_session extends abstract_page {
 		echo "\t</div>\n";
 		echo "</form>\n";
 
-		// Sestavení podmínek WHERE (izolace organizace mimo 0x00 + filtr na neukončené relace + filtr na jméno/login)
-		$where_parts = [];                                                   // Pole jednotlivých podmínek WHERE
-		if (!$this->is_sys_org) {                                            // Pokud správce není v systémové organizaci 0x00
-			$where_parts[] = "a.organization_uuid = {$this->current_org_sql}"; // Omezení na aktuální organizaci
-		}
-
-		if ($this->only_open) {                                              // Pokud chce uživatel vidět jen právě otevřené relace
-			$where_parts[] = "a.logout_time IS NULL AND EXISTS (SELECT 1 FROM wwwsession w WHERE w.login_session_uuid = a.uuid)"; // Pouze skutečně aktivní relace
-		}
-
-		if ($this->user_filter !== '') {                                     // Pokud uživatel zadal filtr na jméno/login
-			$like_lit = charliteral('%' . $this->user_filter . '%');         // Bezpečný SQL literál se znaky % pro LIKE
-			$where_parts[] = "("
-				. "ISNULL(u.login_name, CASE WHEN a.user_account_uuid = 0x00 THEN 'admin' ELSE '' END) LIKE {$like_lit}"
-				. " OR ISNULL(u.caption, CASE WHEN a.user_account_uuid = 0x00 THEN 'System Administrator' ELSE '' END) LIKE {$like_lit}"
-				. " OR ISNULL(u.first_name, '') LIKE {$like_lit}"
-				. " OR ISNULL(u.last_name, '') LIKE {$like_lit}"
-				. " OR (ISNULL(u.first_name, '') + ' ' + ISNULL(u.last_name, '')) LIKE {$like_lit}"
-				. " OR (ISNULL(u.last_name, '') + ' ' + ISNULL(u.first_name, '')) LIKE {$like_lit}"
-				. " OR ISNULL(u.email, '') LIKE {$like_lit}"
-				. ")";                                                       // Komplexní podmínka na login, jméno a e-mail
-		}
-
-		$where_sql = !empty($where_parts) ? ('WHERE ' . implode(' AND ', $where_parts)) : ''; // Výsledná klauzule WHERE
+		// Zavolání uložené procedury dbo.page_audit_login_session
 		$top_int = intval($this->limit);                                     // Jistota celočíselného TOP limitu
+		$safe_flt_sql = charliteral($this->user_filter, 200);                // Bezpečný SQL literál textového filtru
+		$open_bit = $this->only_open ? 1 : 0;                                // Bitový příznak pouze otevřených relací
 
-		$sql = "
-		SELECT TOP ({$top_int})
-			a.uuid,
-			a.user_account_uuid,
-			a.organization_uuid,
-			a.assumed_role,
-			a.login_time,
-			a.last_request_time,
-			a.logout_time,
-			CASE
-				WHEN a.logout_time IS NOT NULL AND DATEDIFF(second, a.last_request_time, a.logout_time) >= ISNULL(c.session_timeout, 20) * 60
-					THEN 1
-				ELSE 0
-			END AS is_expired,
-			a.ip_address,
-			DATEDIFF(minute, a.login_time, COALESCE(a.logout_time, a.last_request_time)) AS duration_minutes,
-			CASE
-				WHEN a.user_account_uuid = 0x00 THEN 'admin'
-				ELSE ISNULL(u.login_name, '')
-			END AS login_name,
-			CASE
-				WHEN a.user_account_uuid = 0x00 THEN 'System Administrator'
-				ELSE ISNULL(NULLIF(LTRIM(RTRIM(u.caption)), ''), LTRIM(RTRIM(ISNULL(u.first_name, '') + ' ' + ISNULL(u.last_name, ''))))
-			END AS user_full_name,
-			ISNULL(u.email, '') AS email,
-			ISNULL(uoa.department_name, '') AS department_name,
-			ISNULL(uoa.job_title, '') AS job_title,
-			ISNULL(u.inactive, 0) AS user_inactive,
-			CASE
-				WHEN a.organization_uuid = 0x00 THEN 'System (0x00)'
-				ELSE ISNULL(NULLIF(LTRIM(RTRIM(o.shortname)), ''), ISNULL(o.caption, ''))
-			END AS org_display,
-			ISNULL(o.caption, '') AS org_full_caption
-		FROM audit_login_session a
-		CROSS JOIN system_constant c
-		LEFT JOIN user_account u
-			ON u.original = a.user_account_uuid
-			AND u.record_type = 'A'
-		LEFT JOIN organization o
-			ON o.original = a.organization_uuid
-			AND o.record_type = 'A'
-		LEFT JOIN user_organization_access uoa
-			ON uoa.user_account_uuid = a.user_account_uuid
-			AND uoa.organization_uuid = a.organization_uuid
-			AND uoa.record_type = 'A'
-		{$where_sql}
-		ORDER BY a.login_time DESC, a.last_request_time DESC
-		";                                                                   // Dotaz na aktivitu uživatelů seřazený sestupně podle času
-
-		$rows = sqlarray_simple($sql);                                       // Načtení celého výsledku do pole v paměti
+		$rows = sqlarray_simple("EXEC dbo.page_audit_login_session @limit = {$top_int}, @user_filter = {$safe_flt_sql}, @only_open = {$open_bit}"); // Načtení do pole
 		$row_count = is_array($rows) ? count($rows) : 0;                     // Počet načtených záznamů
 
 		if ($row_count === 0) {                                              // Pokud dotaz nevrátil žádné záznamy
@@ -307,7 +208,7 @@ HTML;
 			if ($logout_raw !== '') {                                        // Pokud má relace zaznamenaný čas odhlášení/expirace
 				$logout_val = htmlspecialchars(date_format4($logout_raw, 16)); // Zformátovaný čas odhlášení
 				$logout_tip = htmlspecialchars($logout_raw);                 // Přesný čas odhlášení do tooltipu
-				$exp_html = $is_expired ? "<span class=\"exp-badge\">{$txt_expired}</span>" : ''; // Štítek expirace
+				$exp_html =$is_expired ? "<span class=\"exp-badge\">{$txt_expired}</span>" : ''; // Štítek expirace
 				$logout_html = "<span title=\"{$logout_tip}\">{$logout_val}</span>{$exp_html}"; // Výpis času odhlášení a případné expirace
 			} else {
 				$logout_html = "<span style=\"color: #15803d; font-style: italic; font-size: 12px; font-weight: bold;\">{$txt_open_sess}</span>"; // Relace bez logout_time
@@ -329,7 +230,7 @@ HTML;
 
 			$dept = trim((string)($row['department_name'] ?? ''));           // Oddělení uživatele v organizaci
 			$job  = trim((string)($row['job_title'] ?? ''));                 // Pracovní pozice uživatele v organizaci
-			$dept_job_raw = ($dept !== '' AND $job !== '') ? "{$dept} / {$job}" : ($dept ?: $job); // Spojení oddělení a pozice
+			$dept_job_raw = ($dept !== '' AND$job !== '') ? "{$dept} / {$job}" : ($dept ?: $job); // Spojení oddělení a pozice
 			$dept_job_val = htmlspecialchars($dept_job_raw);                 // Ošetřený text oddělení a pozice
 
 			$inact_badge = !empty($row['user_inactive'])
@@ -339,14 +240,11 @@ HTML;
 			$role_code = (string)($row['assumed_role'] ?? 'U');              // Kód zvolené role v relaci
 			$role_cls = 'role-badge-usr';                                    // Výchozí styl odznaku role
 			$role_label = 'User';                                            // Výchozí text role
-			if ($role_code === 'D') {                                        // Role Developer
-				$role_cls = 'role-badge-sys';                                // Červený odznak
+			if ($role_code === 'D') {                                        // Role Developer$role_cls = 'role-badge-sys';                                // Červený odznak
 				$role_label = 'Developer';                                   // Popisek Developer
-			} elseif ($role_code === 'S') {                                  // Role Sysadmin
-				$role_cls = 'role-badge-sys';                                // Červený odznak
+			} elseif ($role_code === 'S') {                                  // Role Sysadmin$role_cls = 'role-badge-sys';                                // Červený odznak
 				$role_label = 'Sysadmin';                                    // Popisek Sysadmin
-			} elseif ($role_code === 'A') {                                  // Role Admin organizace
-				$role_cls = 'role-badge-org';                                // Modrý odznak
+			} elseif ($role_code === 'A') {                                  // Role Admin organizace$role_cls = 'role-badge-org';                                // Modrý odznak
 				$role_label = 'Admin';                                       // Popisek Admin
 			}
 			$safe_role_label = htmlspecialchars($role_label);                // Ošetřený popisek role

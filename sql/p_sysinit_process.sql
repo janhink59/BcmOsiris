@@ -1,24 +1,42 @@
 /* =============================================================================
- * Verze: 2026-11-15 19:15
+ * Verze: 2026-11-16 15:25
  * Soubor: p_sysinit_process.sql
  * Procedura: dbo.p_sysinit_process
- * Účel:   Závěrečný procesor inicializačních tabulek sysinit_* (sysinit_object,
- *         sysinit_class, sysinit_column, sysinit_codetable, sysinit_menu,
- *         sysinit_phrase, sysinit_link_def).
- *         1. Idempotentně promítne nashromážděná systémová metadata a překlady
- *            (pro primární jazyk 'cs' jako záznamy 'A' + symetrické 'L', pro
- *            ostatní jazyky jako záznamy 'L') do cílových tabulek meta_*
- *            (object_owner = 0x00) při plném respektování ručních úprav v UI
- *            (who_modified <> 0x00) a s Delta kontrolou změn přes EXCEPT.
- *         2. Odstraní z meta_phrase osiřelé záznamy s import_origin = 'AUTO_DISCOVERED'
- *            (who_modified = 0x00), jejichž kódy již byly nahrazeny v sysinit_phrase.
- *         3. V závěru automaticky promítne nativní 1:N cizí klíče (referenced_class)
- *            a stromové sloupce parent_uuid (parent_to_child 'P' / child_to_parent 'R')
- *            do tabulky meta_link_def jako odvozené vztahy (is_derived = 1).
- * Vazby:  - Volána ze závěrečné dávky final_scripts.sql (po p_fix_meta_column),
- *           případně samostatně v SSMS po spuštění dílčího skriptu *#phrase.sql
- *           nebo table_*.sql.
+ *
+ * 1. Role souboru v celém systému:
+ *    Závěrečný procesor inicializačních tabulek sysinit_* (sysinit_object,
+ *    sysinit_class, sysinit_column, sysinit_codetable, sysinit_menu,
+ *    sysinit_phrase, sysinit_link_def).
+ *    - Idempotentně promítne nashromážděná systémová metadata a překlady
+ *      (pro primární jazyk 'cs' jako záznamy 'A' + symetrické 'L', pro
+ *      ostatní jazyky jako záznamy 'L') do cílových tabulek meta_*
+ *      (object_owner = 0x00) při plném respektování ručních úprav v UI
+ *      (who_modified <> 0x00) a s Delta kontrolou změn přes EXCEPT.
+ *    - Odstraní z meta_phrase osiřelé záznamy s import_origin = 'AUTO_DISCOVERED'
+ *      (who_modified = 0x00), jejichž kódy již byly nahrazeny v sysinit_phrase.
+ *    - V závěru automaticky promítne nativní 1:N cizí klíče (referenced_class)
+ *      a stromové sloupce parent_uuid (parent_to_child 'P' / child_to_parent 'R')
+ *      do tabulky meta_link_def jako odvozené vztahy (is_derived = 1).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Volána ze závěrečné dávky final_scripts.sql (po p_fix_meta_column),
+ *      případně samostatně v SSMS po spuštění dílčího skriptu *#phrase.sql
+ *      nebo table_*.sql.
+ *    - Čte tabulky sysinit_object, sysinit_class, sysinit_column,
+ *      sysinit_codetable, sysinit_menu, sysinit_phrase, sysinit_link_def
+ *      a využívá funkci dbo.f_generate_original.
+ *    - Modifikuje tabulky meta_object, meta_class, meta_column, meta_codetable,
+ *      meta_menu, meta_phrase a meta_link_def.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Pracuje nad systémovými metadaty (object_owner = 0x00) bez závislosti
+ *      na uživatelské relaci v dbsession.
+ *
  * Změny:
+ * - 2026-11-16 15:25: V sekci 3a odstraněno CTE (;WITH ranked_glob) a dočasná
+ *   tabulka #glob_col je vytvořena s PRIMARY KEY (column_name, [language]) a
+ *   indexem ix_glob_col_lang. V sekci 6a nahrazen opakovaný poddotaz DISTINCT
+ *   source_code indexovanou tabulkovou proměnnou @src_codes.
  * - 2026-11-15 19:15: Do sekce 6 doplněno čištění osiřelých AUTO_DISCOVERED
  *   záznamů v meta_phrase pro zdroje spravované v sysinit_phrase.
  * - 2026-11-13 18:30: Do sekce 3b doplněno generování a aktualizace jazykových
@@ -264,10 +282,61 @@ BEGIN
 	-- =========================================================================
 	IF OBJECT_ID('sysinit_column', 'U') IS NOT NULL AND EXISTS (SELECT 1 FROM sysinit_column)
 	BEGIN
-		-- 3a. Agregace (módus / prioritní '' záznam) pro každý (column_name, language) do #glob_col
+		-- 3a. Agregace (módus / prioritní '' záznam) pro každý (column_name, language) do indexované #glob_col (bez CTE)
 		IF OBJECT_ID('tempdb..#glob_col') IS NOT NULL DROP TABLE #glob_col;
 
-		;WITH ranked_glob AS (
+		CREATE TABLE #glob_col (
+			table_name varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			column_name varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			[language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL,
+			caption varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			caption_plural varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			label varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			header varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			helptext varchar(max) COLLATE DATABASE_DEFAULT NOT NULL,
+			placeholder varchar(200) COLLATE DATABASE_DEFAULT NOT NULL,
+			description varchar(max) COLLATE DATABASE_DEFAULT NOT NULL,
+			editor_note varchar(max) COLLATE DATABASE_DEFAULT NOT NULL,
+			sort_code varchar(20) COLLATE DATABASE_DEFAULT NULL,
+			list_order int NULL,
+			input_type varchar(20) COLLATE DATABASE_DEFAULT NULL,
+			input_width varchar(50) COLLATE DATABASE_DEFAULT NULL,
+			input_rows int NULL,
+			max_length int NULL,
+			css_class varchar(200) COLLATE DATABASE_DEFAULT NULL,
+			translate bit NULL,
+			history bit NULL,
+			is_html bit NULL,
+			is_mandatory bit NULL,
+			is_url bit NULL,
+			is_computed bit NULL,
+			show_empty bit NULL,
+			hidden bit NULL,
+			customizable bit NULL,
+			is_final bit NULL,
+			is_protected bit NULL,
+			referenced_codetable varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			referenced_class_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL,
+			CONSTRAINT pk_tmp_glob_col PRIMARY KEY (column_name, [language]),
+			INDEX ix_glob_col_lang ([language], column_name)
+		);
+
+		INSERT INTO #glob_col (
+			table_name, column_name, [language],
+			caption, caption_plural, label, header, helptext, placeholder, description, editor_note,
+			sort_code, list_order, input_type, input_width, input_rows, max_length, css_class,
+			translate, history, is_html, is_mandatory, is_url, is_computed,
+			show_empty, hidden, customizable, is_final, is_protected,
+			referenced_codetable, referenced_class_code
+		)
+		SELECT
+			table_name, column_name, [language],
+			caption, caption_plural, label, header, helptext, placeholder, description, editor_note,
+			sort_code, list_order, input_type, input_width, input_rows, max_length, css_class,
+			translate, history, is_html, is_mandatory, is_url, is_computed,
+			show_empty, hidden, customizable, is_final, is_protected,
+			referenced_codetable, referenced_class_code
+		FROM (
 			SELECT
 				s.*,
 				ROW_NUMBER() OVER (
@@ -277,11 +346,8 @@ BEGIN
 						s.table_name ASC
 				) AS rn
 			FROM sysinit_column s
-		)
-		SELECT *
-		INTO #glob_col
-		FROM ranked_glob
-		WHERE rn = 1;
+		) ranked_glob
+		WHERE ranked_glob.rn = 1;
 
 		-- Aktualizace 'A' záznamů v sys_global_columns z #glob_col ('cs')
 		UPDATE mc
@@ -718,6 +784,15 @@ BEGIN
 	-- =========================================================================
 	IF OBJECT_ID('sysinit_phrase', 'U') IS NOT NULL AND EXISTS (SELECT 1 FROM sysinit_phrase)
 	BEGIN
+		DECLARE @src_codes TABLE (
+			source_code varchar(80) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY
+		);
+
+		INSERT INTO @src_codes (source_code)
+		SELECT DISTINCT source_code
+		FROM sysinit_phrase
+		WHERE source_code <> '';
+
 		-- 6a. Zajištění existence všech odkazovaných source_code jako objektů typu 'P' v meta_object
 		INSERT INTO meta_object (
 			uuid, object_owner, original, record_type, approval_status, [language],
@@ -726,12 +801,12 @@ BEGIN
 		SELECT
 			x.orig, @sys_owner, x.orig, 'A', 'A', 'cs',
 			'P', src.source_code, 'U', src.source_code
-		FROM (SELECT DISTINCT source_code FROM sysinit_phrase WHERE source_code <> '') src
+		FROM @src_codes src
 		CROSS APPLY (SELECT dbo.f_generate_original('meta_object', @sys_owner, 'P', src.source_code) AS orig) x
 		WHERE NOT EXISTS (
 			SELECT 1 FROM meta_object mo
 			WHERE mo.original = x.orig AND mo.object_owner = @sys_owner AND mo.record_type = 'A'
-		);
+		  );
 
 		INSERT INTO meta_object (
 			uuid, object_owner, original, record_type, approval_status, [language],
@@ -741,7 +816,7 @@ BEGIN
 			NEWID(), @sys_owner, a.original, 'L', 'A', 'cs',
 			'P', a.builtin_code, a.system_role, a.caption
 		FROM meta_object a
-		JOIN (SELECT DISTINCT source_code FROM sysinit_phrase WHERE source_code <> '') src ON src.source_code = a.builtin_code
+		JOIN @src_codes src ON src.source_code = a.builtin_code
 		WHERE a.object_owner = @sys_owner
 		  AND a.object_type = 'P'
 		  AND a.record_type = 'A'
@@ -860,12 +935,9 @@ BEGIN
 		-- 6d. Vyčištění osiřelých AUTO_DISCOVERED záznamů v meta_phrase u zdrojů spravovaných v sysinit_phrase
 		DELETE mp
 		FROM meta_phrase mp
+		JOIN @src_codes sc ON sc.source_code = mp.source_code
 		WHERE mp.object_owner = @sys_owner
 		  AND mp.import_origin = 'AUTO_DISCOVERED'
-		  AND EXISTS (
-			SELECT 1 FROM sysinit_phrase sp_src
-			WHERE sp_src.source_code = mp.source_code
-		  )
 		  AND NOT EXISTS (
 			SELECT 1 FROM sysinit_phrase sp
 			WHERE sp.source_code = mp.source_code

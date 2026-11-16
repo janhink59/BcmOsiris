@@ -1,30 +1,35 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 14:15
+ * Verze: 2026-11-16 15:45
  * Soubor: abstract_csv_package.php
  * Třída: abstract_csv_package
- * Účel: Abstraktní předek pro víceblokový CSV export a dvoufázový import
- *       aplikačních balíčků mezi instancemi systému BCM Osiris.
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Registruje autoloader pro potomky s prefixem `csv_package_` (např. `csv_package_metadata`,
- *   `csv_package_simple_class`).
- * - Využívá nativní streamové funkce PHP `fputcsv()` a `fgetcsv()` s parametrem
- *   `$escape = ''` (RFC 4180 kompatibilní zdvojování uvozovek `""`; hodnoty obsahující
- *   středník, nový řádek `\n` nebo uvozovky jsou vždy uzavřeny v dvojitých uvozovkách `"`,
- *   znaky `\r` jsou vypuštěny). Výchozím oddělovačem je středník `;` a příponou `.csv`.
- * - Zabezpečení proti změnám zajišťuje HMAC-SHA256 podpis (`signature`).
- * - Obecný parametr `same_org_only` (společně s podepsaným `source_org_uuid`) umožňuje
- *   omezit import dat pouze do stejné organizace, která data exportovala; porušení
- *   tohoto omezení je detekováno a zablokováno již v 1. fázi importu (`load_file_to_session`).
+ * 1. Role souboru v celém systému:
+ *    Abstraktní předek pro víceblokový CSV export a dvoufázový import
+ *    aplikačních balíčků mezi instancemi systému BCM Osiris.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Registruje autoloader pro potomky s prefixem csv_package_ (např.
+ *      csv_package_metadata, csv_package_simple_class).
+ *    - Ve Fázi 1 importu (load_file_to_session) plní v transakci 4 staging
+ *      tabulky session_import_* (table_session_import.sql) a volá proceduru
+ *      p_csv_clear_session_import.
+ *    - Ve Fázi 2 importu (run_import) spouští uloženou proceduru
+ *      p_csv_import_<package_code> a načítá zprávy z request_message.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Využívá identifikátor aktivní webové relace $SID (wwwsession) a kontext
+ *      organizace v globálním poli $dbsession (v databázi v dbsession pro @@SPID).
  *
  * Změny:
- * 2026-11-06 14:15 - Doplněn obecný parametr `same_org_only` a podepsaný `source_org_uuid`
+ * 2026-11-16 15:45 - V load_file_to_session() odstraněn N+1 dotaz SELECT COUNT(1)
+ *                    při kontrole povinných sloupců a nahrazen jedním agregačním
+ *                    dotazem GROUP BY column_id před cyklem; v run_import()
+ *                    využita kešovaná funkce db_object_exists().
+ * 2026-11-06 14:15 - Doplněn obecný parametr same_org_only a podepsaný source_org_uuid
  *                    s kontrolou shody organizace již ve Fázi 1 importu.
- *                  - Doplněna podpora víceřádkových parametrů (`textarea`, např. `info`)
- *                    ve formuláři exportu i v přehledu Fáze 1 importu.
- * 2026-10-24 20:05 - Normalizace parametru `version_date` přes `date_from_string()` pro HMAC.
+ * 2026-10-24 20:05 - Normalizace parametru version_date přes date_from_string() pro HMAC.
  * =============================================================================
  */
 
@@ -90,7 +95,7 @@ abstract class abstract_csv_package {
 	}
 
 	/**
-	 * Potomek zde nastaví $this->package_code, $this->package_title, $this->description a $this->is_system_package.
+	 * Potomek zde nastaví $this->package_code,$this->package_title, $this->description a$this->is_system_package.
 	 */
 	abstract protected function init_package(): void;
 
@@ -160,7 +165,7 @@ abstract class abstract_csv_package {
 	}
 
 	/**
-	 * Nastaví hodnoty parametrů z asociativního pole (např. z $_POST nebo $_GET).
+	 * Nastaví hodnoty parametrů z asociativního pole (např. z $_POST nebo$_GET).
 	 *
 	 * @param array<string, mixed> $input Vstupní pole parametrů
 	 */
@@ -638,7 +643,7 @@ HTML;
 			}
 		}
 
-		// Kontrola přítomnosti povinných tabulek, povinných sloupců a povinných hodnot
+		// Kontrola přítomnosti povinných tabulek, povinných sloupců a povinných hodnot (bez N+1 dotazů)
 		$loaded_tables = sqlarray2("SELECT table_name, table_id, row_count FROM session_import_table WHERE wwwsession = {$safe_sid}"); // Načtené tabulky
 		$loaded_cols = sqlarray3("
 			SELECT t.table_name, c.column_name, c.column_id
@@ -646,6 +651,13 @@ HTML;
 			JOIN session_import_table t ON t.wwwsession = c.wwwsession AND t.table_id = c.table_id
 			WHERE c.wwwsession = {$safe_sid}
 		");                                                                  // Načtené sloupce seskupené podle tabulky
+		$filled_counts_by_col = sqlarray("
+			SELECT column_id, COUNT(1) AS cnt
+			FROM session_import_data
+			WHERE wwwsession = {$safe_sid}
+			  AND LTRIM(RTRIM(cell_value)) <> ''
+			GROUP BY column_id
+		");                                                                  // Jednorázové agregované načtení počtů vyplněných buněk po sloupcích
 
 		foreach ($this->get_tables_definition() as $t_name => $t_def) {      // Průchod definicemi tabulek balíčku
 			$is_mand_tab = ! empty($t_def['mandatory']);                     // Zda je tabulka v balíčku povinná
@@ -681,10 +693,9 @@ HTML;
 						continue;                                            // Další sloupec
 					}
 
-					if ($is_mand_col AND $t_row_count > 0) {                 // Kontrola vyplnění povinných hodnot
+					if ($is_mand_col AND $t_row_count > 0) {                 // Kontrola vyplnění povinných hodnot v paměti
 						$cid = $tab_cols_map[$c_name];                       // Globální ID kontrolovaného sloupce
-						$cnt_row = sqlfirstrow("SELECT COUNT(1) AS cnt FROM session_import_data WHERE wwwsession = {$safe_sid} AND column_id = {$cid} AND LTRIM(RTRIM(cell_value)) <> ''"); // Počet vyplněných řádků
-						$filled_cnt = (int) ($cnt_row['cnt'] ?? 0);          // Zjištěný počet neprázdných buněk
+						$filled_cnt = (int) ($filled_counts_by_col[$cid] ?? 0); // Zjištěný počet neprázdných buněk z pole
 						if ($filled_cnt < $t_row_count) {                    // Některé řádky mají povinnou buňku prázdnou
 							$missing_cnt = $t_row_count - $filled_cnt;       // Počet chybějících hodnot
 							$this->rqm->add_message($this->phrase('err_empty_mandatory_cells', 'Sloupec obsahuje prázdné hodnoty v povinném poli.'), 3)
@@ -815,10 +826,7 @@ HTML;
 		}
 
 		$proc_name = 'p_csv_import_' . $this->package_code;                  // Název cílové SQL procedury
-		$safe_proc = charliteral($proc_name, 128);                           // SQL literál názvu procedury
-		$proc_row = sqlfirstrow("SELECT OBJECT_ID({$safe_proc}, 'P') AS proc_id"); // Dotaz na existenci procedury
-
-		if (empty($proc_row) OR empty($proc_row['proc_id'])) {               // Pokud procedura v DB neexistuje
+		if (! db_object_exists($proc_name, 'P')) {                           // Kešovaná kontrola existence procedury v DB
 			$this->rqm->add_message($this->phrase('err_proc_not_found', 'Uložená procedura pro zpracování balíčku nebyla v databázi nalezena.'), 3)
 				->setobject('Procedura', $proc_name);                        // Zápis chyby chybějící procedury
 			return false;                                                    // Ukončení bez spuštění

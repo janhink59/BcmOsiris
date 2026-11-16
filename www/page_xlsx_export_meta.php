@@ -1,47 +1,38 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-15 19:00
+ * Verze: 2026-11-16 15:45
  * Soubor: page_xlsx_export_meta.php
  * Třída: page_xlsx_export_meta
- * Účel: Samostatná stránka pro zpětný export systémových metadat (meta_object,
- *       meta_menu, meta_phrase, meta_class, meta_column) do souboru XLSX
- *       s volbou základního jazyka (language) a druhého jazyka (second_language).
- *       Vyčleněno z page_excel_reader.php pro zjednodušení a zpřehlednění kódu.
  *
- * Vazby na okolí:
- * - Instancována dynamicky z index.php při požadavku ?page=page_xlsx_export_meta.
- * - Dědí z abstract_page (využívá $this->page_title,$this->access_denied,
- *   $this->phrase(), parent::render() a implementuje render_body()).
- * - Využívá komponentu abstract_button pro vykreslení tlačítek.
- * - Čte číselník [language] a systémové záznamy (object_owner = 0x00) z tabulek
- *   meta_object, meta_menu, meta_phrase, meta_class a meta_column přes sqlarray_simple().
- * - Generuje XLSX soubor pomocí knihovny PhpOffice\PhpSpreadsheet (plně kompatibilní
- *   s importní třídou xlsx_meta_object a procedurou p_xlsx_meta_object).
- * - Sloupce svg_icon se do Excelu vůbec neexportují (spravují se výhradně SQL skripty).
- * - Zděděné hodnoty na záložkách class a column i dosud nepřeložené položky
- *   ve sloupcích s příponou _l (pokud je definován second_language) uzavírá <do stříšek>.
+ * 1. Role souboru v celém systému:
+ *    Samostatná stránka pro zpětný export systémových metadat (meta_object,
+ *    meta_menu, meta_phrase, meta_class, meta_column) do souboru XLSX
+ *    s volbou základního jazyka (language) a druhého jazyka (second_language).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z index.php při požadavku ?page=page_xlsx_export_meta.
+ *    - Dědí z abstract_page a využívá komponentu abstract_button.
+ *    - Veškerá data čte prostřednictvím uložené procedury dbo.page_xlsx_export_meta
+ *      (page_xlsx_export_meta.sql) přes funkci sqlarray_simple().
+ *    - Generuje XLSX soubor pomocí knihovny PhpOffice\PhpSpreadsheet (plně
+ *      kompatibilní s importní třídou xlsx_meta_object a p_xlsx_meta_object).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Využívá kontext přihlášeného uživatele v globálním poli $dbsession
+ *      (vyžaduje roli Sysadmin 'S' nebo Developer 'D' dle meta_object).
  *
  * Změny:
+ * 2026-11-16 15:45 - Všech 6 rozsáhlých T-SQL dotazů vyčleněno do uložené
+ *                    procedury dbo.page_xlsx_export_meta (page_xlsx_export_meta.sql);
+ *                    opraveny mezery před znakem $ dle Anti-LaTeX pravidla.
  * 2026-11-15 19:00 - Oprava pádu PhpSpreadsheet (TypeError v Calculation.php) při exportu
  *                    textů začínajících znakem '=' (např. '= (Nezadaná hodnota / NULL)'):
  *                    doplněn vlastní ValueBinder (bcm_xlsx_text_value_binder) potlačující
  *                    DataType::TYPE_FORMULA, zapnuto setPreCalculateFormulas(false),
  *                    vyčištěn výstupní buffer a optimalizován JOIN na meta_object u phrase.
- * 2026-10-25 11:05 - Oprava mizení číselných nul (0) v buňkách Excelu: do všech volání
- *                    metody fromArray() doplněn 4. parametr $strictNullComparison = true,
- *                    aby PhpSpreadsheet nevyhodnocoval (int)0 == null jako prázdnou buňku.
- *                  - Doplněna Anti-LaTeX ochrana komentářů s diakritikou na všech řádcích se znakem $.
- * 2026-10-24 23:50 - Sjednocení vyhodnocení příznaku removed při exportu s kontrolami
- *                    v p_xlsx_meta_object: pokud je hlavní 'A' záznam neplatný (removed = 1)
- *                    nebo v DB neexistuje či je zrušen jeho nadřízený/úložný objekt
- *                    (storage_object u tříd, nadřízená třída u sloupců, source_code u frází,
- *                    parent_uuid či target_object u menu), vyexportuje se vždy removed = 1
- *                    bez ohledu na stav překladu l2.removed.
- *                  - Na záložku class doplněn sloupec days_in_trash.
- * 2026-10-21 15:40 - Ze záložek menu, phrase a class vyřazen sloupec svg_icon
- *                    (vektorové ikony se neexportují do Excelu ani z něj neimportují).
- * 2026-10-21 15:00 - Vytvoření samostatné stránky vyčleněním z page_excel_reader.php.
+ * 2026-10-25 11:05 - Do všech volání metody fromArray() doplněn 4. parametr
+ *                    $strictNullComparison = true.
  * =============================================================================
  */
 
@@ -101,11 +92,11 @@ class page_xlsx_export_meta extends abstract_page {
 		$lbl_no_sec = htmlspecialchars($this->phrase('opt_no_second_lang', [], '--- Bez druhého jazyka (režim jádra) ---')); // Volba bez druhého jazyka
 		$lang_opts_second = "<option value=\"\">{$lbl_no_sec}</option>"; // Výchozí prázdná volba druhého jazyka
 
-		$lang_rows = sqlarray_simple("SELECT [language], caption FROM [language] ORDER BY sort_code"); // Načtení jazyků do pole
+		$lang_rows = sqlarray_simple("EXEC dbo.page_xlsx_export_meta @subpage = 'languages'"); // Načtení jazyků přes proceduru
 		if (is_array($lang_rows)) {                     // Kontrola platného pole jazyků
-			foreach ($lang_rows as $l_row) {            // Průchod jazyky v paměti
-				$l_code = (string)$l_row['language'];   // Dvoupísmenný kód jazyka
-				$l_cap = (string)$l_row['caption'];     // Zobrazovaný název jazyka
+			foreach ($lang_rows as$l_row) {            // Průchod jazyky v paměti
+				$l_code = (string)$l_row['language'];  // Dvoupísmenný kód jazyka
+				$l_cap = (string)$l_row['caption'];    // Zobrazovaný název jazyka
 				$safe_code = htmlspecialchars($l_code); // Ošetřený kód jazyka
 				$safe_label = htmlspecialchars("{$l_code} - {$l_cap}"); // Ošetřený popisek v roletce
 				$sel_prim = ($l_code === 'cs') ? 'selected' : '';       // Výchozí primární jazyk je čeština
@@ -174,13 +165,13 @@ HTML;
 	/**
 	 * Pomocná metoda pro formátování potenciálně zděděné hodnoty v Excelu (<do stříšek>).
 	 */
-	private function format_inherited_val(mixed $own_val, mixed $anc_val, bool $treat_empty_as_null = false): string { // Formátování děděné hodnoty
+	private function format_inherited_val(mixed $own_val, mixed $anc_val, bool$treat_empty_as_null = false): string { // Formátování děděné hodnoty
 		$is_null = ($own_val === null OR ($treat_empty_as_null AND (string)$own_val === '')); // Zda se uplatní dědičnost
-		if (!$is_null) {                                // Pokud má záznam vlastní explicitní hodnotu
-			return (string)$own_val;                    // Vrátíme vlastní hodnotu bez stříšek
+		if (! $is_null) {                               // Pokud má záznam vlastní explicitní hodnotu
+			return (string) $own_val;                   // Vrátíme vlastní hodnotu bez stříšek
 		}
 		if ($anc_val !== null AND (string)$anc_val !== '') { // Pokud předek obsahuje neprázdnou hodnotu
-			return '<' . (string)$anc_val . '>';        // Zděděnou hodnotu uzavřeme <do stříšek>
+			return '<' . (string) $anc_val . '>';       // Zděděnou hodnotu uzavřeme <do stříšek>
 		}
 		return '';                                      // Předek ani potomek hodnotu nemají
 	}
@@ -188,17 +179,17 @@ HTML;
 	/**
 	 * Pomocná metoda pro formátování překladových sloupců s příponou _l.
 	 */
-	private function format_sec_lang_val(string $sec_lang, mixed $own_val_l, mixed $inherited_val): string { // Formátování sloupce *_l
+	private function format_sec_lang_val(string $sec_lang, mixed $own_val_l, mixed$inherited_val): string { // Formátování sloupce *_l
 		if ($sec_lang === '') {                         // Pokud druhý jazyk v CONTENT_INFO není definován
 			return '';                                  // Položky *_l zůstávají prázdné pouze bez druhého jazyka
 		}
-		return $this->format_inherited_val($own_val_l, $inherited_val, true); // Vlastní překlad nebo <zděděná hodnota>
+		return $this->format_inherited_val($own_val_l,$inherited_val, true); // Vlastní překlad nebo <zděděná hodnota>
 	}
 
 	/**
 	 * Pomocná metoda pro obarvení a ztučnění hlavičky listu.
 	 */
-	private function style_sheet_header(object $sheet, string $tech_range, string $note_cell, string $prim_range, string $sec_range, string $full_range): void { // Stylování hlavičky
+	private function style_sheet_header(object $sheet, string $tech_range, string $note_cell, string $prim_range, string $sec_range, string$full_range): void { // Stylování hlavičky
 		$sheet->getStyle($tech_range)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFE0E0E0'); // Šedá pro technické
 		$sheet->getStyle($note_cell)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFD9D2E9');  // Fialová pro AI kontext
 		$sheet->getStyle($prim_range)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFD9EAD3'); // Zelená pro první jazyk
@@ -211,12 +202,12 @@ HTML;
 	 * Vygeneruje a odešle XLSX soubor s aktuálními systémovými metadaty (bez sloupců svg_icon).
 	 */
 	protected function process_xlsx_export(): void {
-		$lang = trim((string)getinput('export_language')) ?: 'cs'; // Zvolený primární jazyk exportu
-		$sec_lang = trim((string)getinput('export_second_language')); // Zvolený druhý jazyk exportu
+		$lang = trim((string) getinput('export_language')) ?: 'cs'; // Zvolený primární jazyk exportu
+		$sec_lang = trim((string) getinput('export_second_language')); // Zvolený druhý jazyk exportu
 		if ($sec_lang === $lang) {                      // Ochrana proti shodě primárního a druhého jazyka
 			$sec_lang = '';                             // Vypnutí druhého jazyka při shodě
 		}
-		$origin = trim((string)getinput('export_origin')) ?: 'BCM Osiris Export'; // Označení původu dat
+		$origin = trim((string) getinput('export_origin')) ?: 'BCM Osiris Export'; // Označení původu dat
 
 		$safe_lang = charliteral($lang, 2);             // Bezpečný SQL literál primárního jazyka
 		$safe_sec_lang = charliteral($sec_lang, 2);     // Bezpečný SQL literál druhého jazyka
@@ -248,38 +239,21 @@ HTML;
 		$sheetPage->fromArray($page_headers, null, 'A1', true); // Zápis záhlaví záložky page
 		$this->style_sheet_header($sheetPage, 'A1:E1', 'F1', 'G1:I1', 'J1:L1', 'A1:L1'); // Stylování záhlaví page
 
-		$pages_rows = sqlarray_simple("
-			SELECT a.builtin_code, a.system_role, a.module, a.inactive,
-				CASE
-					WHEN a.removed = 1 THEN 1
-					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
-					ELSE 0
-				END AS removed,
-				ISNULL(a.editor_note, '') AS editor_note,
-				COALESCE(NULLIF(l1.caption, ''), a.caption, '') AS caption,
-				COALESCE(NULLIF(l1.description, ''), a.description, '') AS description,
-				COALESCE(NULLIF(l1.helptext, ''), a.helptext, '') AS helptext,
-				l2.caption AS own_caption_l, l2.description AS own_description_l, l2.helptext AS own_helptext_l
-			FROM meta_object a
-			LEFT JOIN meta_object l1 ON l1.original = a.original AND l1.object_owner = 0x00 AND l1.record_type = 'L' AND l1.[language] = {$safe_lang} AND l1.removed = 0
-			LEFT JOIN meta_object l2 ON l2.original = a.original AND l2.object_owner = 0x00 AND l2.record_type = 'L' AND l2.[language] = {$safe_sec_lang} AND {$safe_sec_lang} <> ''
-			WHERE a.object_owner = 0x00 AND a.object_type = 'P' AND a.builtin_code <> '' AND a.record_type = 'A'
-			ORDER BY CASE WHEN a.builtin_code = 'global_phrase' THEN 0 WHEN a.builtin_code LIKE 'page_%' THEN 2 ELSE 1 END, a.builtin_code
-		");                                             // Načtení registrovaných stránek a UI tříd
+		$pages_rows = sqlarray_simple("EXEC dbo.page_xlsx_export_meta @subpage = 'page', @lang = {$safe_lang}, @sec_lang = {$safe_sec_lang}"); // Načtení záložky page
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce page
 		if (is_array($pages_rows)) {                    // Kontrola platného pole stránek
 			foreach ($pages_rows as $r) {               // Průchod načtenými stránkami
 				$page_vals = [                          // Pole hodnot aktuálního řádku stránky
-					(string)$r['builtin_code'],         // Kód stránky nebo třídy
-					(string)$r['system_role'],          // Minimální systémová role
-					(string)$r['module'],               // Zařazení do modulu
-					(int)$r['inactive'],                // Příznak neaktivního záznamu
-					(int)$r['removed'],                 // Příznak zrušeného záznamu
-					(string)$r['editor_note'],          // Poznámka pro překladatele a AI
-					(string)$r['caption'],              // Název v základním jazyce
-					(string)$r['description'],          // Popis v základním jazyce
-					(string)$r['helptext'],             // Nápověda v základním jazyce
+					(string) $r['builtin_code'],        // Kód stránky nebo třídy
+					(string) $r['system_role'],         // Minimální systémová role
+					(string) $r['module'],              // Zařazení do modulu
+					(int) $r['inactive'],               // Příznak neaktivního záznamu
+					(int) $r['removed'],                // Příznak zrušeného záznamu
+					(string) $r['editor_note'],         // Poznámka pro překladatele a AI
+					(string) $r['caption'],             // Název v základním jazyce
+					(string) $r['description'],         // Popis v základním jazyce
+					(string) $r['helptext'],            // Nápověda v základním jazyce
 					$this->format_sec_lang_val($sec_lang, $r['own_caption_l'], $r['caption']),         // Název ve druhém jazyce
 					$this->format_sec_lang_val($sec_lang, $r['own_description_l'], $r['description']), // Popis ve druhém jazyce
 					$this->format_sec_lang_val($sec_lang, $r['own_helptext_l'], $r['helptext'])        // Nápověda ve druhém jazyce
@@ -301,49 +275,27 @@ HTML;
 		$sheetMenu->fromArray($menu_headers, null, 'A1', true); // Zápis záhlaví záložky menu
 		$this->style_sheet_header($sheetMenu, 'A1:K1', 'L1', 'M1:O1', 'P1:R1', 'A1:R1'); // Stylování záhlaví menu (18 sloupců: A až R)
 
-		$menu_rows = sqlarray_simple("
-			SELECT m.builtin_code, ISNULL(pm.builtin_code, '') AS parent_code, m.sort_code, ISNULL(mo.builtin_code, '') AS target_page,
-				m.url_parameters, m.target_url, m.target_window, m.system_role, m.permanent,
-				CASE
-					WHEN m.removed = 1 THEN 1
-					WHEN m.parent_uuid IS NOT NULL AND (pm.original IS NULL OR pm.removed = 1) THEN 1
-					WHEN m.target_object IS NOT NULL AND (mo.original IS NULL OR mo.removed = 1) THEN 1
-					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
-					ELSE 0
-				END AS removed,
-				m.css_class, ISNULL(m.editor_note, '') AS editor_note,
-				COALESCE(NULLIF(l1.caption, ''), m.caption, '') AS caption,
-				COALESCE(NULLIF(l1.description, ''), m.description, '') AS description,
-				COALESCE(NULLIF(l1.helptext, ''), m.helptext, '') AS helptext,
-				l2.caption AS own_caption_l, l2.description AS own_description_l, l2.helptext AS own_helptext_l
-			FROM meta_menu m
-			LEFT JOIN meta_menu pm ON pm.original = m.parent_uuid AND pm.object_owner = 0x00 AND pm.record_type = 'A'
-			LEFT JOIN meta_object mo ON mo.original = m.target_object AND mo.object_owner = 0x00 AND mo.record_type = 'A'
-			LEFT JOIN meta_menu l1 ON l1.original = m.original AND l1.object_owner = 0x00 AND l1.record_type = 'L' AND l1.[language] = {$safe_lang} AND l1.removed = 0
-			LEFT JOIN meta_menu l2 ON l2.original = m.original AND l2.object_owner = 0x00 AND l2.record_type = 'L' AND l2.[language] = {$safe_sec_lang} AND {$safe_sec_lang} <> ''
-			WHERE m.object_owner = 0x00 AND m.record_type = 'A'
-			ORDER BY CASE WHEN m.parent_uuid IS NULL THEN 0 ELSE 1 END, m.sort_code, m.builtin_code
-		");                                             // Načtení položek systémového menu (bez svg_icon)
+		$menu_rows = sqlarray_simple("EXEC dbo.page_xlsx_export_meta @subpage = 'menu', @lang = {$safe_lang}, @sec_lang = {$safe_sec_lang}"); // Načtení záložky menu
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce menu
 		if (is_array($menu_rows)) {                     // Kontrola platného pole menu
 			foreach ($menu_rows as $r) {                // Průchod načtenými položkami menu
 				$menu_vals = [                          // Pole hodnot řádku menu
-					(string)$r['builtin_code'],         // Kód položky menu
-					(string)$r['parent_code'],          // Kód nadřízené položky menu
-					(string)$r['sort_code'],            // Řadicí kód položky
-					(string)$r['target_page'],          // Kód cílové stránky
-					(string)$r['url_parameters'],       // Volitelné parametry URL
-					(string)$r['target_url'],           // Externí URL adresa
-					(string)$r['target_window'],        // Cílové okno odkazu
-					(string)$r['system_role'],          // Minimální vyžadovaná role
-					(int)$r['permanent'],               // Příznak trvalého zobrazení
-					(int)$r['removed'],                 // Příznak zrušeného záznamu
-					(string)$r['css_class'],            // Doplňková CSS třída
-					(string)$r['editor_note'],          // Poznámka pro AI překlady
-					(string)$r['caption'],              // Název v základním jazyce
-					(string)$r['description'],          // Popis v základním jazyce
-					(string)$r['helptext'],             // Nápověda v základním jazyce
+					(string) $r['builtin_code'],        // Kód položky menu
+					(string) $r['parent_code'],         // Kód nadřízené položky menu
+					(string) $r['sort_code'],           // Řadicí kód položky
+					(string) $r['target_page'],         // Kód cílové stránky
+					(string) $r['url_parameters'],      // Volitelné parametry URL
+					(string) $r['target_url'],          // Externí URL adresa
+					(string) $r['target_window'],       // Cílové okno odkazu
+					(string) $r['system_role'],         // Minimální vyžadovaná role
+					(int) $r['permanent'],              // Příznak trvalého zobrazení
+					(int) $r['removed'],                // Příznak zrušeného záznamu
+					(string) $r['css_class'],           // Doplňková CSS třída
+					(string) $r['editor_note'],         // Poznámka pro AI překlady
+					(string) $r['caption'],             // Název v základním jazyce
+					(string) $r['description'],         // Popis v základním jazyce
+					(string) $r['helptext'],            // Nápověda v základním jazyce
 					$this->format_sec_lang_val($sec_lang, $r['own_caption_l'], $r['caption']),         // Název ve druhém jazyce
 					$this->format_sec_lang_val($sec_lang, $r['own_description_l'], $r['description']), // Popis ve druhém jazyce
 					$this->format_sec_lang_val($sec_lang, $r['own_helptext_l'], $r['helptext'])        // Nápověda ve druhém jazyce
@@ -365,44 +317,21 @@ HTML;
 		$sheetPhrase->fromArray($phrase_headers, null, 'A1', true); // Zápis záhlaví záložky phrase
 		$this->style_sheet_header($sheetPhrase, 'A1:F1', 'G1', 'H1:I1', 'J1:K1', 'A1:K1'); // Stylování záhlaví phrase (11 sloupců: A až K)
 
-		$phrase_rows = sqlarray_simple("
-			SELECT CASE WHEN ISNULL(LTRIM(RTRIM(a.source_code)), '') = '' THEN 'global_phrase' ELSE a.source_code END AS source_code,
-				a.builtin_code, a.module, a.css_class, a.inactive,
-				CASE
-					WHEN a.removed = 1 THEN 1
-					WHEN mo.original IS NULL OR mo.removed = 1 THEN 1
-					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
-					ELSE 0
-				END AS removed,
-				ISNULL(a.editor_note, '') AS editor_note,
-				COALESCE(NULLIF(CAST(l1.caption AS NVARCHAR(MAX)), ''), CAST(a.caption AS NVARCHAR(MAX)), '') AS caption,
-				COALESCE(NULLIF(CAST(l1.helptext AS NVARCHAR(MAX)), ''), CAST(a.helptext AS NVARCHAR(MAX)), '') AS helptext,
-				CAST(l2.caption AS NVARCHAR(MAX)) AS own_caption_l, CAST(l2.helptext AS NVARCHAR(MAX)) AS own_helptext_l
-			FROM meta_phrase a
-			LEFT JOIN meta_object mo
-				ON mo.object_type = 'P'
-				AND mo.builtin_code = CASE WHEN ISNULL(LTRIM(RTRIM(a.source_code)), '') = '' THEN 'global_phrase' ELSE LTRIM(RTRIM(a.source_code)) END
-				AND mo.object_owner = 0x00
-				AND mo.record_type = 'A'
-			LEFT JOIN meta_phrase l1 ON l1.original = a.original AND l1.object_owner = 0x00 AND l1.record_type = 'L' AND l1.[language] = {$safe_lang} AND l1.removed = 0
-			LEFT JOIN meta_phrase l2 ON l2.original = a.original AND l2.object_owner = 0x00 AND l2.record_type = 'L' AND l2.[language] = {$safe_sec_lang} AND {$safe_sec_lang} <> ''
-			WHERE a.object_owner = 0x00 AND a.record_type = 'A'
-			ORDER BY CASE WHEN ISNULL(LTRIM(RTRIM(a.source_code)), '') IN ('', 'global_phrase') THEN 0 ELSE 1 END, a.source_code, a.builtin_code
-		");                                             // Načtení všech systémových frází s kontrolou platnosti source_code
+		$phrase_rows = sqlarray_simple("EXEC dbo.page_xlsx_export_meta @subpage = 'phrase', @lang = {$safe_lang}, @sec_lang = {$safe_sec_lang}"); // Načtení záložky phrase
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce phrase
 		if (is_array($phrase_rows)) {                   // Kontrola platného pole frází
 			foreach ($phrase_rows as $r) {              // Průchod načtenými frázemi
 				$phrase_vals = [                        // Pole hodnot řádku fráze
-					(string)$r['source_code'],          // Zdrojová PHP třída
-					(string)$r['builtin_code'],         // Kód fráze v rámci třídy
-					(string)$r['module'],               // Zařazení do modulu
-					(string)$r['css_class'],            // Doplňková CSS třída
-					(int)$r['inactive'],                // Příznak neaktivního záznamu
-					(int)$r['removed'],                 // Příznak zrušeného záznamu
-					(string)$r['editor_note'],          // Poznámka pro AI překlady
-					(string)$r['caption'],              // Text fráze v základním jazyce
-					(string)$r['helptext'],             // Nápověda v základním jazyce
+					(string) $r['source_code'],         // Zdrojová PHP třída
+					(string) $r['builtin_code'],        // Kód fráze v rámci třídy
+					(string) $r['module'],              // Zařazení do modulu
+					(string) $r['css_class'],           // Doplňková CSS třída
+					(int) $r['inactive'],               // Příznak neaktivního záznamu
+					(int) $r['removed'],                // Příznak zrušeného záznamu
+					(string) $r['editor_note'],         // Poznámka pro AI překlady
+					(string) $r['caption'],             // Text fráze v základním jazyce
+					(string) $r['helptext'],            // Nápověda v základním jazyce
 					$this->format_sec_lang_val($sec_lang, $r['own_caption_l'], $r['caption']),   // Text fráze ve druhém jazyce
 					$this->format_sec_lang_val($sec_lang, $r['own_helptext_l'], $r['helptext'])  // Nápověda ve druhém jazyce
 				];                                      // Konec pole hodnot fráze
@@ -429,57 +358,23 @@ HTML;
 		$sheetClass->fromArray($classHeaders, null, 'A1', true); // Zápis záhlaví záložky class
 		$this->style_sheet_header($sheetClass, 'A1:J1', 'K1', 'L1:O1', 'P1:S1', 'A1:S1'); // Stylování záhlaví class
 
-		$cls_sel = [];                                  // Dynamické výrazy pro děděné a překládané sloupce třídy
-		foreach ($cls_trans_cols as $tc) {              // Sestavení SELECT výrazů pro překládané sloupce třídy
-			$cls_sel[] = "COALESCE(NULLIF(l1.{$tc}, ''), c.{$tc}) AS own_{$tc}"; // Vlastní hodnota prvního jazyka
-			$cls_sel[] = "COALESCE(NULLIF(anc_l1.{$tc}, ''), anc.{$tc}) AS anc_{$tc}"; // Hodnota předka prvního jazyka
-			$cls_sel[] = "l2.{$tc} AS own_{$tc}_l";     // Vlastní překlad druhého jazyka
-			$cls_sel[] = "COALESCE(NULLIF(anc_l2.{$tc}, ''), NULLIF(l1.{$tc}, ''), NULLIF(c.{$tc}, ''), NULLIF(anc_l1.{$tc}, ''), anc.{$tc}) AS inh_{$tc}_l"; // Zděděná pro druhý jazyk
-		}
-		$cls_sel_sql = implode(",\n\t\t\t\t", $cls_sel); // Spojení výrazů do SELECTu
-
-		$class_rows = sqlarray_simple("
-			SELECT c.class_name,
-				ISNULL(mo.object_type, CASE WHEN c.class_name LIKE 'v[_]%' OR c.class_name LIKE 'vrepo[_]%' THEN 'V' ELSE 'T' END) AS storage_type,
-				ISNULL(mo.builtin_code, c.class_name) AS storage_code,
-				ISNULL(anc.class_name, '') AS ancestor_code, c.sort_code,
-				ISNULL(c.days_in_trash, 365) AS days_in_trash,
-				c.is_final, c.is_protected, c.inactive,
-				CASE
-					WHEN c.removed = 1 THEN 1
-					WHEN mo.original IS NULL OR mo.removed = 1 THEN 1
-					WHEN c.ancestor_class IS NOT NULL AND (anc.original IS NULL OR anc.removed = 1) THEN 1
-					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
-					ELSE 0
-				END AS removed,
-				ISNULL(c.editor_note, '') AS editor_note,
-				{$cls_sel_sql}
-			FROM meta_class c
-			LEFT JOIN meta_object mo ON mo.original = c.storage_object AND mo.object_owner = 0x00 AND mo.record_type = 'A'
-			LEFT JOIN meta_class anc ON anc.original = c.ancestor_class AND anc.object_owner = 0x00 AND anc.record_type = 'A'
-			LEFT JOIN meta_class l1 ON l1.original = c.original AND l1.object_owner = 0x00 AND l1.record_type = 'L' AND l1.[language] = {$safe_lang} AND l1.removed = 0
-			LEFT JOIN meta_class anc_l1 ON anc_l1.original = anc.original AND anc_l1.object_owner = 0x00 AND anc_l1.record_type = 'L' AND anc_l1.[language] = {$safe_lang} AND anc_l1.removed = 0
-			LEFT JOIN meta_class l2 ON l2.original = c.original AND l2.object_owner = 0x00 AND l2.record_type = 'L' AND l2.[language] = {$safe_sec_lang} AND {$safe_sec_lang} <> ''
-			LEFT JOIN meta_class anc_l2 ON anc_l2.original = anc.original AND anc_l2.object_owner = 0x00 AND anc_l2.record_type = 'L' AND anc_l2.[language] = {$safe_sec_lang} AND anc_l2.removed = 0 AND {$safe_sec_lang} <> ''
-			WHERE c.object_owner = 0x00 AND c.record_type = 'A'
-			ORDER BY CASE WHEN c.class_name = 'sys_global_columns' THEN 0 ELSE 1 END, c.class_name
-		");                                             // Načtení logických tříd s přísnou kontrolou platnosti storage_object
+		$class_rows = sqlarray_simple("EXEC dbo.page_xlsx_export_meta @subpage = 'class', @lang = {$safe_lang}, @sec_lang = {$safe_sec_lang}"); // Načtení záložky class
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce class
 		if (is_array($class_rows)) {                    // Kontrola platného pole tříd
 			foreach ($class_rows as $r) {               // Průchod načtenými třídami
 				$class_vals = [                         // Základní technické sloupce třídy
-					(string)$r['class_name'],           // Technický název třídy
-					(string)$r['storage_type'],         // Typ úložného objektu
-					(string)$r['storage_code'],         // Kód úložného objektu
-					(string)$r['ancestor_code'],        // Kód předka třídy
-					(string)$r['sort_code'],            // Řadicí kód třídy
-					(int)$r['days_in_trash'],           // Počet dnů uchování v koši
-					(int)$r['is_final'],                // Příznak zákazu overridu
-					(int)$r['is_protected'],            // Příznak chráněné třídy
-					(int)$r['inactive'],                // Příznak neaktivní třídy
-					(int)$r['removed'],                 // Příznak zrušené třídy
-					(string)$r['editor_note']           // Poznámka pro AI překlady
+					(string) $r['class_name'],          // Technický název třídy
+					(string) $r['storage_type'],        // Typ úložného objektu
+					(string) $r['storage_code'],        // Kód úložného objektu
+					(string) $r['ancestor_code'],       // Kód předka třídy
+					(string) $r['sort_code'],           // Řadicí kód třídy
+					(int) $r['days_in_trash'],          // Počet dnů uchování v koši
+					(int) $r['is_final'],               // Příznak zákazu overridu
+					(int) $r['is_protected'],           // Příznak chráněné třídy
+					(int) $r['inactive'],               // Příznak neaktivní třídy
+					(int) $r['removed'],                // Příznak zrušené třídy
+					(string) $r['editor_note']          // Poznámka pro AI překlady
 				];                                      // Konec technických sloupců třídy
 				foreach ($cls_trans_cols as $tc) {      // Přidání sloupců primárního jazyka
 					$class_vals[] = $this->format_inherited_val($r["own_{$tc}"], $r["anc_{$tc}"], true); // Hodnota prvního jazyka
@@ -521,64 +416,26 @@ HTML;
 		$sheetCol->fromArray($colHeaders, null, 'A1', true); // Zápis záhlaví záložky column
 		$this->style_sheet_header($sheetCol, 'A1:Z1', 'AA1', 'AB1:AH1', 'AI1:AO1', 'A1:AO1'); // Stylování záhlaví column
 
-		$col_sel = [];                                  // Pole dynamických SELECT výrazů pro meta_column
-		foreach ($inh_keys as $ip) {                    // Sestavení SELECT výrazů pro technické vlastnosti
-			$col_sel[] = "c.{$ip} AS own_{$ip}, gc.{$ip} AS anc_{$ip}"; // Vlastní a zděděná hodnota z globálního slovníku
-		}
-		foreach ($col_trans_cols as $tc) {              // Sestavení SELECT výrazů pro překládané vlastnosti sloupce
-			$col_sel[] = "COALESCE(NULLIF(l1.{$tc}, ''), c.{$tc}) AS own_{$tc}"; // Vlastní hodnota prvního jazyka
-			$col_sel[] = "COALESCE(NULLIF(gc_l1.{$tc}, ''), gc.{$tc}) AS anc_{$tc}"; // Hodnota předka prvního jazyka
-			$col_sel[] = "l2.{$tc} AS own_{$tc}_l";     // Vlastní překlad druhého jazyka
-			$col_sel[] = "COALESCE(NULLIF(gc_l2.{$tc}, ''), NULLIF(l1.{$tc}, ''), NULLIF(c.{$tc}, ''), NULLIF(gc_l1.{$tc}, ''), gc.{$tc}) AS inh_{$tc}_l"; // Zděděná pro druhý jazyk
-		}
-		$col_sel_sql = implode(",\n\t\t\t\t", $col_sel); // Spojení výrazů do SELECTu
-
-		$col_rows = sqlarray_simple("
-			SELECT mcl.class_name, c.column_name, c.parent_order,
-				{$col_sel_sql},
-				ISNULL(gc.column_name, '') AS ancestor_column,
-				c.referenced_codetable AS own_ref_codetable, gc.referenced_codetable AS anc_ref_codetable,
-				rc_own.class_name AS own_ref_class_code, rc_anc.class_name AS anc_ref_class_code,
-				c.is_final, c.is_protected, c.inactive,
-				CASE
-					WHEN c.removed = 1 THEN 1
-					WHEN mcl.removed = 1 OR mo.original IS NULL OR mo.removed = 1 THEN 1
-					WHEN {$safe_sec_lang} <> '' AND l2.uuid IS NOT NULL THEN l2.removed
-					ELSE 0
-				END AS removed,
-				ISNULL(c.editor_note, '') AS editor_note
-			FROM meta_column c
-			JOIN meta_class mcl ON mcl.original = c.parent_class AND mcl.object_owner = 0x00 AND mcl.record_type = 'A'
-			LEFT JOIN meta_object mo ON mo.original = mcl.storage_object AND mo.object_owner = 0x00 AND mo.record_type = 'A'
-			LEFT JOIN meta_column gc ON gc.original = c.ancestor AND gc.object_owner = 0x00 AND gc.record_type = 'A' AND gc.removed = 0
-			LEFT JOIN meta_class rc_own ON rc_own.original = c.referenced_class AND rc_own.object_owner = 0x00 AND rc_own.record_type = 'A' AND rc_own.removed = 0
-			LEFT JOIN meta_class rc_anc ON rc_anc.original = gc.referenced_class AND rc_anc.object_owner = 0x00 AND rc_anc.record_type = 'A' AND rc_anc.removed = 0
-			LEFT JOIN meta_column l1 ON l1.original = c.original AND l1.object_owner = 0x00 AND l1.record_type = 'L' AND l1.[language] = {$safe_lang} AND l1.removed = 0
-			LEFT JOIN meta_column gc_l1 ON gc_l1.original = gc.original AND gc_l1.object_owner = 0x00 AND gc_l1.record_type = 'L' AND gc_l1.[language] = {$safe_lang} AND gc_l1.removed = 0
-			LEFT JOIN meta_column l2 ON l2.original = c.original AND l2.object_owner = 0x00 AND l2.record_type = 'L' AND l2.[language] = {$safe_sec_lang} AND {$safe_sec_lang} <> ''
-			LEFT JOIN meta_column gc_l2 ON gc_l2.original = gc.original AND gc_l2.object_owner = 0x00 AND gc_l2.record_type = 'L' AND gc_l2.[language] = {$safe_sec_lang} AND gc_l2.removed = 0 AND {$safe_sec_lang} <> ''
-			WHERE c.object_owner = 0x00 AND c.record_type = 'A'
-			ORDER BY CASE WHEN mcl.class_name = 'sys_global_columns' THEN 0 ELSE 1 END, mcl.class_name, c.parent_order, c.column_name
-		");                                             // Načtení sloupců metadat s kontrolou platnosti nadřízené třídy i storage_object
+		$col_rows = sqlarray_simple("EXEC dbo.page_xlsx_export_meta @subpage = 'column', @lang = {$safe_lang}, @sec_lang = {$safe_sec_lang}"); // Načtení záložky column
 
 		$row_idx = 2;                                   // Počáteční řádek dat na záložce column
 		if (is_array($col_rows)) {                      // Kontrola platného pole sloupců
 			foreach ($col_rows as $r) {                 // Průchod načtenými sloupci metadat
-				$c_cls_name = (string)$r['class_name']; // Název nadřízené třídy
-				$c_col_name = (string)$r['column_name']; // Technický název sloupce
-				$c_par_ord = (int)$r['parent_order'];   // Pořadí sloupce ve třídě
+				$c_cls_name = (string) $r['class_name']; // Název nadřízené třídy
+				$c_col_name = (string) $r['column_name']; // Technický název sloupce
+				$c_par_ord = (int) $r['parent_order'];  // Pořadí sloupce ve třídě
 				$col_vals = [$c_cls_name, $c_col_name, $c_par_ord]; // Základní identifikace sloupce
 				foreach ($col_inh_props as $ip => $empty_as_null) { // Přidání děděných technických vlastností
 					$col_vals[] = $this->format_inherited_val($r["own_{$ip}"], $r["anc_{$ip}"], $empty_as_null); // Hodnota (příp. <zděděná>)
 				}
-				$col_vals[] = (string)$r['ancestor_column']; // Název předka v sys_global_columns
+				$col_vals[] = (string) $r['ancestor_column']; // Název předka v sys_global_columns
 				$col_vals[] = $this->format_inherited_val($r['own_ref_codetable'], $r['anc_ref_codetable'], true);   // Číselník
 				$col_vals[] = $this->format_inherited_val($r['own_ref_class_code'], $r['anc_ref_class_code'], true); // Odkazovaná třída
-				$col_vals[] = (int)$r['is_final'];      // Příznak is_final
-				$col_vals[] = (int)$r['is_protected'];  // Příznak is_protected
-				$col_vals[] = (int)$r['inactive'];      // Příznak inactive
-				$col_vals[] = (int)$r['removed'];       // Příznak removed
-				$col_vals[] = (string)$r['editor_note']; // Poznámka pro AI
+				$col_vals[] = (int) $r['is_final'];     // Příznak is_final
+				$col_vals[] = (int) $r['is_protected']; // Příznak is_protected
+				$col_vals[] = (int) $r['inactive'];     // Příznak inactive
+				$col_vals[] = (int) $r['removed'];      // Příznak removed
+				$col_vals[] = (string) $r['editor_note']; // Poznámka pro AI
 				foreach ($col_trans_cols as $tc) {      // Přidání sloupců primárního jazyka
 					$col_vals[] = $this->format_inherited_val($r["own_{$tc}"], $r["anc_{$tc}"], true); // Text v prvním jazyce
 				}

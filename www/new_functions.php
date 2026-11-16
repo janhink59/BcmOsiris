@@ -1,20 +1,31 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-05 10:15
+ * Verze: 2026-11-16 15:25
  * Soubor: new_functions.php
- * Účel: Nové a sjednocené globální pomocné funkce pro BCM Osiris.
- *       Vyčleněno do samostatného souboru mimo OsirisLib.php (pro pozdější
- *       ruční sloučení do OsirisLib.php).
  *
- * VAZBY NA OKOLÍ:
- * - Načítán z config.php bezprostředně po OsirisLib.php.
- * - Poskytuje sjednocené funkce pro kontrolu systémového kontextu (is_zero_guid,
- *   is_sys_org, has_role_access, get_session_org, get_session_lang, get_session_role),
- *   funkci generate_builtin_code() pro automatické odvození builtin_code z názvu/zkratky
- *   a univerzální překladovou funkci translate_phrase().
+ * 1. Role souboru v celém systému:
+ *    Nové a sjednocené globální procedurální pomocné funkce pro BCM Osiris.
+ *    Vyčleněno do samostatného souboru mimo OsirisLib.php kvůli udržení
+ *    velikosti souborů pod limitem 50 KB (samostatné třídy mají vlastní soubory).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Načítán z config.php bezprostředně po OsirisLib.php.
+ *    - Poskytuje funkce pro kontrolu systémového kontextu (is_zero_guid,
+ *      is_sys_org, has_role_access, get_session_org, get_session_lang,
+ *      get_session_role), funkci generate_builtin_code(), univerzální
+ *      překladovou funkci translate_phrase(), kešovanou kontrolu existence
+ *      DB objektu db_object_exists() a kešované vyhodnocení stupňů hodnotících
+ *      škál resolve_scale_level_badge().
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole $dbsession (naplněné procedurou p_init_wwwsession
+ *      z tabulky dbsession pro aktuální @@SPID) a $GLOBALS['phrase_manager'].
  *
  * Změny:
+ * 2026-11-16 15:25 - Doplněny funkce db_object_exists() (se statickou keší
+ *                    v requestu) a resolve_scale_level_badge() (se statickou
+ *                    keší stupňů škál v paměti pro eliminaci opakovaných dotazů).
  * 2026-11-05 10:15 - Doplněna funkce generate_builtin_code() pro převod českého
  *                    názvu/zkratky na platný identifikátor builtin_code (snake_case).
  * 2026-11-04 10:30 - Union typy se svislítkem u translate_phrase() nahrazeny
@@ -145,4 +156,142 @@ function translate_phrase(string $builtin_code, mixed $default_caption = '', mix
 		$GLOBALS['phrase_manager'] = $phrase_manager;                        // Uložení do globálního kontextu
 	}
 	return $phrase_manager->get($builtin_code, $actual_vars, $actual_default, $source_code); // Vrácení přeloženého textu
+}
+
+/**
+ * Kešovaná kontrola existence databázového objektu (tabulky, procedury, funkce nebo pohledu)
+ * v rámci jednoho HTTP požadavku. Zabraňuje opakovaným SQL dotazům SELECT OBJECT_ID(...).
+ */
+function db_object_exists(string $object_name, string $object_type = ''): bool { // Kontrola existence DB objektu s keší
+	static $cache = [];                                                      // Statická keš pro aktuální HTTP request
+	$key = strtolower(trim($object_name)) . ':' . strtoupper(trim($object_type)); // Unikátní klíč v keši
+	if (array_key_exists($key, $cache)) {                                    // Pokud již byl objekt v tomto requestu ověřen
+		return $cache[$key];                                                 // Vrácení výsledku z paměti
+	}
+
+	$safe_name = charliteral(trim($object_name), 250);                       // SQL literál názvu objektu
+	if (trim($object_type) !== '') {                                         // Pokud je specifikován typ objektu ('U', 'P', 'FN'...)
+		$safe_type = charliteral(trim($object_type), 10);                    // SQL literál typu objektu
+		$row = sqlfirstrow("SELECT OBJECT_ID({$safe_name}, {$safe_type}) AS obj_id"); // Dotaz s typem objektu
+	} else {
+		$row = sqlfirstrow("SELECT OBJECT_ID({$safe_name}) AS obj_id");      // Obecný dotaz na OBJECT_ID
+	}
+
+	$exists = (! empty($row) AND ! empty($row['obj_id']));                   // Vyhodnocení existence objektu
+	$cache[$key] = $exists;                                                  // Uložení výsledku do statické keše
+	return $exists;                                                          // Vrácení příznaku existence
+}
+
+/**
+ * Zařadí procentuální skóre (0..100 %) do stupně primární hodnotící škály daného typu (`scale_type`).
+ * Při prvním volání v requestu načte všechny stupně aktivních primárních škál jedním dotazem do paměti.
+ *
+ * @return array{caption: string, shortname: string, color_code: string}
+ */
+function resolve_scale_level_badge(string $scale_type, float $score): array { // Vyhodnocení stupně škály v paměti
+	static $scales_cache = null;                                             // Statická keš stupňů škál pro aktuální request
+	static $cache_context = '';                                              // Kontext organizace a jazyka pro keš
+
+	$org_raw = get_session_org();                                            // Surové UUID aktivní organizace
+	$lang_raw = get_session_lang();                                          // Kód aktivního jazyka relace
+	$curr_ctx = strtolower($org_raw) . ':' . strtolower($lang_raw);          // Klíč kontextu relace
+
+	if ($scales_cache === null OR $cache_context !== $curr_ctx) {            // Jednorázové načtení všech stupňů škál v requestu
+		$scales_cache = [];                                                  // Inicializace pole keše
+		$cache_context = $curr_ctx;                                          // Uložení kontextu keše
+
+		if (db_object_exists('scale', 'U') AND db_object_exists('scale_value', 'U')) { // Kontrola existence tabulek
+			$org_sql = guidliteral($org_raw);                                // SQL literál aktivní organizace
+			$lang_sql = charliteral($lang_raw, 2);                           // SQL literál jazyka relace
+
+			$rows = sqlarray_simple("
+				SET NOCOUNT ON;
+				DECLARE @fl TABLE ([language] varchar(2) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, fallback_order int NOT NULL);
+				INSERT INTO @fl ([language], fallback_order) SELECT [language], fallback_order FROM dbo.f_language_list({$lang_sql}) WHERE fallback_order < 1000;
+
+				DECLARE @win_scale TABLE (
+					scale_type varchar(20) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+					scale_orig uniqueidentifier NOT NULL
+				);
+
+				INSERT INTO @win_scale (scale_type, scale_orig)
+				SELECT scale_type, original
+				FROM (
+					SELECT UPPER(scale_type) AS scale_type, original,
+						ROW_NUMBER() OVER (
+							PARTITION BY UPPER(scale_type)
+							ORDER BY CASE WHEN is_default = 1 THEN 0 ELSE 1 END ASC,
+								priority ASC,
+								CASE WHEN object_owner = {$org_sql} THEN 0 ELSE 1 END ASC,
+								sort_code ASC
+						) AS rn
+					FROM scale
+					WHERE object_owner IN ({$org_sql}, 0x00)
+					  AND record_type = 'A'
+					  AND removed = 0
+					  AND inactive = 0
+				) s
+				WHERE s.rn = 1;
+
+				SELECT
+					ws.scale_type,
+					sv.threshold_value,
+					COALESCE(tr.caption, NULLIF(sv.caption, ''), sv.builtin_code) AS caption,
+					COALESCE(tr.shortname, NULLIF(sv.shortname, ''), '') AS shortname,
+					sv.color_code
+				FROM @win_scale ws
+				JOIN (
+					SELECT scale, original, builtin_code, caption, shortname, threshold_value, color_code,
+						ROW_NUMBER() OVER (PARTITION BY scale, original ORDER BY CASE WHEN object_owner = {$org_sql} THEN 0 ELSE 1 END) AS rn
+					FROM scale_value
+					WHERE object_owner IN ({$org_sql}, 0x00)
+					  AND record_type = 'A'
+					  AND removed = 0
+					  AND inactive = 0
+				) sv ON sv.scale = ws.scale_orig AND sv.rn = 1
+				OUTER APPLY (
+					SELECT TOP 1
+						NULLIF(CAST(l.caption AS VARCHAR(200)), '') AS caption,
+						NULLIF(CAST(l.shortname AS VARCHAR(40)), '') AS shortname
+					FROM scale_value l
+					JOIN @fl fl ON fl.[language] = l.[language]
+					WHERE l.original = sv.original
+					  AND l.record_type = 'L'
+					  AND l.removed = 0
+					  AND l.object_owner IN ({$org_sql}, 0x00)
+					  AND (NULLIF(CAST(l.caption AS VARCHAR(200)), '') IS NOT NULL OR NULLIF(CAST(l.shortname AS VARCHAR(40)), '') IS NOT NULL)
+					ORDER BY fl.fallback_order ASC, CASE WHEN l.object_owner = {$org_sql} THEN 0 ELSE 1 END ASC
+				) tr
+				ORDER BY ws.scale_type ASC, sv.threshold_value DESC;
+			");                                                              // Načtení všech stupňů vítězných primárních škál
+
+			if (is_array($rows)) {                                           // Uložení stupňů do paměťové keše (seřazeno sestupně dle prahu)
+				foreach ($rows as $r) {                                      // Průchod stupni
+					$st_key = strtoupper((string) $r['scale_type']);         // Klíč druhu škály
+					$scales_cache[$st_key][] = [                             // Zařazení stupně do keše
+						'threshold'  => (float) $r['threshold_value'],
+						'caption'    => (string) ($r['caption'] ?? ''),
+						'shortname'  => (string) ($r['shortname'] ?? ''),
+						'color_code' => (string) ($r['color_code'] ?? '')
+					];
+				}
+			}
+		}
+	}
+
+	$type_key = strtoupper(trim($scale_type));                               // Hledaný druh škály
+	$clamped = max(0.0, min(100.0, $score));                                 // Omezení skóre na interval 0..100 %
+	if (! empty($scales_cache[$type_key])) {                                 // Vyhledání prvního stupně s threshold_value <= $clamped
+		foreach ($scales_cache[$type_key] as $lvl) {                         // Průchod sestupně od nejvyššího prahu
+			if ($clamped + 0.00005 >= $lvl['threshold']) {                   // Nalezen odpovídající stupeň škály
+				return [                                                     // Vrácení dat stupně z paměti
+					'caption'    => $lvl['caption'],
+					'shortname'  => $lvl['shortname'],
+					'color_code' => $lvl['color_code']
+				];
+			}
+		}
+	}
+
+	return ['caption' => '', 'shortname' => '', 'color_code' => ''];         // Žádná škála pro daný typ nebyla nalezena
 }

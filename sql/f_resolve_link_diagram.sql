@@ -1,16 +1,34 @@
 ﻿/* ===================================================================================================
- * Verze: 2026-11-11 21:30
+ * Verze: 2026-11-16 14:40
  * Soubor: f_resolve_link_diagram.sql
  * Objekt: dbo.f_resolve_link_diagram
  * Typ:    Multi-statement Table-Valued Function (TVF)
  * Určení: MSSQL 2019
  *
- * Účel:   Vyřešení vztahů nadřízenosti a podřízenosti (orientovaného grafu / sítě)
- *         předaných v parametru @input. Transformuje seznam uzlů a hran do
- *         acyklického stromu cest s detekcí zacyklení (bad = 1, circular = 1)
- *         a určením vrcholových uzlů (level = 0 AND hidden_root = 0).
+ * 1. Role souboru v celém systému:
+ *    Vyřešení vztahů nadřízenosti a podřízenosti (orientovaného grafu / sítě)
+ *    předaných v parametru @input. Transformuje seznam uzlů a hran do
+ *    acyklického stromu cest s detekcí zacyklení (bad = 1, circular = 1)
+ *    a určením vrcholových uzlů (level = 0 AND hidden_root = 0).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Využívá proceduru dropni (HinkMSSQLLibrary.sql).
+ *    - Definuje tabulkový typ tt_resolve_link_diagram.
+ *    - Volána z procedury dbo.p_rebuild_link_diagram (p_rebuild_link_diagram.sql)
+ *      a ze stránky page_link_diagram.php.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Funkce je čistě deterministická a bezstavová; volající procedura předává
+ *      již vyfiltrovanou sadu uzlů a orientovaných hran v parametru @input.
  *
  * Změny:
+ * - 2026-11-16 14:40:
+ *   1. Do návratové tabulky @result doplněny inline indexy ix_result_node,
+ *      ix_result_root a ix_result_parent pro přímé Index Seeky ve všech krocích.
+ *   2. Klauzule WHERE root_id IN (SELECT ...) v kroku 4 nahrazena indexovanou
+ *      tabulkovou proměnnou @lvl1_nodes s PRIMARY KEY (node_id).
+ *   3. Dvojitý poddotaz WHILE EXISTS (...) + SELECT TOP 1 v kroku 4b sloučen
+ *      do jediného průchodu využívajícího index ix_result_node.
  * - 2026-11-11 21:30:
  *   1. Opraveno číslování větví v ROW_NUMBER() z PARTITION BY r.node_id na
  *      PARTITION BY r.sort_order (zabraňuje kolizi v diamantovém DAGu).
@@ -47,7 +65,10 @@ RETURNS @result TABLE (
 	bad bit default 0,
 	circular int default 0,
 	hidden_root int default 0,
-	unique(level, sort_order)
+	unique(level, sort_order),
+	index ix_result_node (node_id, level, hidden_root),
+	index ix_result_root (root_id, bad, sort_order),
+	index ix_result_parent (parent_order)
 )
 BEGIN
 	DECLARE @lvl INT = 0;
@@ -93,7 +114,7 @@ BEGIN
 		SET @lvl = @lvl + 1;
 	END
 
-	-- 3. Hromadný update počtu přímých potomků (Set-Based)
+	-- 3. Hromadný update počtu přímých potomků (Set-Based přes ix_result_parent)
 	UPDATE r
 	SET children = c.cnt
 	FROM @result r
@@ -105,28 +126,27 @@ BEGIN
 	) c ON r.sort_order = c.parent_order;
 
 	-- 4. Nastavení příznaku hidden_root = 1 pro stromy začínající v uzlech, které mají nadřízený uzel (level = 1)
-	UPDATE @result 
-	SET hidden_root = 1
-	WHERE root_id IN (
-		SELECT DISTINCT node_id FROM @result WHERE level = 1
+	DECLARE @lvl1_nodes TABLE (
+		node_id varchar(40) NOT NULL PRIMARY KEY
 	);
+
+	INSERT INTO @lvl1_nodes (node_id)
+	SELECT DISTINCT node_id
+	FROM @result
+	WHERE level = 1;
+
+	UPDATE r
+	SET r.hidden_root = 1
+	FROM @result r
+	JOIN @lvl1_nodes l1 ON l1.node_id = r.root_id;
 
 	-- 4b. Ochrana pro izolované cykly (kde každý uzel cyklu má předka a není dosažitelný z žádného uzlu s hidden_root = 0):
 	--     Pro každou takovou osiřelou komponentu odhalíme (hidden_root = 0) právě jeden uzel s nejnižším sort_order.
-	WHILE EXISTS (
-		SELECT 1
-		FROM @result r0
-		WHERE r0.level = 0
-		  AND r0.hidden_root = 1
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM @result vis
-			WHERE vis.hidden_root = 0
-			  AND vis.node_id = r0.node_id
-		  )
-	)
+	DECLARE @unhide_root varchar(40) = '';
+
+	WHILE 1 = 1
 	BEGIN
-		DECLARE @unhide_root varchar(40) = NULL;
+		SET @unhide_root = NULL;
 
 		SELECT TOP 1 @unhide_root = r0.root_id
 		FROM @result r0
@@ -135,8 +155,8 @@ BEGIN
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM @result vis
-			WHERE vis.hidden_root = 0
-			  AND vis.node_id = r0.node_id
+			WHERE vis.node_id = r0.node_id
+			  AND vis.hidden_root = 0
 		  )
 		ORDER BY r0.sort_order ASC;
 
@@ -162,70 +182,4 @@ BEGIN
 
 	RETURN;
 END;
-GO
-
-/*
--- TESTOVACÍ DATA Z PŮVODNÍHO SKRIPTU
-declare @t table(nadr varchar(10), podr varchar(10))
-insert into @t values
-	('A0','A1')
-	,('A0','A2')
-	,('A0','A3')
-	,('A0','B0')
-		,('B0','C0')
-			,('C0','D0')
-	,('A0','C0')
-	,('B0','E0')
-	,('B2','C0')
-	,('A2','B2')
-	,('B1','U0')
-	-- Následující dvě podřízenosti způsobují zacyklení
-	,('B0','B0')
-	,('D0','B0')
-
-declare @input tt_resolve_link_diagram
-insert into @input(node_id,sort_order)
-select distinct nadr,nadr from @t
-union
-select distinct podr,podr from @t
-
-insert into @input(node_id, from_id, sort_order)
-select podr,nadr,podr from @t
-select * from @input
-
-select * from f_resolve_link_diagram(@input) order by sort_order
-*/
-GO
-	--debuglogin 'o2_service'
-	--declare @ti tt_resolve_link_diagram
-
-	---- Tabulka s platnými skupinami
-
-	--declare @uzly table(info2_claim_group uuid not null unique
-	--	,sort_code varchar(20)
-	--	,full_name varchar(400)
-	--	,inactive smallint
-	--)
-
-	--insert into @uzly
-	--select v.info2_claim_group
-	--	,v.sort_code
-	--	,v.full_name
-	--	,v.inactive
-	--from v_info2_claim_group v
-	--where v.removed=0 and v.inactive=0 and v.abbreviation<>''
-
-	--insert into @ti(node_id,sort_order)
-	--select v.info2_claim_group, v.full_name
-	--from @uzly v
-
-	--insert into @ti(node_id,from_id,sort_order)
-	--select s.subgroup,s.info2_claim_group, g1.full_name
-	--from info2_claim_subgroup s
-	--	join @uzly g1 on g1.info2_claim_group=s.info2_claim_group
-	--	join @uzly g2 on g2.info2_claim_group=s.subgroup
-	--where s.removed=0
-
-	--select * from f_resolve_link_diagram(@ti)
-	--order by sort_order
 GO

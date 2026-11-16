@@ -1,19 +1,33 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-11 22:00
+ * Verze: 2026-11-16 15:25
  * Soubor: page_link.php
  * Třída: page_link
- * Účel: Správa provozních, katalogových a prostorových vazeb M:N v tabulce link
- *       (včetně zobrazení vazeb automaticky odvozených děděním po hierarchii,
- *       ze sloupce parent_uuid nebo ze schémat heterogenních sítí s příznakem
- *       is_derived = 1).
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z routeru `index.php` při `?page=page_link`.
- * - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou `'link'`.
- * - Podle zvoleného typu vazby `link_def` dynamicky naplní roletky `from_object`
- *   a `to_object` záznamy odpovídajících logických tříd (`from_class` a `to_class`).
+ * 1. Role souboru v celém systému:
+ *    Správa provozních, katalogových a prostorových vazeb M:N v tabulce link
+ *    (včetně zobrazení vazeb automaticky odvozených děděním po hierarchii,
+ *    ze sloupce parent_uuid nebo ze schémat heterogenních sítí s příznakem
+ *    is_derived = 1).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z routeru index.php při ?page=page_link.
+ *    - Dědí z abstract_page_master_detail a pracuje s logickou třídou 'link'.
+ *    - Volá uloženou proceduru dbo.page_link (page_link.sql) pro hromadné
+ *      načtení popisků v levém panelu (@subpage = 'lookups') a koncových bodů
+ *      v detailu (@subpage = 'endpoints') bez N+1 dotazů.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Využívá kontext přihlášeného uživatele v globálním poli $dbsession
+ *      (v databázi v tabulce dbsession pro aktuální @@SPID) a volitelné GET
+ *      parametry link_def_filter, from_object a diagram_uuid.
+ *
+ * Změny:
+ * 2026-11-16 15:25 - Odstraněn N+1 cyklus dotazů v render_detail_top() a
+ *                    10násobný UNION ALL v load_lookup_captions(); nahrazeno
+ *                    jediným voláním procedury EXEC dbo.page_link.
+ * 2026-11-11 22:00 - Doplněna podpora filtru diagram_uuid a sloupce reverse_link_weight.
  * =============================================================================
  */
 
@@ -94,46 +108,24 @@ class page_link extends abstract_page_master_detail {
 	}
 
 	/**
-	 * Načte mapu čitelných názvů všech odkazovaných objektů a definic vazeb pro zobrazení v levém panelu.
+	 * Načte mapu čitelných názvů všech odkazovaných objektů a definic vazeb jedním voláním dbo.page_link.
 	 *
 	 * @return array{defs: array<string, string>, objs: array<string, string>}
 	 */
 	private function load_lookup_captions(): array {
-		$org_sql = guidliteral(get_session_org());                           // SQL literál aktivní organizace
 		$defs = [];                                                          // Mapa [link_def_orig => caption_forward]
 		$objs = [];                                                          // Mapa [object_orig => caption]
 
-		$def_rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'ref_class', @param_code = 'link_def', @ref_class_uuid = " . guidliteral((string) ($this->em ? ($this->em->get_column_meta('link_def')['referenced_class'] ?? '') : ''))); // Definice vazeb
-		if (is_array($def_rows)) {                                           // Naplnění mapy definic vazeb
-			foreach ($def_rows as $dr) {                                     // Průchod definicemi
-				$defs[strtolower((string) $dr['original'])] = (string) ($dr['caption'] ?: $dr['code_col']); // Název vazby
-			}
-		}
-
-		$obj_rows = sqlarray_simple("
-			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM asset WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM asset_class WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM threat WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM impact WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM scenario WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM countermeasure WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM hierarchy_item WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption, ''), shortname) AS cap FROM organization_unit WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption, ''), builtin_code) AS cap FROM link_diagram WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-			UNION ALL
-			SELECT original, COALESCE(NULLIF(caption_forward, ''), link_code) AS cap FROM meta_link_def WHERE object_owner IN ({$org_sql}, 0x00) AND record_type = 'A' AND removed = 0
-		");                                                                  // Jednorázové načtení názvů propojovaných objektů
-		if (is_array($obj_rows)) {                                           // Naplnění mapy objektů
-			foreach ($obj_rows as $or) {                                     // Průchod objekty
-				$objs[strtolower((string) $or['original'])] = (string) $or['cap']; // Uložení názvu pod klíčem original
+		$rows = sqlarray_simple("EXEC dbo.page_link @subpage = 'lookups'");  // Hromadné načtení přes uloženou proceduru
+		if (is_array($rows)) {                                               // Naplnění map definic a objektů v paměti
+			foreach ($rows as $r) {                                          // Průchod vrácenými záznamy
+				$orig_k = strtolower((string) $r['original']);               // Klíč original malými písmeny
+				$cap_v = (string) ($r['caption'] ?: $r['code_col']);         // Zobrazovaný popisek
+				if ((string) $r['row_kind'] === 'DEF') {                     // Definice typu vazby
+					$defs[$orig_k] = $cap_v;                                 // Uložení názvu vazby
+				} else {
+					$objs[$orig_k] = $cap_v;                                 // Uložení názvu objektu
+				}
 			}
 		}
 
@@ -300,12 +292,11 @@ HTML;
 
 	/**
 	 * Předvyplní kontextové hodnoty u nové vazby, uzamkne zděděné vazby (`is_derived = 1`)
-	 * a vloží JS obsluhu pro dynamické přepínání cílových tříd u `from_object` a `to_object` podle `link_def`.
+	 * a jedním voláním dbo.page_link načte pravidla i položky pro dynamické přepínání `from_object` a `to_object`.
 	 */
 	protected function render_detail_top(): void {
 		global $datarow;                                                     // Aktuálně načtený řádek detailu
 		$update_guid = trim((string) getinput('update_guid'));               // Identifikátor záznamu v detailu
-		$org_sql = guidliteral(get_session_org());                           // SQL literál aktivní organizace
 
 		if ($update_guid === 'NEW' AND is_array($datarow) AND ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') { // Nová vazba
 			if ($this->filter_link_def !== '') {                             // Předvyplnění typu vazby z filtru
@@ -328,44 +319,35 @@ HTML;
 			echo "<div class=\"msg-info\" style=\"margin-bottom: 12px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e;\">{$msg_der}</div>\n"; // Žlutý pruh
 		}
 
-		// Načtení mapy definic vazeb [link_def_orig => [from_class, to_class]] a položek jednotlivých tříd
-		$mld_rows = sqlarray_simple("
-			SELECT original, from_class, to_class, link_weight_enabled
-			FROM meta_link_def
-			WHERE object_owner IN ({$org_sql}, 0x00)
-			  AND record_type = 'A'
-			  AND removed = 0
-			  AND inactive = 0
-		");                                                                  // Načtení definic typů vazeb
+		// Hromadné načtení definic vazeb i položek všech cílových tříd jedním dotazem přes dbo.page_link
+		$ep_rows = sqlarray_simple("EXEC dbo.page_link @subpage = 'endpoints'"); // Jediné volání bez N+1 dotazů
 		$link_def_map = [];                                                  // Mapa definic vazeb pro JS
-		$distinct_classes = [];                                              // Unikátní UUID odkazovaných tříd
-		if (is_array($mld_rows)) {                                           // Zpracování definic vazeb
-			foreach ($mld_rows as $mr) {                                     // Průchod definicemi
-				$ld_orig = strtolower((string) $mr['original']);             // Klíč definice vazby
-				$fc_orig = strtolower((string) $mr['from_class']);           // Klíč zdrojové třídy
-				$tc_orig = strtolower((string) $mr['to_class']);             // Klíč cílové třídy
-				$link_def_map[$ld_orig] = [                                  // Uložení pravidla definice vazby
-					'from_class' => $fc_orig,
-					'to_class'   => $tc_orig,
-					'weight'     => ! empty($mr['link_weight_enabled']) ? 1 : 0
-				];
-				$distinct_classes[$fc_orig] = (string) $mr['from_class'];    // Evidence zdrojové třídy
-				$distinct_classes[$tc_orig] = (string) $mr['to_class'];      // Evidence cílové třídy
-			}
-		}
-
 		$class_options_map = [];                                             // Mapa položek roletek: [class_orig => [[uuid, label], ...]]
-		foreach ($distinct_classes as $cls_key => $cls_raw) {                // Načtení položek pro každou zapojenou třídu
-			$cls_lit = guidliteral($cls_raw);                                // SQL literál třídy
-			$opts = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'ref_class', @param_code = 'link_endpoint', @ref_class_uuid = {$cls_lit}"); // Položky třídy
-			$class_options_map[$cls_key] = [];                               // Inicializace pole voleb třídy
-			if (is_array($opts)) {                                           // Naplnění voleb třídy
-				foreach ($opts as $o_row) {                                  // Průchod záznamy třídy
-					$u_str = (string) $o_row['original'];                    // UUID záznamu
-					$c_str = (string) $o_row['code_col'];                    // Kód záznamu
-					$cp_str = (string) $o_row['caption'];                    // Název záznamu
+
+		if (is_array($ep_rows)) {                                            // Rozdělení výsledku na definice a volby tříd
+			foreach ($ep_rows as $er) {                                      // Průchod vrácenými řádky
+				if ((string) $er['row_kind'] === 'DEF') {                    // Pravidlo definice typu vazby
+					$ld_orig = strtolower((string) $er['original']);         // Klíč definice vazby
+					$fc_orig = strtolower((string) $er['from_class']);       // Klíč zdrojové třídy
+					$tc_orig = strtolower((string) $er['to_class']);         // Klíč cílové třídy
+					$link_def_map[$ld_orig] = [                              // Uložení pravidla definice vazby
+						'from_class' => $fc_orig,
+						'to_class'   => $tc_orig,
+						'weight'     => ! empty($er['link_weight_enabled']) ? 1 : 0
+					];
+					if (! isset($class_options_map[$fc_orig])) {             // Inicializace pole pro zdrojovou třídu
+						$class_options_map[$fc_orig] = [];                   // Prázdné pole voleb
+					}
+					if (! isset($class_options_map[$tc_orig])) {             // Inicializace pole pro cílovou třídu
+						$class_options_map[$tc_orig] = [];                   // Prázdné pole voleb
+					}
+				} else {
+					$cls_k = strtolower((string) $er['class_uuid']);         // Klíč třídy záznamu
+					$u_str = (string) $er['original'];                       // UUID záznamu
+					$c_str = (string) $er['code_col'];                       // Kód záznamu
+					$cp_str = (string) $er['caption'];                       // Název záznamu
 					$lbl = ($c_str !== '' AND $cp_str !== '' AND $cp_str !== $c_str) ? "{$c_str} ({$cp_str})" : ($cp_str ?: $c_str ?: $u_str); // Popisek
-					$class_options_map[$cls_key][] = [                       // Uložení volby
+					$class_options_map[$cls_k][] = [                         // Zařazení volby pod příslušnou třídu
 						'uuid'  => $u_str,
 						'label' => $lbl
 					];

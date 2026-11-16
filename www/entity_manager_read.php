@@ -1,19 +1,30 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 13:30
+ * Verze: 2026-11-16 15:10
  * Soubor: entity_manager_read.php
  * Trait: entity_manager_read
- * Účel: Čtecí a překladová vrstva třídy entity_manager.
- *       Zajišťuje dvoupolové vyhodnocení překladů v PHP (resolve_field_from_arrays)
- *       a načítání záznamů přes indexované tabulkové proměnné (fetch_rows, fetch_row).
  *
- * VAZBY NA OKOLÍ:
- * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
- * - Využívá databázovou funkci `dbo.f_language_list` (`fallback_order < 1000`)
- *   a funkci `dbo.f_get_user_info`.
+ * 1. Role souboru v celém systému:
+ *    Čtecí a překladová vrstva třídy entity_manager. Zajišťuje dvoupolové
+ *    vyhodnocení překladů v PHP (resolve_field_from_arrays) a načítání záznamů
+ *    přes indexované tabulkové proměnné (fetch_rows, fetch_row).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Inkludován a používán výhradně uvnitř třídy entity_manager (entity_manager.php).
+ *    - Využívá databázovou funkci dbo.f_language_list (fallback_order < 1000)
+ *      a funkci dbo.f_get_user_info.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - V databázi čte aktivní organizaci (organization), uživatele (user_account)
+ *      a jazyk (language) z tabulky dbsession pro aktuální @@SPID.
  *
  * Změny:
+ * 2026-11-16 15:10 - Odstraněn korelovaný poddotaz (SELECT TOP 1 a_nat.[language] ...)
+ *                    při plnění @dr a nahrazen přímým COALESCE(my.native_language,
+ *                    sy.native_language, dr.native_language) přes primární klíče
+ *                    tabulkových proměnných @my a @sy; do @mix doplněn inline index
+ *                    ix_mix_anc (anc_uuid).
  * 2026-11-06 13:30 - Oprava řazení desetinných a záporných čísel ve fetch_rows():
  *                    pokud jsou obě porovnávané hodnoty číselné (is_numeric), použije se
  *                    přímé číselné porovnání (float)$vx <=> (float)$vy místo strnatcasecmp().
@@ -189,7 +200,7 @@ trait entity_manager_read {
 			? "COALESCE(m.[{$anc_col_name}], o.[{$anc_col_name}])"
 			: "NULL";                                                        // Výraz pro zjištění UUID předka do @mix
 
-		if (! $ignore_drafts AND $has_draft_author_col) {                    // Sestavení plnění @mix se zahrnutím konceptů @dr
+		if (! $ignore_drafts AND $has_draft_author_col) {                    // Sestavení plnění @mix se zahrnutím konceptů @dr (bez korelovaného poddotazu)
 			$dr_sql_block = "
 		DECLARE @dr TABLE (
 			original uniqueidentifier NOT NULL PRIMARY KEY,
@@ -198,16 +209,10 @@ trait entity_manager_read {
 		);
 
 		INSERT INTO @dr (original, dr_uuid, native_language)
-		SELECT original, uuid, native_language
+		SELECT original, uuid, [language]
 		FROM (
-			SELECT rc.original, rc.uuid,
-				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.date_modified DESC) AS rn_rec,
-				ISNULL((
-					SELECT TOP 1 a_nat.[language]
-					FROM {$table} a_nat
-					WHERE a_nat.original = rc.original AND a_nat.record_type = 'A'
-					ORDER BY CASE WHEN a_nat.object_owner = rc.object_owner THEN 0 ELSE 1 END, a_nat.removed ASC
-				), rc.[language]) AS native_language
+			SELECT rc.original, rc.uuid, rc.[language],
+				ROW_NUMBER() OVER (PARTITION BY rc.original ORDER BY rc.date_modified DESC) AS rn_rec
 			FROM {$table} rc
 			WHERE {$dr_owner_cond}
 			  AND rc.record_type = 'D'
@@ -226,8 +231,9 @@ trait entity_manager_read {
 		);
 
 		INSERT INTO @cand (original, win_uuid, sys_uuid, object_is_mine, native_language)
-		SELECT dr.original, dr.dr_uuid, sy.sys_uuid, 1, dr.native_language
+		SELECT dr.original, dr.dr_uuid, sy.sys_uuid, 1, COALESCE(my.native_language, sy.native_language, dr.native_language)
 		FROM @dr dr
+		LEFT JOIN @my my ON my.original = dr.original
 		LEFT JOIN @sy sy ON sy.original = dr.original
 		UNION ALL
 		SELECT my.original, my.my_uuid, sy.sys_uuid, 1, my.native_language
@@ -400,7 +406,8 @@ trait entity_manager_read {
 			sys_uuid uniqueidentifier NULL,
 			anc_uuid uniqueidentifier NULL,
 			object_is_mine bit NOT NULL,
-			native_language varchar(2) COLLATE DATABASE_DEFAULT NOT NULL
+			native_language varchar(2) COLLATE DATABASE_DEFAULT NOT NULL,
+			INDEX ix_mix_anc (anc_uuid)
 		);
 
 		INSERT INTO @mix (original, win_uuid, sys_uuid, anc_uuid, object_is_mine, native_language)

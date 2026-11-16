@@ -1,26 +1,35 @@
 /* =============================================================================
- * Verze: 2026-11-13 18:30
+ * Verze: 2026-11-16 15:10
  * Soubor: p_fix_meta_column.sql
  * Procedury: dbo.p_sync_hierarchy_to_meta_class, dbo.p_fix_meta_column
- * Účel: 1. dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
- *          koncových hierarchií (is_leaf = 1) z tabulky hierarchy do meta_class
- *          (STI nad hierarchy_item) včetně symetrických 'L' záznamů. Volána jak
- *          z triggeru trg_hierarchy_sync_meta_class, tak při buildu v p_fix_meta_column.
- *       2. dbo.p_fix_meta_column provádí automatizovanou technickou synchronizaci
- *          a provazování dědičnosti metadat (meta_object, meta_class, meta_column)
- *          ze systémového katalogu v_syscolumns a sjednocení RAC/SSC sloupců
- *          a unikátních filtrovaných indexů.
- *          Věcné naplnění popisů tříd, sloupců, číselníků, frází, menu a projekci
- *          nativních 1:N cizích klíčů do meta_link_def následně provádí procedura
- *          dbo.p_sysinit_process z tabulek sysinit_*.
  *
- * Vazby na okolí:
- * - Volána ze závěrečné dávky databáze (final_scripts.sql) těsně před
- *   dbo.p_sysinit_process a z triggeru trg_hierarchy_sync_meta_class.
- * - Čte systémový pohled v_syscolumns (s vyloučením staging tabulek '%$'
- *   a inicializačních tabulek 'sysinit_%').
+ * 1. Role souboru v celém systému:
+ *    - dbo.p_sync_hierarchy_to_meta_class zajišťuje kompletní synchronizaci
+ *      koncových hierarchií (is_leaf = 1) z tabulky hierarchy do meta_class
+ *      (STI nad hierarchy_item) včetně symetrických 'L' záznamů.
+ *    - dbo.p_fix_meta_column provádí automatizovanou technickou synchronizaci
+ *      a provazování dědičnosti metadat (meta_object, meta_class, meta_column)
+ *      ze systémového katalogu v_syscolumns a sjednocení RAC/SSC sloupců
+ *      a unikátních filtrovaných indexů.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Volána ze závěrečné dávky databáze (final_scripts.sql) těsně před
+ *      dbo.p_sysinit_process a z triggeru trg_hierarchy_sync_meta_class
+ *      (table_hierarchy.sql).
+ *    - Čte systémový pohled v_syscolumns, tabulky hierarchy a meta_original_keys
+ *      a využívá funkci dbo.f_generate_original a procedury p_create_missing_column
+ *      a sp_create_index.
+ *    - Aktualizuje tabulky meta_object, meta_class a meta_column.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Pracuje nad systémovými metadaty (object_owner = 0x00) bez závislosti
+ *      na uživatelské relaci.
  *
  * Změny:
+ * - 2026-11-16 15:10: Odstraněny všechny 4 výskyty CTE (WITH cte AS ... a
+ *   WITH ranked_attributes AS ...) a nahrazeny přímými odvozenými dotazy;
+ *   do dočasných tabulek #syscol_attr a #global_attr doplněny primární klíče
+ *   (PRIMARY KEY) pro přímý Index Seek.
  * - 2026-11-13 18:30: Vyloučeny inicializační tabulky sysinit_% ze čtení
  *   v_syscolumns; odstraněny duplicitní pevné tabulky @sti_asset, @ref_map
  *   a @ct_items (přesunuto do modulárních sysinit_* bloků v table_*.sql)
@@ -282,7 +291,7 @@ BEGIN
 	DEALLOCATE cur_rac;
 
 	-- -------------------------------------------------------------------------
-	-- CLEANUP: Odstranění vadných a pomocných dat z předchozích běhů
+	-- CLEANUP: Odstranění vadných a pomocných dat z předchozích běhů (bez CTE)
 	-- -------------------------------------------------------------------------
 	DELETE FROM meta_column WHERE column_name LIKE '@%';
 
@@ -296,20 +305,29 @@ BEGIN
 	DELETE FROM meta_object WHERE object_owner = 0x00 AND (builtin_code LIKE '%$' OR builtin_code LIKE 'sysinit[_]%');
 	DELETE FROM meta_column WHERE object_owner = 0x00 AND column_name IN ('iconname', 'svg_code', 'svg_name');
 
-	WITH cte AS (
-		SELECT ROW_NUMBER() OVER(PARTITION BY builtin_code, object_type, object_owner, record_type ORDER BY removed ASC, date_created ASC) as rn
-		FROM meta_object WHERE object_owner = 0x00 AND record_type = 'A'
-	) DELETE FROM cte WHERE rn > 1;
+	DELETE x
+	FROM (
+		SELECT ROW_NUMBER() OVER(PARTITION BY builtin_code, object_type, object_owner, record_type ORDER BY removed ASC, date_created ASC) AS rn
+		FROM meta_object
+		WHERE object_owner = 0x00 AND record_type = 'A'
+	) x
+	WHERE x.rn > 1;
 
-	WITH cte AS (
-		SELECT ROW_NUMBER() OVER(PARTITION BY class_name, object_owner, record_type ORDER BY removed ASC, date_created ASC) as rn
-		FROM meta_class WHERE object_owner = 0x00 AND record_type = 'A'
-	) DELETE FROM cte WHERE rn > 1;
+	DELETE x
+	FROM (
+		SELECT ROW_NUMBER() OVER(PARTITION BY class_name, object_owner, record_type ORDER BY removed ASC, date_created ASC) AS rn
+		FROM meta_class
+		WHERE object_owner = 0x00 AND record_type = 'A'
+	) x
+	WHERE x.rn > 1;
 
-	WITH cte AS (
-		SELECT ROW_NUMBER() OVER(PARTITION BY parent_class, column_name, object_owner, record_type ORDER BY removed ASC, date_created ASC) as rn
-		FROM meta_column WHERE object_owner = 0x00 AND record_type = 'A'
-	) DELETE FROM cte WHERE rn > 1;
+	DELETE x
+	FROM (
+		SELECT ROW_NUMBER() OVER(PARTITION BY parent_class, column_name, object_owner, record_type ORDER BY removed ASC, date_created ASC) AS rn
+		FROM meta_column
+		WHERE object_owner = 0x00 AND record_type = 'A'
+	) x
+	WHERE x.rn > 1;
 
 	-- -------------------------------------------------------------------------
 	-- 0. VÝPOČET VLASTNOSTÍ SLOUPCŮ Z v_syscolumns A MÓDUSU PRO GLOBÁLNÍ SLOVNÍK
@@ -317,49 +335,73 @@ BEGIN
 	IF OBJECT_ID('tempdb..#syscol_attr') IS NOT NULL DROP TABLE #syscol_attr;
 	IF OBJECT_ID('tempdb..#global_attr') IS NOT NULL DROP TABLE #global_attr;
 
+	CREATE TABLE #syscol_attr (
+		tabname varchar(128) COLLATE DATABASE_DEFAULT NOT NULL,
+		object_type varchar(20) COLLATE DATABASE_DEFAULT NOT NULL,
+		meta_obj_type varchar(1) COLLATE DATABASE_DEFAULT NOT NULL,
+		colid int NOT NULL,
+		colname varchar(128) COLLATE DATABASE_DEFAULT NOT NULL,
+		calc_input_type varchar(20) COLLATE DATABASE_DEFAULT NOT NULL,
+		calc_max_length int NOT NULL,
+		calc_is_computed bit NOT NULL,
+		calc_input_width varchar(50) COLLATE DATABASE_DEFAULT NOT NULL,
+		CONSTRAINT pk_tmp_syscol_attr PRIMARY KEY (tabname, colname)
+	);
+
+	INSERT INTO #syscol_attr (
+		tabname, object_type, meta_obj_type, colid, colname,
+		calc_input_type, calc_max_length, calc_is_computed, calc_input_width
+	)
 	SELECT 
-		tabname COLLATE DATABASE_DEFAULT AS tabname,
-		object_type COLLATE DATABASE_DEFAULT AS object_type,
-		CASE WHEN object_type = 'U' THEN 'T' WHEN object_type = 'V' THEN 'V' ELSE 'F' END AS meta_obj_type,
-		colid,
-		colname COLLATE DATABASE_DEFAULT AS colname,
-		CASE 
+		tabname COLLATE DATABASE_DEFAULT,
+		object_type COLLATE DATABASE_DEFAULT,
+		CASE WHEN object_type = 'U' THEN 'T' WHEN object_type = 'V' THEN 'V' ELSE 'F' END,
+		MIN(colid),
+		colname COLLATE DATABASE_DEFAULT,
+		MIN(CASE 
 			WHEN typename IN ('bit') THEN 'checkbox'
 			WHEN typename IN ('date', 'datetime', 'datetime2', 'smalldatetime') THEN 'date'
 			WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN 'number'
 			WHEN typename IN ('varchar', 'nvarchar', 'text', 'ntext') AND prec = -1 THEN 'textarea'
 			ELSE 'text'
-		END AS calc_input_type,
-		CASE 
+		END),
+		MAX(CASE 
 			WHEN typename IN ('varchar', 'nvarchar', 'char', 'nchar') AND prec > 0 THEN prec
 			ELSE 0 
-		END AS calc_max_length,
-		ISNULL(iscomputed, 0) AS calc_is_computed,
-		CASE 
+		END),
+		MAX(CAST(ISNULL(iscomputed, 0) AS int)),
+		MIN(CASE 
 			WHEN typename = 'bit' THEN 'auto'
 			WHEN typename = 'date' THEN '120px'
 			WHEN typename = 'smalldatetime' THEN '150px'
 			WHEN typename IN ('datetime', 'datetime2') THEN '180px'
 			WHEN typename IN ('int', 'smallint', 'tinyint', 'bigint', 'decimal', 'numeric', 'float', 'real', 'money') THEN '120px'
 			ELSE '100%'
-		END AS calc_input_width
-	INTO #syscol_attr
+		END)
 	FROM v_syscolumns
 	WHERE colname NOT LIKE '@%'
 	  AND tabname NOT LIKE '%$'
-	  AND tabname NOT LIKE 'sysinit[_]%';
+	  AND tabname NOT LIKE 'sysinit[_]%'
+	GROUP BY tabname COLLATE DATABASE_DEFAULT, object_type COLLATE DATABASE_DEFAULT, colname COLLATE DATABASE_DEFAULT;
 
-	WITH ranked_attributes AS (
+	CREATE TABLE #global_attr (
+		colname varchar(128) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY,
+		calc_input_type varchar(20) COLLATE DATABASE_DEFAULT NOT NULL,
+		calc_max_length int NOT NULL,
+		calc_is_computed bit NOT NULL,
+		calc_input_width varchar(50) COLLATE DATABASE_DEFAULT NOT NULL
+	);
+
+	INSERT INTO #global_attr (colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width)
+	SELECT colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
+	FROM (
 		SELECT 
 			colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width,
 			ROW_NUMBER() OVER(PARTITION BY colname ORDER BY COUNT(*) DESC) AS rn
 		FROM #syscol_attr
 		GROUP BY colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
-	)
-	SELECT colname, calc_input_type, calc_max_length, calc_is_computed, calc_input_width
-	INTO #global_attr
-	FROM ranked_attributes 
-	WHERE rn = 1;
+	) ranked_attributes
+	WHERE ranked_attributes.rn = 1;
 
 	-- -------------------------------------------------------------------------
 	-- 1. SYNCHRONIZACE FYZICKÝCH OBJEKTŮ (T, V, F) V TABULCE meta_object
@@ -760,5 +802,8 @@ BEGIN
 	  AND record_type = 'A'
 	  AND column_name = 'parent_uuid'
 	  AND referenced_class IS NULL;
+
+	DROP TABLE #syscol_attr;
+	DROP TABLE #global_attr;
 END
 GO

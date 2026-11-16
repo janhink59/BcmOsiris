@@ -1,11 +1,26 @@
 /* =============================================================================
- * Verze: 2026-11-13 18:30
+ * Verze: 2026-11-16 14:40
  * Soubor: fillup_meta_original_keys.sql
- * Účel: Hromadné znovunaplnění definic pro generování sloupce "original".
- * Vazby: Slouží jako podklad pro proceduru generate_trgo, která dynamicky 
- *        skládá a zakládá triggery nad všemi definovanými tabulkami.
- *        Čte systémový pohled v_syscolumns a zapisuje do tabulky meta_original_keys.
+ *
+ * 1. Role souboru v celém systému:
+ *    Hromadné znovunaplnění definic klíčových sloupců v tabulce meta_original_keys
+ *    pro deterministický výpočet identifikátoru "original".
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Čte systémový pohled v_syscolumns (HinkMSSQLLibrary.sql) a zapisuje do
+ *      tabulky meta_original_keys (table_meta_original_keys.sql).
+ *    - Slouží jako podklad pro skript generate_trgo.sql, procedury
+ *      p_fix_meta_column, p_csv_import_simple_class a třídu entity_manager.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (BcmOsirisDb.sql) bez
+ *      závislosti na uživatelské relaci.
+ *
  * Změny:
+ * - 2026-11-16 14:40: Odstraněna klauzule NOT IN (SELECT ...) a korelovaný
+ *   poddotaz (SELECT COUNT(DISTINCT r.colname) ...) nad pohledem v_syscolumns;
+ *   nahrazeno jedním agregačním průchodem do indexované tabulkové proměnné
+ *   @valid_rac_tables s PRIMARY KEY (tabname).
  * - 2026-11-13 18:30: Dynamické doplňování tabulek se sloupcem builtin_code
  *   omezeno strukturální kontrolou na tabulky, které obsahují všech 6 povinných
  *   RAC sloupců vyžadovaných triggery trgo_ (uuid, object_owner, original,
@@ -51,22 +66,27 @@ VALUES
 GO
 
 -- 2. Dynamické doplnění všech ostatních RAC tabulek, které obsahují sloupec builtin_code
---    a současně disponují všemi 6 povinnými RAC sloupci pro trigger trgo_
+--    a současně disponují všemi 6 povinnými RAC sloupci pro trigger trgo_ (celkem 7 sloupců)
+DECLARE @valid_rac_tables TABLE (
+	tabname varchar(128) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY
+);
+
+INSERT INTO @valid_rac_tables (tabname)
+SELECT r.tabname
+FROM v_syscolumns r
+WHERE r.object_type = 'U'
+  AND r.tabname NOT LIKE '%$'
+  AND r.tabname NOT LIKE 'sysinit[_]%'
+  AND r.colname IN ('uuid', 'object_owner', 'original', 'record_type', 'removed', 'template', 'builtin_code')
+GROUP BY r.tabname
+HAVING COUNT(DISTINCT r.colname) = 7;
+
 INSERT INTO meta_original_keys (table_name, key1_column, key2_column)
 SELECT
-	c.tabname,
+	v.tabname,
 	'builtin_code',
 	NULL
-FROM v_syscolumns c
-WHERE c.colname = 'builtin_code'
-	AND c.object_type = 'U'
-	AND c.tabname NOT IN (SELECT table_name FROM meta_original_keys)
-	AND c.tabname NOT LIKE '%$'
-	AND (
-		SELECT COUNT(DISTINCT r.colname)
-		FROM v_syscolumns r
-		WHERE r.tabname = c.tabname
-			AND r.object_type = 'U'
-			AND r.colname IN ('uuid', 'object_owner', 'original', 'record_type', 'removed', 'template')
-	) = 6;
+FROM @valid_rac_tables v
+LEFT JOIN meta_original_keys ex ON ex.table_name = v.tabname
+WHERE ex.table_name IS NULL;
 GO
