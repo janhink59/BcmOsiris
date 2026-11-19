@@ -1,21 +1,33 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-09 18:30
+ * Verze: 2026-11-19 15:40
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
- * Účel: Zápisová, validační a klonovací část třídy entity_manager.
- *       Metody schvalovacího cyklu (SSC), kontroly monotonie scale_value a
- *       post-save hooky jsou vyčleněny do sesterského traitu entity_manager_ssc
- *       (v souboru entity_manager_ssc.php) pro udržení přehledné velikosti modulů.
  *
- * VAZBY NA OKOLÍ:
- * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
- * - Spolupracuje s traitem `entity_manager_ssc` (`validate_scale_value_monotonicity`,
- *   `run_post_save_hooks`).
- * - Využívá třídy `rich_text` (`rich_text.php`), `svg_icon_editor` (`svg_icon_editor.php`),
- *   funkci `generate_builtin_code()` (`new_functions.php`) a proceduru
- *   `dbo.p_split_hierarchy_node_to_folder` (`p_sync_derived_links.sql`).
+ * 1. Role souboru v celém systému:
+ *    Zápisová, validační a klonovací část třídy entity_manager. Řeší extrakci
+ *    POST dat, kontrolu klíčových sloupců, validaci pravidla multi_class při
+ *    přiřazování vedlejších tříd aktiv a autonomní zápis 'A', 'L' i 'D' záznamů.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Inkludován a používán výhradně uvnitř třídy entity_manager (entity_manager.php).
+ *    - Spolupracuje s traitem entity_manager_ssc (validate_scale_value_monotonicity,
+ *      run_post_save_hooks).
+ *    - Využívá třídy rich_text (rich_text.php), svg_icon_editor (svg_icon_editor.php),
+ *      funkce generate_builtin_code() a db_object_exists() (new_functions.php),
+ *      funkci dbo.f_check_asset_class_compatible (f_check_asset_class_compatible.sql)
+ *      a proceduru dbo.p_split_hierarchy_node_to_folder (p_split_hierarchy_node_to_folder.sql).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole $dbsession (organization, login_session_uuid, user_account,
+ *      language, active_role, right_translate) naplněné z tabulky dbsession pro @@SPID.
+ *
+ * Změny:
+ * 2026-11-19 15:40 - Doplněna validace pravidla asset_class.multi_class přes
+ *                    dbo.f_check_asset_class_compatible při ukládání vazby
+ *                    asset_additional_class / asset_class_has_asset v tabulce link
+ *                    a při změně primary_asset_class v tabulce asset.
  * =============================================================================
  */
 
@@ -91,6 +103,97 @@ trait entity_manager_write {
 		$ord_part = ($order_sql !== '') ? " {$order_sql}" : ""; // Případné řazení zdrojového dotazu
 		$sql = "INSERT INTO {$this->storage_table} (" . implode(', ', $ins_cols) . ") \nSELECT {$top_part}" . implode(', ', $sel_vals) . " \nFROM {$this->storage_table} \nWHERE {$where_sql}{$ord_part}"; // Sestavení klonovacího SQL dotazu
 		sqlrun($sql); // Provedení klonovacího dotazu
+	}
+
+	/**
+	 * Ověří slučitelnost nové třídy aktiv (`$new_class_sql`) se všemi stávajícími třídami
+	 * přiřazenými aktivu (`$asset_orig_sql`) podle příznaku `asset_class.multi_class`.
+	 */
+	private function validate_asset_class_compatibility(string $asset_orig_sql, string $new_class_sql, string $rec_owner_sql, bool $is_additional_link): bool { // Kontrola slučitelnosti tříd aktiv
+		if (! db_object_exists('f_check_asset_class_compatible', 'FN')) {    // Pojistka existence databázové funkce
+			return true;                                                     // Bez funkce v DB validaci přeskočíme
+		}
+		if ($asset_orig_sql === '' OR $asset_orig_sql === 'NULL' OR $new_class_sql === '' OR $new_class_sql === 'NULL') { // Prázdný vstup
+			return true;                                                     // Není co validovat
+		}
+
+		// 1. Při vkládání vedlejší třídy ověříme, zda není totožná s primární třídou aktiva
+		if ($is_additional_link) {                                           // Kontrola duplicity vůči primary_asset_class
+			$same_pac = sqlfirstrow("
+				SELECT TOP 1 a.primary_asset_class
+				FROM asset a
+				WHERE a.original = {$asset_orig_sql}
+				  AND a.object_owner IN ({$rec_owner_sql}, 0x00)
+				  AND a.record_type = 'A'
+				  AND a.removed = 0
+				  AND a.primary_asset_class = {$new_class_sql}
+				ORDER BY CASE WHEN a.object_owner = {$rec_owner_sql} THEN 0 ELSE 1 END
+			");                                                              // Dotaz na shodu s primární třídou
+			if (! empty($same_pac)) {                                        // Vedlejší třída je shodná s primární
+				$this->set_last_save_error($this->phrase(
+					'err_asset_class_same_as_primary',
+					'Zvolená vedlejší třída aktiv je již nastavena jako primární třída tohoto aktiva.'
+				));                                                          // Nastavení chybové zprávy
+				return false;                                                // Zastavení uložení
+			}
+		}
+
+		// 2. Jednorázové ověření kompatibility se všemi přiřazenými třídami aktiva (vč. primary_asset_class i link)
+		$check_pac_branch = $is_additional_link ? "
+			SELECT a.primary_asset_class AS cls_orig
+			FROM asset a
+			WHERE a.original = {$asset_orig_sql}
+			  AND a.object_owner IN ({$rec_owner_sql}, 0x00)
+			  AND a.record_type = 'A'
+			  AND a.removed = 0
+			  AND a.primary_asset_class IS NOT NULL
+			UNION
+		" : "";                                                              // Při změně primární třídy kontrolujeme jen vazby v link
+
+		$conflict_row = sqlfirstrow("
+			SELECT TOP 1
+				ac.builtin_code,
+				ac.caption
+			FROM (
+				{$check_pac_branch}
+				SELECT
+					CASE WHEN mld.link_code = 'asset_class_has_asset' THEN l.from_object ELSE l.to_object END AS cls_orig
+				FROM link l
+				JOIN meta_link_def mld
+					ON mld.original = l.link_def
+					AND mld.record_type = 'A'
+					AND mld.removed = 0
+					AND mld.link_code IN ('asset_additional_class', 'asset_class_has_asset')
+				WHERE l.object_owner IN ({$rec_owner_sql}, 0x00)
+				  AND l.record_type = 'A'
+				  AND l.removed = 0
+				  AND l.inactive = 0
+				  AND (
+					(mld.link_code = 'asset_additional_class' AND l.from_object = {$asset_orig_sql})
+					OR (mld.link_code = 'asset_class_has_asset' AND l.to_object = {$asset_orig_sql})
+				  )
+			) ex
+			JOIN asset_class ac
+				ON ac.original = ex.cls_orig
+				AND ac.object_owner IN ({$rec_owner_sql}, 0x00)
+				AND ac.record_type = 'A'
+				AND ac.removed = 0
+			WHERE ex.cls_orig <> {$new_class_sql}
+			  AND dbo.f_check_asset_class_compatible(ex.cls_orig, {$new_class_sql}, {$rec_owner_sql}) = 0
+			ORDER BY CASE WHEN ac.object_owner = {$rec_owner_sql} THEN 0 ELSE 1 END
+		");                                                                  // Dotaz na první neslučitelnou třídu
+
+		if (! empty($conflict_row)) {                                        // Nalezen konflikt podle multi_class
+			$conf_lbl = (string) ($conflict_row['caption'] ?: $conflict_row['builtin_code']); // Název kolidující třídy
+			$this->set_last_save_error($this->phrase(
+				'err_asset_class_incompatible',
+				'Zvolenou třídu aktiv nelze přiřadit společně s již přiřazenou třídou „{' . chr(36) . 'other}“ (příznak multi_class tento souběh v hierarchii tříd aktiv nepovoluje).',
+				['other' => $conf_lbl]
+			));                                                              // Nastavení lokalizované chyby
+			return false;                                                    // Zastavení uložení
+		}
+
+		return true;                                                         // Všechny třídy aktiva jsou vzájemně slučitelné
 	}
 
 	/**
@@ -390,6 +493,17 @@ trait entity_manager_write {
 			}
 		}
 
+		// Validace kompatibility primary_asset_class s existujícími vedlejšími třídami aktiva (multi_class)
+		if ($table === 'asset' AND $orig_guid_sql !== '') {                  // Úprava existujícího aktiva
+			$new_pac_lit = (string) ($a_post_data['primary_asset_class'] ?? $d_post_data['primary_asset_class'] ?? ''); // Nová primární třída
+			$is_asset_rem = (! empty($a_post_data['removed']) OR ! empty($d_post_data['removed'])); // Zda se aktivum ruší
+			if (! $is_asset_rem AND $new_pac_lit !== '' AND $new_pac_lit !== 'NULL') { // Kontrola při zadání primární třídy
+				if (! $this->validate_asset_class_compatibility($orig_guid_sql, $new_pac_lit, $rec_owner_sql, false)) { // Kontrola pravidla multi_class
+					return '';                                               // Zastavení uložení při konfliktu tříd
+				}
+			}
+		}
+
 		if ($orig_guid_sql === '') { // Validace klíčových položek a unikátnosti originálu u nového záznamu (NEW)
 			$src_key_data = ! empty($a_post_data) ? $a_post_data : $d_post_data; // Pole hodnot pro výpočet klíče
 			$key_info = sqlfirstrow("SELECT key1_column, key2_column FROM meta_original_keys WHERE table_name = " . charliteral($table)); // Klíčové sloupce
@@ -511,6 +625,19 @@ trait entity_manager_write {
 				if (! empty($dup_lnk)) { // Vazba již existuje
 					$this->set_last_save_error($this->phrase('err_duplicate_link', 'Tato vazba mezi zvolenými záznamy již existuje.')); // Hláška
 					return ''; // Zastavení zápisu
+				}
+
+				// Kontrola pravidla multi_class při přiřazování vedlejší třídy aktiv (asset_additional_class / asset_class_has_asset)
+				$ld_info = sqlfirstrow("SELECT TOP 1 link_code FROM meta_link_def WHERE original = {$link_def} AND record_type = 'A' AND removed = 0"); // Zjištění kódu vztahu
+				$ld_code = (string) ($ld_info['link_code'] ?? '');           // Kód ukládaného vztahu
+				if ($ld_code === 'asset_additional_class') {                 // Přímý směr: aktivum -> vedlejší třída aktiv
+					if (! $this->validate_asset_class_compatibility($from_obj, $to_obj, $rec_owner_sql, true)) { // Kontrola slučitelnosti tříd
+						return '';                                           // Zastavení uložení při porušení multi_class
+					}
+				} elseif ($ld_code === 'asset_class_has_asset') {            // Zpětný směr: třída aktiv -> aktivum
+					if (! $this->validate_asset_class_compatibility($to_obj, $from_obj, $rec_owner_sql, true)) { // Kontrola slučitelnosti tříd
+						return '';                                           // Zastavení uložení při porušení multi_class
+					}
 				}
 			} else {
 				$orig_row = sqlfirstrow("SELECT NEWID() AS orig_guid"); // Náhodné UUID pro globální tabulky bez deterministického klíče

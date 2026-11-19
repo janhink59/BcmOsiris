@@ -1,9 +1,20 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-15 19:55
+ * Verze: 2026-11-19 15:40
  * Soubor: entity_manager#phrase.sql
- * Účel:   Registrace třídy entity_manager do sysinit_object a naplnění
- *         jejích českých a anglických frází do sysinit_phrase.
- * Vazby:  Zpracováváno procedurou dbo.p_sysinit_process (p_sysinit_process.sql).
+ *
+ * 1. Role souboru v celém systému:
+ *    Registrace třídy entity_manager do sysinit_object a naplnění jejích
+ *    českých i anglických frází do sysinit_phrase.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Odpovídá voláním $this->phrase() v entity_manager.php,
+ *      entity_manager_read.php, entity_manager_ui.php, entity_manager_write.php
+ *      a entity_manager_ssc.php.
+ *    - Zpracováváno procedurou dbo.p_sysinit_process (p_sysinit_process.sql).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (maska *#phrase.sql) nad
+ *      staging tabulkami sysinit_* bez závislosti na relaci v dbsession.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -18,6 +29,8 @@ INSERT INTO sysinit_object (object_type, builtin_code, [language], system_role, 
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext, css_class) VALUES
 ('entity_manager','confirm_mark_removed','cs','Potvrďte, že chcete tuto položku označit jako zrušenou.','',''),
+('entity_manager','err_asset_class_incompatible','cs','Zvolenou třídu aktiv nelze přiřadit společně s již přiřazenou třídou „{$other}“ (příznak multi_class tento souběh v hierarchii tříd aktiv nepovoluje).','',''),
+('entity_manager','err_asset_class_same_as_primary','cs','Zvolená vedlejší třída aktiv je již nastavena jako primární třída tohoto aktiva.','',''),
 ('entity_manager','err_duplicate_key_active','cs','Záznam se zadanou klíčovou položkou ({$keys}) již v databázi existuje. Zadejte unikátní hodnotu, aby nedošlo k výpočtu duplicitního originálu.','',''),
 ('entity_manager','err_duplicate_key_in_trash','cs','Záznam se zadanou klíčovou položkou ({$keys}) již existuje v koši (zrušené záznamy). Zapněte v levém panelu „Zobrazit i zrušené“ a záznam obnovte, nebo zvolte jiný unikátní kód.','',''),
 ('entity_manager','err_duplicate_link','cs','Tato vazba mezi zvolenými záznamy již existuje.','',''),
@@ -56,6 +69,8 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('entity_manager','confirm_mark_removed','en','Please confirm that you want to mark this item as removed.',''),
+('entity_manager','err_asset_class_incompatible','en','The selected asset class cannot be assigned together with the already assigned class "{$other}" (the multi_class flag does not allow this combination in the asset class hierarchy).',''),
+('entity_manager','err_asset_class_same_as_primary','en','The selected additional asset class is already set as the primary asset class of this asset.',''),
 ('entity_manager','err_duplicate_key_active','en','A record with the specified key value ({$keys}) already exists in the database. Please enter a unique value to avoid a duplicate original identifier.',''),
 ('entity_manager','err_duplicate_key_in_trash','en','A record with the specified key value ({$keys}) already exists in the trash (removed records). Enable "Show removed" in the left panel to restore it, or choose a different unique code.',''),
 ('entity_manager','err_duplicate_link','en','This link between the selected records already exists.',''),

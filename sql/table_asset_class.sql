@@ -1,17 +1,28 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 17:00
+ * Verze: 2026-11-19 15:40
  * Soubor: table_asset_class.sql
  * Tabulka: asset_class (Třídy aktiv)
- * Popis:	Hierarchický katalog pro klasifikaci aktiv v modulu CRMM.
- *			Určuje strukturu (např. Umístění -> Budova -> Místnost), 
- *			definuje koncové uzly (is_leaf = 1) a umožňuje dědění rolí editorů
- *			a vazeb na hrozby, scénáře a klasifikační číselníky.
- * Architektura: RAC (Record & Access Control) + SSC (Schvalovací cyklus)
- * Vazby:	- parent_uuid ukazuje na nadřízený uzel asset_class.original (NULL = kořen).
- *			- Koncové uzly (is_leaf = 1) jsou odkazovány ze sloupce
- *			  asset.primary_asset_class a z tabulky link.
- *			- Spravováno stromovou stránkou page_asset_class.php.
+ *
+ * 1. Role souboru v celém systému:
+ *    DDL definice hierarchického katalogu tříd aktiv v modulu CRMM včetně
+ *    příznaku multi_class povolujícího kombinaci sourozeneckých tříd na jednom
+ *    aktivu a registrace třídy i sloupců do sysinit_class / sysinit_column.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - parent_uuid ukazuje na nadřízený uzel asset_class.original (NULL = kořen).
+ *    - Koncové uzly (is_leaf = 1) jsou odkazovány ze sloupce
+ *      asset.primary_asset_class a z tabulky link (asset_additional_class).
+ *    - Sloupec multi_class vyhodnocuje funkce dbo.f_check_asset_class_compatible
+ *      (f_check_asset_class_compatible.sql) a zobrazuje stránka page_asset_class.php.
+ *    - Prvotní naplnění katalogu provádí fillup_asset_class.sql a fillup_asset_class_en.sql.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (BcmOsirisDb.sql) bez
+ *      závislosti na uživatelské relaci v dbsession.
+ *
  * Změny:
+ * - 2026-11-19 15:40: Přidán sloupec multi_class bit NOT NULL DEFAULT 0 do
+ *   CREATE TABLE, p_create_missing_column a sysinit_column (cs i en).
  * - 2026-11-13 17:00: Doplněna registrace třídy a sloupců do sysinit_class
  *   a sysinit_column.
  * - 2026-11-04 10:30: Odstraněno vkládání umělého kořenového záznamu 0x00 (ROOT).
@@ -68,6 +79,7 @@ BEGIN
 		parent_uuid uuid NULL,                             -- Nadřízená třída aktiv (asset_class.original, NULL = kořen)
 		sort_code varchar(200) NOT NULL DEFAULT '',        -- Pořadí v rámci sourozenců
 		is_leaf bit NOT NULL DEFAULT 1,                    -- 1 = Koncová třída aktiv (lze navázat aktiva), 0 = Složka
+		multi_class bit NOT NULL DEFAULT 0,                -- 1 = Lze kombinovat s ostatními sourozeneckými třídami s multi_class = 1 na jednom aktivu
 		editor_role_uuid uuid NULL,                        -- Role oprávněná k editaci aktiv v této třídě (dědí se)
 
 		-- ---------------------------------------------------------------------
@@ -90,6 +102,7 @@ EXEC p_create_missing_column 'asset_class', 'approval_note', 'varchar(max) NOT N
 EXEC p_create_missing_column 'asset_class', 'import_origin', 'varchar(255) NULL';
 EXEC p_create_missing_column 'asset_class', 'builtin_code', 'varchar(80) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'asset_class', 'svg_icon', 'varchar(max) NOT NULL DEFAULT ''''';
+EXEC p_create_missing_column 'asset_class', 'multi_class', 'bit NOT NULL DEFAULT 0';
 EXEC p_create_missing_column 'asset_class', 'is_final', 'bit NOT NULL DEFAULT 0';
 EXEC p_create_missing_column 'asset_class', 'is_protected', 'bit NOT NULL DEFAULT 0';
 GO
@@ -148,6 +161,10 @@ BEGIN
 	DELETE FROM sysinit_column WHERE table_name = 'asset_class';
 
 	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext, referenced_class_code) VALUES
+	('asset_class','multi_class','cs','Vícenásobné přiřazení třídy (multi_class)','Povolit souběh s dalšími sourozeneckými třídami (multi_class)','Více tříd','Pokud je zaškrtnuto (1), lze tuto třídu přiřadit jednomu aktivu současně s dalšími sourozeneckými třídami, které mají rovněž multi_class = 1 (např. Aplikační + Databázový + Souborový server). Pokud je 0, je třída vůči sourozencům výlučná.',''),
 	('asset_class','parent_uuid','cs','Nadřízená položka ve stromu (parent_uuid)','Nadřízená složka / položka','Nadřízený uzel','Odkaz na nadřízený uzel ve stromové hierarchii (prázdné pole znamená kořenovou položku nejvyšší úrovně).','asset_class');
+
+	INSERT INTO sysinit_column (table_name, column_name, [language], caption, label, header, helptext) VALUES
+	('asset_class','multi_class','en','Multi-Class Assignment (multi_class)','Allow Combining with Sibling Classes (multi_class)','Multi-Class','If checked (1), this class may be assigned to a single asset simultaneously with sibling classes that also have multi_class = 1 (e.g., Application + Database + File Server). If 0, the class is mutually exclusive with its siblings.');
 END
 GO

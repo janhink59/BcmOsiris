@@ -1,25 +1,40 @@
 /* =============================================================================
- * Verze: 2026-11-13 17:15
+ * Verze: 2026-11-19 16:05
  * Soubor: table_meta_link_def.sql
  * Tabulka: meta_link_def
- * Popis:   Definiční tabulka pro vztahy mezi logickými třídami (meta_class).
- *          Podporuje samostatné záznamy pro zpětné vztahy (reverse_link_def),
- *          rozlišení směru (direction_type: 'P' = primární řídící, 'R' = zpětný,
- *          'S' = symetrický neorientovaný), registraci exkluzivních stromových
- *          vztahů parent_uuid (is_exclusive_parent = 1) a projekci nepřímých
- *          vztahů vygenerovaných z diagramů heterogenních sítí (is_derived = 1,
- *          diagram_uuid).
- * Vazby:   - from_class a to_class (UUID) ukazují na meta_class.original.
- *          - reverse_link_def (UUID) ukazuje na opačný vztah v meta_link_def.original.
- *          - diagram_uuid (UUID) ukazuje na link_diagram.original.
- * Změny:   - 2026-11-13 17:15: Doplněna registrace třídy, číselníku direction_type
- *            a sloupců do sysinit_class, sysinit_codetable a sysinit_column.
- *          - 2026-11-12 18:30: Doplněn unikátní filtrovaný index uq_meta_link_def_key
- *            nad složeným klíčem (object_owner, from_class, link_code).
- *          - 2026-11-11 21:30: Doplněny sloupce reverse_link_def, direction_type,
- *            is_exclusive_parent, is_derived a diagram_uuid.
- *          - 2026-10-23 11:00: Doplněny SSC sloupce draft_author, approval_note,
- *            import_origin a unikátní index uq_meta_link_def_draft.
+ *
+ * 1. Role souboru v celém systému:
+ *    Definiční tabulka pro vztahy mezi logickými třídami (meta_class).
+ *    Podporuje samostatné záznamy pro zpětné vztahy (reverse_link_def),
+ *    rozlišení směru (direction_type: 'P' = primární řídící, 'R' = zpětný,
+ *    'S' = symetrický neorientovaný), volitelný external_code pro importy
+ *    z externích zdrojů, registraci exkluzivních stromových vztahů parent_uuid
+ *    (is_exclusive_parent = 1) a projekci nepřímých vztahů ze schémat sítí
+ *    (is_derived = 1, diagram_uuid).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - from_class a to_class (UUID) ukazují na meta_class.original.
+ *    - reverse_link_def (UUID) ukazuje na opačný vztah v meta_link_def.original.
+ *    - diagram_uuid (UUID) ukazuje na link_diagram.original.
+ *    - Spravována stránkou page_meta_link_def.php a exportována v csv_package_metadata.php.
+ *    - Plněna skripty fillup_meta_link_def.sql / fillup_meta_link_def_en.sql
+ *      a procedurami dbo.p_sysinit_process a dbo.p_rebuild_link_diagram.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (BcmOsirisDb.sql) bez
+ *      závislosti na uživatelské relaci v dbsession.
+ *
+ * Změny:
+ * - 2026-11-19 16:05: Doplněn sloupec external_code varchar(40) NOT NULL DEFAULT ''
+ *   do CREATE TABLE i přes idempotentní EXEC p_create_missing_column.
+ * - 2026-11-13 17:15: Doplněna registrace třídy, číselníku direction_type
+ *   a sloupců do sysinit_class, sysinit_codetable a sysinit_column.
+ * - 2026-11-12 18:30: Doplněn unikátní filtrovaný index uq_meta_link_def_key
+ *   nad složeným klíčem (object_owner, from_class, link_code).
+ * - 2026-11-11 21:30: Doplněny sloupce reverse_link_def, direction_type,
+ *   is_exclusive_parent, is_derived a diagram_uuid.
+ * - 2026-10-23 11:00: Doplněny SSC sloupce draft_author, approval_note,
+ *   import_origin a unikátní index uq_meta_link_def_draft.
  * ============================================================================= */
 
 IF OBJECT_ID('meta_link_def') IS NULL
@@ -55,6 +70,7 @@ CREATE TABLE meta_link_def(
 	-- Specifické atributy definice vztahu
 	-- -------------------------------------------------------------------------
 	link_code varchar(80) NOT NULL,                    -- Unikátní technický kód vztahu v snake_case
+	external_code varchar(40) NOT NULL DEFAULT '',     -- Označení původu při importu z cizího zdroje (vlastní záznamy '')
 	from_class uuid NOT NULL,                          -- UUID zdrojové třídy (z meta_class.original)
 	to_class uuid NOT NULL,                            -- UUID cílové třídy (z meta_class.original)
 	reverse_link_def uuid NULL,                        -- Odkaz na opačný (zpětný) vztah v meta_link_def.original
@@ -92,6 +108,7 @@ GO
 EXEC p_create_missing_column 'meta_link_def', 'draft_author', 'uuid NOT NULL DEFAULT 0x00';
 EXEC p_create_missing_column 'meta_link_def', 'approval_note', 'varchar(max) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'meta_link_def', 'import_origin', 'varchar(255) NULL';
+EXEC p_create_missing_column 'meta_link_def', 'external_code', 'varchar(40) NOT NULL DEFAULT ''''';
 EXEC p_create_missing_column 'meta_link_def', 'reverse_link_def', 'uuid NULL';
 EXEC p_create_missing_column 'meta_link_def', 'direction_type', 'varchar(1) NOT NULL DEFAULT ''P''';
 EXEC p_create_missing_column 'meta_link_def', 'is_exclusive_parent', 'bit NOT NULL DEFAULT 0';

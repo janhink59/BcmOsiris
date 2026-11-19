@@ -1,9 +1,18 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-15 19:55
+ * Verze: 2026-11-19 15:40
  * Soubor: page_asset_class#phrase.sql
- * Účel:   Registrace stránky page_asset_class do sysinit_object, položky menu
- *         asset_class do sysinit_menu a frází do sysinit_phrase.
- * Vazby:  Zpracováváno procedurou dbo.p_sysinit_process (p_sysinit_process.sql).
+ *
+ * 1. Role souboru v celém systému:
+ *    Registrace stránky page_asset_class do sysinit_object, položky menu
+ *    asset_class do sysinit_menu a českých i anglických frází do sysinit_phrase.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Odpovídá voláním $this->phrase() v page_asset_class.php.
+ *    - Zpracováváno procedurou dbo.p_sysinit_process (p_sysinit_process.sql).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (maska *#phrase.sql) nad
+ *      staging tabulkami sysinit_* bez závislosti na relaci v dbsession.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -33,7 +42,8 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('page_asset_class','master_heading','cs','Strom tříd aktiv','',''),
 ('page_asset_class','msg_asset_class_leaf_hint','cs','Tip: Konkrétní aktiva lze zařazovat pouze do koncových tříd aktiv (is_leaf = 1). Vnitřní uzly (is_leaf = 0) slouží jako nadřazené složky, na které však lze vázat společné hrozby a scénáře děděné do podřízených tříd.','',''),
 ('page_asset_class','page_title','cs','Třídy aktiv (Katalog CRMM)','',''),
-('page_asset_class','th_asset_class_caption','cs','Třída aktiv / Složka','','');
+('page_asset_class','th_asset_class_caption','cs','Třída aktiv / Složka','',''),
+('page_asset_class','th_multi_class','cs','Více tříd','','');
 
 INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, helptext) VALUES
 ('page_asset_class','btn_new_asset_class','en','+ New Asset Class','Create a new folder or leaf asset class in the catalog'),
@@ -45,5 +55,6 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('page_asset_class','master_heading','en','Asset Class Tree',''),
 ('page_asset_class','msg_asset_class_leaf_hint','en','Tip: Specific assets can only be assigned to leaf asset classes (is_leaf = 1). Internal nodes (is_leaf = 0) serve as parent folders onto which shared threats and scenarios inherited by child classes can be linked.',''),
 ('page_asset_class','page_title','en','Asset Classes (CRMM Catalog)',''),
-('page_asset_class','th_asset_class_caption','en','Asset Class / Folder','');
+('page_asset_class','th_asset_class_caption','en','Asset Class / Folder',''),
+('page_asset_class','th_multi_class','en','Multi-Class','');
 GO

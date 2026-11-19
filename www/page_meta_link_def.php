@@ -1,19 +1,28 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-11 22:00
+ * Verze: 2026-11-19 16:05
  * Soubor: page_meta_link_def.php
  * Třída: page_meta_link_def
- * Účel: Správa katalogu povolených typů relací a vztahů M:N mezi logickými
- *       třídami v tabulce meta_link_def (modul CRMM), včetně zpětných vztahů
- *       (reverse_link_def), exkluzivních vztahů parent_uuid a odvozených
- *       nepřímých vztahů ze schémat heterogenních sítí (diagram_uuid).
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z routeru `index.php` při `?page=page_meta_link_def`.
- * - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou `'meta_link_def'`.
- * - Definice vztahů v této tabulce řídí chování a výběr cílových tříd na stránce
- *   `page_link.php` a při šíření odvozených vazeb v `p_sync_derived_links.sql`.
+ * 1. Role souboru v celém systému:
+ *    Správa katalogu povolených typů relací a vztahů M:N mezi logickými
+ *    třídami v tabulce meta_link_def (modul CRMM), včetně zpětných vztahů
+ *    (reverse_link_def), externího označení původu (external_code), exkluzivních
+ *    vztahů parent_uuid a odvozených nepřímých vztahů ze schémat sítí (diagram_uuid).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z routeru index.php při ?page=page_meta_link_def.
+ *    - Dědí z abstract_page_master_detail a pracuje s logickou třídou 'meta_link_def'.
+ *    - Čte a ukládá data v tabulce meta_link_def (table_meta_link_def.sql); fráze
+ *      a menu jsou definovány v page_meta_link_def#phrase.sql.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole $dbsession (v databázi dbsession pro aktuální @@SPID)
+ *      a volitelný GET parametr diagram_uuid pro filtrování odvozených vztahů.
+ *
+ * Změny:
+ * 2026-11-19 16:05 - Do skupiny identifikace ($grp_id) doplněn sloupec external_code.
  * =============================================================================
  */
 
@@ -25,15 +34,15 @@ class page_meta_link_def extends abstract_page_master_detail {
 		parent::__construct();                                               // Inicializace správce frází a kontroly přístupu
 
 		$this->class_name = 'meta_link_def';                                 // Logická třída pro entity_manager
-		$this->allow_insert = ! $this->is_readonly;                          // Povolení zakládání nových definic vazeb
-		$this->page_title = $this->phrase('page_title', [], 'Definice typů vazeb (CRMM)'); // Lokalizovaný titulek stránky
+		$this->allow_insert = !$this->is_readonly;                          // Povolení zakládání nových definic vazeb
+		$this->page_title =$this->phrase('page_title', [], 'Definice typů vazeb (CRMM)'); // Lokalizovaný titulek stránky
 
 		$diag_flt = trim((string) getinput('diagram_uuid'));                 // Volitelný filtr na odvozené vztahy diagramu
 		if ($diag_flt !== '' AND is_guid($diag_flt)) {                       // Pokud byl v URL předán identifikátor diagramu
 			$this->master_where = "m.diagram_uuid = " . guidliteral($diag_flt); // Omezení seznamu na daný diagram
 		}
 
-		if (! $this->access_denied AND $this->em === null) {                 // Inicializace entity_manageru pro nastavení sloupců seznamu
+		if (! $this->access_denied AND$this->em === null) {                 // Inicializace entity_manageru pro nastavení sloupců seznamu
 			$this->em = new entity_manager($this->class_name);               // Vytvoření instance správce entit
 			$this->em->set_list_columns([                                    // Přehledné sloupce v levém Master panelu
 				'link_code'       => $this->phrase('th_link_code', [], 'Kód vazby'),
@@ -42,12 +51,12 @@ class page_meta_link_def extends abstract_page_master_detail {
 			]);                                                              // Konec definice sloupců Master panelu
 		}
 
-		$grp_id    = $this->phrase('grp_identification', [], 'Kód vazby, směr a propojované logické třídy'); // Sekce identifikace
-		$grp_pres  = $this->phrase('grp_presentation', [], 'Prezentační názvy vazby (tam / zpět) a nápověda'); // Sekce textů
-		$grp_rules = $this->phrase('grp_rules_protection', [], 'Pravidla navazování, váha, původ a ochrana'); // Sekce pravidel
+		$grp_id    =$this->phrase('grp_identification', [], 'Kód vazby, směr a propojované logické třídy'); // Sekce identifikace
+		$grp_pres  =$this->phrase('grp_presentation', [], 'Prezentační názvy vazby (tam / zpět) a nápověda'); // Sekce textů
+		$grp_rules =$this->phrase('grp_rules_protection', [], 'Pravidla navazování, váha, původ a ochrana'); // Sekce pravidel
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
-			$grp_id    => ['link_code', 'direction_type', 'from_class', 'to_class', 'reverse_link_def'], // Kód, směr a třídy
+			$grp_id    => ['link_code', 'external_code', 'direction_type', 'from_class', 'to_class', 'reverse_link_def'], // Kód, původ, směr a třídy
 			$grp_pres  => ['caption_forward', 'caption_backward', 'description', 'helptext'], // Lokalizované názvy oběma směry
 			$grp_rules => ['is_multiple', 'is_mandatory', 'leaf_only', 'is_exclusive_parent', 'link_weight_enabled', 'transfer_roles', 'is_derived', 'diagram_uuid', 'valid_from', 'valid_to', 'is_final', 'is_protected', 'inactive'] // Pravidla
 		];                                                                   // Konec definice skupin formuláře

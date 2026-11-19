@@ -33,7 +33,7 @@ class user_context {
 	}
 
 	public function render(): string {
-		global $dbsession;                                                   // Globální pole relace uživatele
+		global $dbsession, $CONFIGURATION_NAME;                                                   // Globální pole relace uživatele
 
 		if (empty($dbsession['user_account'])) {                             // Pokud uživatel není přihlášen
 			return '';                                                       // Horní lištu nevykreslujeme
@@ -151,7 +151,7 @@ class user_context {
 <div class="bcm-top-bar">
 	<div class="bcm-top-bar-left">
 		<div class="ctx-graphic-placeholder">
-			{$logo_placeholder}
+			{$logo_placeholder} $CONFIGURATION_NAME
 		</div>
 	</div>
 	<div class="bcm-top-bar-right">
