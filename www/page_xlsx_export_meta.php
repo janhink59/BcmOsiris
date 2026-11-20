@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-16 15:45
+ * Verze: 2026-11-20 23:15
  * Soubor: page_xlsx_export_meta.php
  * Třída: page_xlsx_export_meta
  *
@@ -23,6 +23,7 @@
  *      (vyžaduje roli Sysadmin 'S' nebo Developer 'D' dle meta_object).
  *
  * Změny:
+ * 2026-11-20 23:15 - Doplněny chybějící mezery před znakem $ dle Anti-LaTeX pravidla.
  * 2026-11-16 15:45 - Všech 6 rozsáhlých T-SQL dotazů vyčleněno do uložené
  *                    procedury dbo.page_xlsx_export_meta (page_xlsx_export_meta.sql);
  *                    opraveny mezery před znakem $ dle Anti-LaTeX pravidla.
@@ -50,7 +51,7 @@ use PhpOffice\PhpSpreadsheet\Cell\DefaultValueBinder;
 class bcm_xlsx_text_value_binder extends DefaultValueBinder {
 
 	public static function dataTypeForValue(mixed $value): string { // Určení datového typu buňky bez vzorců
-		if (is_string($value) AND strlen($value) > 1 AND$value[0] === '=') { // Text začínající znakem rovnítka
+		if (is_string($value) AND strlen($value) > 1 AND $value[0] === '=') { // Text začínající znakem rovnítka
 			return DataType::TYPE_STRING;           // Vždy uložit jako prostý text, nikoliv vzorec
 		}
 		return parent::dataTypeForValue($value);    // Standardní určení typu pro ostatní hodnoty
@@ -61,7 +62,7 @@ class page_xlsx_export_meta extends abstract_page {
 
 	public function __construct() {
 		parent::__construct();                          // Inicializace správce frází a kontroly přístupu v předkovi
-		$this->page_title =$this->phrase('page_title', [], 'Export systémových metadat do Excelu - BCM Osiris'); // Titulek stránky
+		$this->page_title = $this->phrase('page_title', [], 'Export systémových metadat do Excelu - BCM Osiris'); // Titulek stránky
 	}
 
 	/**
@@ -94,9 +95,9 @@ class page_xlsx_export_meta extends abstract_page {
 
 		$lang_rows = sqlarray_simple("EXEC dbo.page_xlsx_export_meta @subpage = 'languages'"); // Načtení jazyků přes proceduru
 		if (is_array($lang_rows)) {                     // Kontrola platného pole jazyků
-			foreach ($lang_rows as$l_row) {            // Průchod jazyky v paměti
-				$l_code = (string)$l_row['language'];  // Dvoupísmenný kód jazyka
-				$l_cap = (string)$l_row['caption'];    // Zobrazovaný název jazyka
+			foreach ($lang_rows as $l_row) {            // Průchod jazyky v paměti
+				$l_code = (string) $l_row['language'];  // Dvoupísmenný kód jazyka
+				$l_cap = (string) $l_row['caption'];    // Zobrazovaný název jazyka
 				$safe_code = htmlspecialchars($l_code); // Ošetřený kód jazyka
 				$safe_label = htmlspecialchars("{$l_code} - {$l_cap}"); // Ošetřený popisek v roletce
 				$sel_prim = ($l_code === 'cs') ? 'selected' : '';       // Výchozí primární jazyk je čeština
@@ -114,11 +115,11 @@ class page_xlsx_export_meta extends abstract_page {
 
 		$btn_export = new abstract_button('btn_export_excel', 'Stáhnout meta_object.xlsx', 'page_xlsx_export_meta', '', 'btn-success'); // Tlačítko exportu
 		$btn_export->set_type('submit')->set_name_value('btn_export_excel', '1'); // Nastavení odesílacích atributů tlačítka
-		$export_html =$btn_export->render();           // Vykreslení tlačítka exportu
+		$export_html = $btn_export->render();           // Vykreslení tlačítka exportu
 
 		$btn_import = new abstract_button('btn_goto_import_excel', '← Přejít na import z Excelu', 'page_xlsx_export_meta', '', 'btn-secondary'); // Tlačítko přechodu na import
 		$btn_import->set_href('index.php?page=page_excel_reader')->set_style('margin-left: 10px;'); // Cílová adresa importu
-		$import_link_html =$btn_import->render();      // Vykreslení odkazu na import
+		$import_link_html = $btn_import->render();      // Vykreslení odkazu na import
 
 		echo <<<HTML
 		<style>
@@ -165,12 +166,12 @@ HTML;
 	/**
 	 * Pomocná metoda pro formátování potenciálně zděděné hodnoty v Excelu (<do stříšek>).
 	 */
-	private function format_inherited_val(mixed $own_val, mixed $anc_val, bool$treat_empty_as_null = false): string { // Formátování děděné hodnoty
-		$is_null = ($own_val === null OR ($treat_empty_as_null AND (string)$own_val === '')); // Zda se uplatní dědičnost
+	private function format_inherited_val(mixed $own_val, mixed $anc_val, bool $treat_empty_as_null = false): string { // Formátování děděné hodnoty
+		$is_null = ($own_val === null OR ($treat_empty_as_null AND (string) $own_val === '')); // Zda se uplatní dědičnost
 		if (! $is_null) {                               // Pokud má záznam vlastní explicitní hodnotu
 			return (string) $own_val;                   // Vrátíme vlastní hodnotu bez stříšek
 		}
-		if ($anc_val !== null AND (string)$anc_val !== '') { // Pokud předek obsahuje neprázdnou hodnotu
+		if ($anc_val !== null AND (string) $anc_val !== '') { // Pokud předek obsahuje neprázdnou hodnotu
 			return '<' . (string) $anc_val . '>';       // Zděděnou hodnotu uzavřeme <do stříšek>
 		}
 		return '';                                      // Předek ani potomek hodnotu nemají
@@ -179,17 +180,17 @@ HTML;
 	/**
 	 * Pomocná metoda pro formátování překladových sloupců s příponou _l.
 	 */
-	private function format_sec_lang_val(string $sec_lang, mixed $own_val_l, mixed$inherited_val): string { // Formátování sloupce *_l
+	private function format_sec_lang_val(string $sec_lang, mixed $own_val_l, mixed $inherited_val): string { // Formátování sloupce *_l
 		if ($sec_lang === '') {                         // Pokud druhý jazyk v CONTENT_INFO není definován
 			return '';                                  // Položky *_l zůstávají prázdné pouze bez druhého jazyka
 		}
-		return $this->format_inherited_val($own_val_l,$inherited_val, true); // Vlastní překlad nebo <zděděná hodnota>
+		return $this->format_inherited_val($own_val_l, $inherited_val, true); // Vlastní překlad nebo <zděděná hodnota>
 	}
 
 	/**
 	 * Pomocná metoda pro obarvení a ztučnění hlavičky listu.
 	 */
-	private function style_sheet_header(object $sheet, string $tech_range, string $note_cell, string $prim_range, string $sec_range, string$full_range): void { // Stylování hlavičky
+	private function style_sheet_header(object $sheet, string $tech_range, string $note_cell, string $prim_range, string $sec_range, string $full_range): void { // Stylování hlavičky
 		$sheet->getStyle($tech_range)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFE0E0E0'); // Šedá pro technické
 		$sheet->getStyle($note_cell)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFD9D2E9');  // Fialová pro AI kontext
 		$sheet->getStyle($prim_range)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFD9EAD3'); // Zelená pro první jazyk

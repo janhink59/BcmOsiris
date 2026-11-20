@@ -1,25 +1,31 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-26 10:45
+ * Verze: 2026-11-20 23:15
  * Soubor: page_service_logbook.php
  * Třída: page_service_logbook
- * Účel: Přehledová stránka pro prohlížení záznamů v provozním deníku
- *       service_logbook (historie spuštěných změnových skriptů changes_YYYY.sql
- *       a importů systémových dávek).
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z centrálního routeru index.php při ?page=page_service_logbook.
- * - Dědí z třídy abstract_page (abstract_page.php), využívá vlastnosti page_title,
- *   access_denied, full_width a lokalizaci přes metodu phrase().
- * - Stránka je dostupná pro systémové administrátory (active_role = 'S' nebo 'D'),
- *   v meta_object a meta_menu je registrována pod system_role = 'S'.
- * - Využívá komponentu abstract_button (abstract_button.php) pro vykreslení tlačítek
- *   filtrace a obnovy výchozího stavu.
- * - Čte data z tabulky service_logbook (definované v system_constant.sql) pomocí
- *   funkcí sqlfirstrow() a sqlarray_simple() z knihovny OsirisLib.php.
+ * 1. Role souboru v celém systému:
+ *    Přehledová stránka pro prohlížení záznamů v provozním deníku
+ *    service_logbook (historie spuštěných změnových skriptů changes_YYMM.sql
+ *    a importů systémových dávek).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z centrálního routeru index.php při ?page=page_service_logbook.
+ *    - Dědí z třídy abstract_page (abstract_page.php), využívá vlastnosti page_title,
+ *      access_denied, full_width a lokalizaci přes metodu phrase().
+ *    - Využívá komponentu abstract_button (abstract_button.php) pro vykreslení tlačítek
+ *      filtrace a obnovy výchozího stavu.
+ *    - Ověřuje existenci tabulky service_logbook přes kešovanou funkci db_object_exists()
+ *      z new_functions.php a čte data pomocí sqlarray_simple() z OsirisLib.php.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole $dbsession (naplněné z tabulky dbsession pro @@SPID),
+ *      stránka vyžaduje roli Sysadmin ('S') nebo Developer ('D').
  *
  * Změny:
+ * 2026-11-20 23:15 - Kontrola existence tabulky service_logbook převedena na
+ *                    kešovanou funkci db_object_exists('service_logbook', 'U').
  * 2026-10-26 10:45 - Oprava chybějících mezer před znakem $ dle Anti-LaTeX pravidla.
  * 2026-10-25 11:30 - Vytvoření první verze stránky pro prohlížení tabulky service_logbook
  *                    s filtrací podle počtu záznamů (výchozí 100) a textového vzorku.
@@ -70,9 +76,8 @@ class page_service_logbook extends abstract_page {
 		echo "<h1 class=\"page-heading\">{$heading}</h1>\n";                 // Výpis hlavního nadpisu stránky
 		echo "<p style=\"margin-bottom: 18px; color: #475569; font-size: 13px;\">{$intro}</p>\n"; // Výpis úvodního popisu
 
-		// Ověření fyzické existence tabulky service_logbook v databázi
-		$tbl_check = sqlfirstrow("SELECT OBJECT_ID('service_logbook') AS obj_id"); // Dotaz na přítomnost tabulky v databázi
-		if (empty($tbl_check) OR empty($tbl_check['obj_id'])) {              // Pokud tabulka v databázi ještě neexistuje
+		// Ověření fyzické existence tabulky service_logbook v databázi přes kešovaný helper
+		if (! db_object_exists('service_logbook', 'U')) {                    // Pokud tabulka v databázi ještě neexistuje
 			$msg_missing = htmlspecialchars($this->phrase('msg_table_missing', [], 'Tabulka service_logbook v databázi dosud neexistuje. Spusťte nejprve změnový skript changes_2026.sql nebo hlavní dávku BcmOsirisDb.sql.')); // Chybová zpráva
 			echo "<div class=\"msg-err\">{$msg_missing}</div>\n";            // Výpis chybové zprávy
 			return;                                                          // Ukončení vykreslování

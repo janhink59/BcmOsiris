@@ -1,21 +1,36 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-09 16:30
+ * Verze: 2026-11-20 23:45
  * Soubor: entity_manager_ssc.php
  * Trait: entity_manager_ssc
- * Účel: Schvalovací cyklus (SSC: approve_draft, reject_draft, delete_draft),
- *       doménová validace monotonie hodnotících škál (validate_scale_value_monotonicity)
- *       a návazné operace po uložení záznamu (run_post_save_hooks).
- *       Vyčleněno z entity_manager_write.php pro modulární strukturu a menší
- *       velikost jednotlivých zdrojových souborů.
  *
- * VAZBY NA OKOLÍ:
- * - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
- * - Spolupracuje s traitem `entity_manager_write` (`clone_with_map`, `unquote_sql_literal`).
- * - Volán z `entity_manager_write::save_post_data()`, `abstract_page_master_detail::process_save()`
- *   a `page_approval::process_save()`.
- * - V `run_post_save_hooks()` volá `dbo.p_crmm_recalculate` při uložení entit CRMM.
+ * 1. Role souboru v celém systému:
+ *    Schvalovací cyklus (SSC: approve_draft, reject_draft, delete_draft),
+ *    doménová validace monotonie hodnotících škál (validate_scale_value_monotonicity)
+ *    a návazné operace po uložení záznamu (run_post_save_hooks).
+ *    Vyčleněno z entity_manager_write.php pro modulární strukturu a menší
+ *    velikost jednotlivých zdrojových souborů.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Inkludován a používán výhradně uvnitř třídy `entity_manager` (`entity_manager.php`).
+ *    - Spolupracuje s traitem `entity_manager_write` (`clone_with_map`,
+ *      `unquote_sql_literal`, `validate_asset_class_compatibility`) a globální
+ *      funkcí `db_object_exists()` (`new_functions.php`).
+ *    - Volán z `entity_manager_write::save_post_data()`, `abstract_page_master_detail::process_save()`
+ *      a `page_approval::process_save()`.
+ *    - V `run_post_save_hooks()` volá `dbo.p_sync_derived_links` a `dbo.p_crmm_recalculate`.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole `$dbsession` (organization, user_account, login_session_uuid,
+ *      language, right_translate) naplněné z tabulky `dbsession` pro `@@SPID`.
+ *
+ * Změny:
+ * 2026-11-20 23:45 - V run_post_save_hooks() využita kešovaná funkce db_object_exists().
+ *                  - V approve_draft() doplněna kontrola slučitelnosti tříd aktiv
+ *                    (multi_class) přes validate_asset_class_compatibility() pro
+ *                    návrhy nad tabulkami asset a link (prevence kolize při hromadném schválení).
+ * 2026-11-09 16:30 - Zapojení volání dbo.p_crmm_recalculate v run_post_save_hooks().
  * =============================================================================
  */
 
@@ -145,11 +160,8 @@ trait entity_manager_ssc {
 
 		$table = $this->storage_table; // Fyzická tabulka entity
 
-		if ($table === 'link') { // Materializace zděděných vazeb v tabulce link
-			$p_row = sqlfirstrow("SELECT OBJECT_ID('p_sync_derived_links', 'P') AS pid"); // Ověření existence procedury
-			if (! empty($p_row['pid'])) { // Pokud procedura v DB existuje
-				sqlrun("EXEC dbo.p_sync_derived_links @root_link_original = {$orig_guid_sql}"); // Přepočet odvozených vazeb
-			}
+		if ($table === 'link' AND db_object_exists('p_sync_derived_links', 'P')) { // Materializace zděděných vazeb v tabulce link
+			sqlrun("EXEC dbo.p_sync_derived_links @root_link_original = {$orig_guid_sql}"); // Přepočet odvozených vazeb
 		}
 
 		if (in_array('is_default', $this->physical_cols, true)) { // Zajištění jednoznačnosti výchozí položky (is_default = 1)
@@ -223,11 +235,8 @@ trait entity_manager_ssc {
 			}
 		}
 
-		if (in_array($table, ['asset', 'link', 'countermeasure_implementation', 'scenario_assessment', 'countermeasure', 'countermeasure_state', 'scenario', 'threat'], true)) { // Přepočet CRMM
-			$crmm_proc = sqlfirstrow("SELECT OBJECT_ID('p_crmm_recalculate', 'P') AS pid"); // Kontrola existence výpočetní procedury
-			if (! empty($crmm_proc['pid'])) { // Pokud procedura v DB existuje
-				sqlrun("EXEC dbo.p_crmm_recalculate @org_uuid = {$rec_owner_sql}"); // Automatický přepočet faktorů a rizik organizace
-			}
+		if (in_array($table, ['asset', 'link', 'countermeasure_implementation', 'scenario_assessment', 'countermeasure', 'countermeasure_state', 'scenario', 'threat'], true) AND db_object_exists('p_crmm_recalculate', 'P')) { // Přepočet CRMM
+			sqlrun("EXEC dbo.p_crmm_recalculate @org_uuid = {$rec_owner_sql}"); // Automatický přepočet faktorů a rizik organizace
 		}
 	}
 
@@ -301,6 +310,32 @@ trait entity_manager_ssc {
 		$draft_lang_sql = charliteral($draft_lang_raw, 2); // SQL literál jazyka návrhu
 		$author_session_sql = guidliteral((string) $draft_row['who_modified']); // Relace autora v době postoupení návrhu
 		$author_date_sql = charliteral((string) $draft_row['date_modified']); // Datum postoupení návrhu autorem
+
+		if (empty($draft_row['removed']) AND empty($draft_row['inactive'])) { // Kontrola slučitelnosti tříd aktiv (multi_class) před schválením
+			$compat_ok = true; // Výchozí příznak slučitelnosti tříd
+			if ($table === 'asset') { // Kontrola navrhované primární třídy aktiva
+				$draft_pac_raw = (string) ($draft_row['primary_asset_class'] ?? ''); // Navrhovaná primární třída aktiva
+				if ($draft_pac_raw !== '' AND is_guid($draft_pac_raw)) { // Platné UUID primární třídy
+					$compat_ok = $this->validate_asset_class_compatibility($orig_sql, guidliteral($draft_pac_raw), $owner_sql, false); // Ověření multi_class
+				}
+			} elseif ($table === 'link') { // Kontrola vazby vedlejší třídy aktiv
+				$ld_sql = guidliteral((string) ($draft_row['link_def'] ?? '')); // SQL literál typu vazby
+				$fr_sql = guidliteral((string) ($draft_row['from_object'] ?? '')); // SQL literál zdrojového objektu
+				$to_sql = guidliteral((string) ($draft_row['to_object'] ?? '')); // SQL literál cílového objektu
+				$ld_info = ($ld_sql !== 'NULL') ? sqlfirstrow("SELECT TOP 1 link_code FROM meta_link_def WHERE original = {$ld_sql} AND record_type = 'A' AND removed = 0") : []; // Kód vztahu
+				$ld_code = (string) ($ld_info['link_code'] ?? ''); // Kód typu vazby
+				if ($ld_code === 'asset_additional_class') { // Přímý směr: aktivum -> vedlejší třída aktiv
+					$compat_ok = $this->validate_asset_class_compatibility($fr_sql, $to_sql, $owner_sql, true); // Ověření multi_class
+				} elseif ($ld_code === 'asset_class_has_asset') { // Zpětný směr: třída aktiv -> aktivum
+					$compat_ok = $this->validate_asset_class_compatibility($to_sql, $fr_sql, $owner_sql, true); // Ověření multi_class
+				}
+			}
+			if (! $compat_ok) { // Při kolizi multi_class schválení zablokujeme a zapíšeme důvod do poznámky návrhu
+				$safe_err_note = charliteral($this->get_last_save_error()); // SQL literál chybové hlášky konfliktu
+				sqlrun("UPDATE {$table} SET approval_note = {$safe_err_note}, date_modified = GETDATE(), who_modified = {$approver_session_sql} WHERE uuid = {$draft_uuid_sql}"); // Zápis důvodu zablokování
+				return; // Ukončení bez schválení návrhu
+			}
+		}
 
 		$is_sys_owner = is_zero_guid($owner_raw); // Zda jde o systémového vlastníka 0x00
 		$is_final_class = (! $is_sys_owner AND $table !== 'organization' AND ! empty($this->class_meta['is_final'])); // Zda třída zakazuje A override

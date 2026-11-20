@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-16 15:25
+ * Verze: 2026-11-20 23:30
  * Soubor: page_link.php
  * Třída: page_link
  *
@@ -24,6 +24,8 @@
  *      parametry link_def_filter, from_object a diagram_uuid.
  *
  * Změny:
+ * 2026-11-20 23:30 - Implementován hook is_record_readonly() pro spolehlivé uzamčení
+ *                    zděděných a odvozených vazeb (is_derived = 1) v hlavičce i při POST.
  * 2026-11-16 15:25 - Odstraněn N+1 cyklus dotazů v render_detail_top() a
  *                    10násobný UNION ALL v load_lookup_captions(); nahrazeno
  *                    jediným voláním procedury EXEC dbo.page_link.
@@ -88,6 +90,14 @@ class page_link extends abstract_page_master_detail {
 			$grp_rel  => ['link_def', 'from_object', 'to_object'],           // Klíčové složky vazby
 			$grp_meta => ['link_weight', 'reverse_link_weight', 'diagram_uuid', 'note', 'valid_from', 'valid_to', 'inactive'] // Váha, diagram, poznámka a platnost
 		];                                                                   // Konec definice skupin formuláře
+	}
+
+	/**
+	 * Zděděné, stromové a diagramové vazby (is_derived = 1) jsou uzamčeny pouze
+	 * pro čtení ještě před vykreslením hlavičky detailu i při POST uložení.
+	 */
+	protected function is_record_readonly(array $row): bool {                // Kontrola uzamčení zděděné vazby
+		return ! empty($row['is_derived']);                                  // Zákaz úprav pro is_derived = 1
 	}
 
 	/**
@@ -291,7 +301,7 @@ HTML;
 	}
 
 	/**
-	 * Předvyplní kontextové hodnoty u nové vazby, uzamkne zděděné vazby (`is_derived = 1`)
+	 * Předvyplní kontextové hodnoty u nové vazby, zobrazí upozornění u zděděných vazeb (`is_derived = 1`)
 	 * a jedním voláním dbo.page_link načte pravidla i položky pro dynamické přepínání `from_object` a `to_object`.
 	 */
 	protected function render_detail_top(): void {
@@ -314,7 +324,6 @@ HTML;
 		}
 
 		if ($update_guid !== '' AND $update_guid !== 'NEW' AND ! empty($datarow['is_derived'])) { // Zděděná nebo stromová vazba
-			$this->is_readonly = true;                                       // Uzamčení zděděné vazby v detailu
 			$msg_der = htmlspecialchars($this->phrase('msg_derived_link_readonly', [], 'Tato vazba vznikla automatickým děděním po hierarchii, ze sloupce parent_uuid nebo projekcí ze schématu sítě (is_derived = 1). Zděděnou vazbu nelze ručně přepisovat; upravte ji na zdrojovém záznamu nebo diagramu.')); // Info
 			echo "<div class=\"msg-info\" style=\"margin-bottom: 12px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e;\">{$msg_der}</div>\n"; // Žlutý pruh
 		}

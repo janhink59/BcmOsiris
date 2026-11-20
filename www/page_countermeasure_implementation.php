@@ -1,19 +1,32 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-09 16:30
+ * Verze: 2026-11-20 23:45
  * Soubor: page_countermeasure_implementation.php
  * Třída: page_countermeasure_implementation
- * Účel: Evidence skutečného stavu zavedení protiopatření (countermeasure)
- *       na konkrétních aktivech a prostorech (asset) s automatickým výpočtem
- *       efektivního redukčního a rizikového faktoru (0 až 100 %).
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z routeru `index.php` při `?page=page_countermeasure_implementation`.
- * - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou
- *   `'countermeasure_implementation'`.
- * - Při uložení záznamu automaticky spouští `dbo.p_crmm_recalculate` přes
- *   `entity_manager_ssc::run_post_save_hooks()`.
+ * 1. Role souboru v celém systému:
+ *    Evidence skutečného stavu zavedení protiopatření (countermeasure)
+ *    na konkrétních aktivech a prostorech (asset) s automatickým výpočtem
+ *    efektivního redukčního a rizikového faktoru (0 až 100 %).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z routeru `index.php` při `?page=page_countermeasure_implementation`.
+ *    - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou
+ *      `'countermeasure_implementation'` (`table_countermeasure_implementation.sql`).
+ *    - Využívá `entity_manager::set_column_computed()` pro uzamčení vypočtených
+ *      faktorů a při uložení automaticky spouští `dbo.p_crmm_recalculate` přes
+ *      `entity_manager_ssc::run_post_save_hooks()`.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole `$dbsession` (v databázi `dbsession` pro aktuální `@@SPID`)
+ *      a volitelný GET parametr `asset_uuid`.
+ *
+ * Změny:
+ * 2026-11-20 23:45 - Oprava uzamčení sloupců effective_reduction_factor a
+ *                    effective_risk_factor přes $this->em->set_column_computed()
+ *                    v konstruktoru (odstraněn nefunkční zápis do kopie pole).
+ * 2026-11-09 16:30 - Vytvoření první verze obrazovky implementace protiopatření.
  * =============================================================================
  */
 
@@ -54,6 +67,8 @@ class page_countermeasure_implementation extends abstract_page_master_detail {
 			'effective_risk_factor'      => $this->phrase('th_eff_risk', [], 'Ef. práh rizika (%)'),
 			'target_date'                => $this->phrase('th_target_date', [], 'Termín')
 		]);                                                                  // Konec definice sloupců seznamu
+		$this->em->set_column_computed('effective_reduction_factor', true);  // Uzamčení vypočítaného redukčního faktoru v UI i při POST
+		$this->em->set_column_computed('effective_risk_factor', true);       // Uzamčení vypočítaného rizikového faktoru v UI i při POST
 
 		$grp_rel  = $this->phrase('grp_asset_cm_state', [], 'Chráněné aktivum, aplikované protiopatření a stav zavedení'); // Sekce vazeb
 		$grp_pres = $this->phrase('grp_presentation', [], 'Popis realizace opatření a poznámky z kontroly'); // Sekce textů
@@ -153,15 +168,6 @@ HTML;
 		global $datarow;                                                     // Aktuálně načtený řádek detailu
 		$update_guid = trim((string) getinput('update_guid'));               // Identifikátor záznamu v detailu
 		$org_sql = guidliteral(get_session_org());                           // SQL literál aktivní organizace
-
-		if ($this->em !== null) {                                            // Vypočítávané efektivní faktory uzamkneme jako readonly
-			foreach (['effective_reduction_factor', 'effective_risk_factor'] as $comp_col) { // Vypočítávané sloupce
-				$m = $this->em->get_column_meta($comp_col);                  // Načtení metadat sloupce
-				if (! empty($m)) {                                           // Pokud sloupec v metadatech existuje
-					$m['is_computed'] = 1;                                   // Označení jako počítaný (readonly)
-				}
-			}
-		}
 
 		if ($update_guid === 'NEW' AND is_array($datarow) AND ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') { // Nový záznam
 			if ($this->filter_asset_uuid !== '') {                           // Předvyplnění aktiva z kontextového filtru

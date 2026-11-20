@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-19 16:05
+ * Verze: 2026-11-20 23:30
  * Soubor: page_meta_link_def.php
  * Třída: page_meta_link_def
  *
@@ -22,6 +22,9 @@
  *      a volitelný GET parametr diagram_uuid pro filtrování odvozených vztahů.
  *
  * Změny:
+ * 2026-11-20 23:30 - Implementován hook is_record_readonly() pro spolehlivé uzamčení
+ *                    odvozených vztahů (is_derived = 1) v hlavičce i při POST uložení;
+ *                    opraveny chybějící mezery před znakem $ dle Anti-LaTeX pravidla.
  * 2026-11-19 16:05 - Do skupiny identifikace ($grp_id) doplněn sloupec external_code.
  * =============================================================================
  */
@@ -34,15 +37,15 @@ class page_meta_link_def extends abstract_page_master_detail {
 		parent::__construct();                                               // Inicializace správce frází a kontroly přístupu
 
 		$this->class_name = 'meta_link_def';                                 // Logická třída pro entity_manager
-		$this->allow_insert = !$this->is_readonly;                          // Povolení zakládání nových definic vazeb
-		$this->page_title =$this->phrase('page_title', [], 'Definice typů vazeb (CRMM)'); // Lokalizovaný titulek stránky
+		$this->allow_insert = ! $this->is_readonly;                          // Povolení zakládání nových definic vazeb
+		$this->page_title = $this->phrase('page_title', [], 'Definice typů vazeb (CRMM)'); // Lokalizovaný titulek stránky
 
 		$diag_flt = trim((string) getinput('diagram_uuid'));                 // Volitelný filtr na odvozené vztahy diagramu
 		if ($diag_flt !== '' AND is_guid($diag_flt)) {                       // Pokud byl v URL předán identifikátor diagramu
 			$this->master_where = "m.diagram_uuid = " . guidliteral($diag_flt); // Omezení seznamu na daný diagram
 		}
 
-		if (! $this->access_denied AND$this->em === null) {                 // Inicializace entity_manageru pro nastavení sloupců seznamu
+		if (! $this->access_denied AND $this->em === null) {                 // Inicializace entity_manageru pro nastavení sloupců seznamu
 			$this->em = new entity_manager($this->class_name);               // Vytvoření instance správce entit
 			$this->em->set_list_columns([                                    // Přehledné sloupce v levém Master panelu
 				'link_code'       => $this->phrase('th_link_code', [], 'Kód vazby'),
@@ -51,15 +54,23 @@ class page_meta_link_def extends abstract_page_master_detail {
 			]);                                                              // Konec definice sloupců Master panelu
 		}
 
-		$grp_id    =$this->phrase('grp_identification', [], 'Kód vazby, směr a propojované logické třídy'); // Sekce identifikace
-		$grp_pres  =$this->phrase('grp_presentation', [], 'Prezentační názvy vazby (tam / zpět) a nápověda'); // Sekce textů
-		$grp_rules =$this->phrase('grp_rules_protection', [], 'Pravidla navazování, váha, původ a ochrana'); // Sekce pravidel
+		$grp_id    = $this->phrase('grp_identification', [], 'Kód vazby, směr a propojované logické třídy'); // Sekce identifikace
+		$grp_pres  = $this->phrase('grp_presentation', [], 'Prezentační názvy vazby (tam / zpět) a nápověda'); // Sekce textů
+		$grp_rules = $this->phrase('grp_rules_protection', [], 'Pravidla navazování, váha, původ a ochrana'); // Sekce pravidel
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_id    => ['link_code', 'external_code', 'direction_type', 'from_class', 'to_class', 'reverse_link_def'], // Kód, původ, směr a třídy
 			$grp_pres  => ['caption_forward', 'caption_backward', 'description', 'helptext'], // Lokalizované názvy oběma směry
 			$grp_rules => ['is_multiple', 'is_mandatory', 'leaf_only', 'is_exclusive_parent', 'link_weight_enabled', 'transfer_roles', 'is_derived', 'diagram_uuid', 'valid_from', 'valid_to', 'is_final', 'is_protected', 'inactive'] // Pravidla
 		];                                                                   // Konec definice skupin formuláře
+	}
+
+	/**
+	 * Odvozené nepřímé vztahy vygenerované ze schématu sítě nebo FK (is_derived = 1)
+	 * jsou uzamčeny pouze pro čtení ještě před vykreslením hlavičky i při POST uložení.
+	 */
+	protected function is_record_readonly(array $row): bool {                // Kontrola uzamčení odvozeného vztahu
+		return ! empty($row['is_derived']);                                  // Zákaz úprav pro is_derived = 1
 	}
 
 	/**
@@ -95,7 +106,7 @@ class page_meta_link_def extends abstract_page_master_detail {
 	}
 
 	/**
-	 * Předvyplní výchozí příznaky u nového záznamu a uzamkne nepřímé vztahy vygenerované z diagramu (`is_derived = 1`).
+	 * Předvyplní výchozí příznaky u nového záznamu a zobrazí upozornění u nepřímých vztahů (`is_derived = 1`).
 	 */
 	protected function render_detail_top(): void {
 		global $datarow;                                                     // Aktuálně načtený řádek detailu
@@ -108,7 +119,6 @@ class page_meta_link_def extends abstract_page_master_detail {
 		}
 
 		if ($update_guid !== '' AND $update_guid !== 'NEW' AND ! empty($datarow['is_derived'])) { // Odvozený nepřímý vztah z diagramu
-			$this->is_readonly = true;                                       // Uzamčení automaticky vygenerovaného vztahu
 			$msg_der = htmlspecialchars($this->phrase('msg_derived_link_def_readonly', [], 'Tento nepřímý vztah byl automaticky vygenerován ze schématu heterogenní sítě (is_derived = 1). Upravuje se přepočtem příslušného diagramu sítě.')); // Info
 			echo "<div class=\"msg-info\" style=\"margin-bottom: 12px; background-color: #fffbeb; border-left-color: #f59e0b; color: #92400e;\">{$msg_der}</div>\n"; // Žlutý pruh
 		}

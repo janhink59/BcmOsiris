@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-19 15:40
+ * Verze: 2026-11-20 23:15
  * Soubor: page_asset_class.php
  * Třída: page_asset_class
  *
@@ -24,6 +24,7 @@
  *      větví v sessionStorage pod klíčem bcm_tree_asset_class.
  *
  * Změny:
+ * 2026-11-20 23:15 - Doplněny chybějící mezery před znakem $ dle Anti-LaTeX pravidla.
  * 2026-11-19 15:40 - Doplněn sloupec multi_class do editačního formuláře i do
  *                    přehledových sloupců levého stromu ($this->tree_extra_columns).
  * 2026-11-04 10:30 - Odstraněn umělý chráněný kořen 'ROOT' ($protected_root_codes).
@@ -38,13 +39,13 @@ class page_asset_class extends abstract_page_tree {
 		parent::__construct();                                               // Inicializace frází, kontroly přístupu a D&D v předkovi
 
 		$this->class_name = 'asset_class';                                   // Logická třída pro entity_manager
-		$this->can_edit_structure = !$this->is_readonly;                    // Povolení úpravy stromu a D&D v editačním režimu
-		$this->allow_insert = !$this->is_readonly;                          // Povolení zakládání nových tříd aktiv
+		$this->can_edit_structure = ! $this->is_readonly;                    // Povolení úpravy stromu a D&D v editačním režimu
+		$this->allow_insert = ! $this->is_readonly;                          // Povolení zakládání nových tříd aktiv
 		$this->storage_key_prefix = 'bcm_tree_asset_class';                  // Klíč v sessionStorage pro sbalené větve
 
-		$this->page_title =$this->phrase('page_title', [], 'Třídy aktiv (Katalog CRMM)'); // Lokalizovaný titulek stránky
-		$this->tree_heading =$this->phrase('master_heading', [], 'Strom tříd aktiv'); // Nadpis levého panelu
-		$this->tree_caption_header =$this->phrase('th_asset_class_caption', [], 'Třída aktiv / Složka'); // Záhlaví stromového sloupce
+		$this->page_title = $this->phrase('page_title', [], 'Třídy aktiv (Katalog CRMM)'); // Lokalizovaný titulek stránky
+		$this->tree_heading = $this->phrase('master_heading', [], 'Strom tříd aktiv'); // Nadpis levého panelu
+		$this->tree_caption_header = $this->phrase('th_asset_class_caption', [], 'Třída aktiv / Složka'); // Záhlaví stromového sloupce
 		$this->new_button_code = 'btn_new_asset_class';                      // Kód fráze tlačítka pro novou třídu aktiv
 		$this->new_button_default_caption = '+ Nová třída aktiv';            // Výchozí popisek tlačítka
 
@@ -56,9 +57,9 @@ class page_asset_class extends abstract_page_tree {
 			]
 		];                                                                   // Konec definice doplňkových sloupců
 
-		$grp_pres =$this->phrase('grp_presentation', [], 'Prezentační texty a nápověda'); // Sekce překládaných textů
-		$grp_hier =$this->phrase('grp_hierarchy_placement', [], 'Zařazení ve stromu a identifikace'); // Sekce stromu
-		$grp_perm =$this->phrase('grp_validity_protection', [], 'Platnost, vzhled a ochrana'); // Sekce platnosti
+		$grp_pres = $this->phrase('grp_presentation', [], 'Prezentační texty a nápověda'); // Sekce překládaných textů
+		$grp_hier = $this->phrase('grp_hierarchy_placement', [], 'Zařazení ve stromu a identifikace'); // Sekce stromu
+		$grp_perm = $this->phrase('grp_validity_protection', [], 'Platnost, vzhled a ochrana'); // Sekce platnosti
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_pres => ['caption', 'shortname', 'description_text', 'help_text'], // Lokalizované názvy a popisy
@@ -76,7 +77,7 @@ class page_asset_class extends abstract_page_tree {
 		if ($update_guid === 'NEW') {                                        // Pokud zakládáme novou třídu aktiv
 			return htmlspecialchars($this->phrase('header_new_asset_class', [], 'Nová třída aktiv')); // Nadpis pro nový záznam
 		}
-		$title_val = (string)($datarow['builtin_code'] ?:$datarow['caption'] ?: ''); // Kód nebo název třídy aktiv
+		$title_val = (string)($datarow['builtin_code'] ?: $datarow['caption'] ?: ''); // Kód nebo název třídy aktiv
 		$safe_val = htmlspecialchars($title_val);                            // Ošetřený identifikátor pro nadpis
 		$lbl = htmlspecialchars($this->phrase('header_edit_asset_class', [], 'Třída aktiv')); // Lokalizované návěstí
 		return "{$lbl}: <span style=\"font-family: monospace; color: #555;\">{$safe_val}</span>"; // Výsledný HTML nadpis

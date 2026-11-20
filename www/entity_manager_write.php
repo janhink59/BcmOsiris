@@ -1,14 +1,14 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-19 15:40
+ * Verze: 2026-11-20 23:55
  * Soubor: entity_manager_write.php
  * Trait: entity_manager_write
  *
  * 1. Role souboru v celém systému:
  *    Zápisová, validační a klonovací část třídy entity_manager. Řeší extrakci
  *    POST dat, kontrolu klíčových sloupců, validaci pravidla multi_class při
- *    přiřazování vedlejších tříd aktiv a autonomní zápis 'A', 'L' i 'D' záznamů.
+ *    přiřazování či obnově vedlejších tříd aktiv a autonomní zápis 'A', 'L' i 'D' záznamů.
  *
  * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
  *    - Inkludován a používán výhradně uvnitř třídy entity_manager (entity_manager.php).
@@ -24,6 +24,9 @@
  *      language, active_role, right_translate) naplněné z tabulky dbsession pro @@SPID.
  *
  * Změny:
+ * 2026-11-20 23:55 - Doplněna validace pravidla multi_class také při úpravě,
+ *                    reaktivaci nebo obnově vazby z koše v tabulce link; kontrola
+ *                    existence p_split_hierarchy_node_to_folder převedena na db_object_exists().
  * 2026-11-19 15:40 - Doplněna validace pravidla asset_class.multi_class přes
  *                    dbo.f_check_asset_class_compatible při ukládání vazby
  *                    asset_additional_class / asset_class_has_asset v tabulce link
@@ -504,6 +507,28 @@ trait entity_manager_write {
 			}
 		}
 
+		// Validace kompatibility vedlejší třídy aktiv (multi_class) při úpravě, obnově z koše nebo reaktivaci vazby v tabulce link
+		if ($table === 'link' AND $orig_guid_sql !== '' AND ! empty($current_row)) { // Úprava existující vazby v tabulce link
+			$eff_lnk_rem = array_key_exists('removed', $a_post_data) ? (int) $a_post_data['removed'] : (array_key_exists('removed', $d_post_data) ? (int) $d_post_data['removed'] : (int) ($current_row['removed'] ?? 0)); // Výsledný stav příznaku removed
+			$eff_lnk_inact = array_key_exists('inactive', $a_post_data) ? (int) $a_post_data['inactive'] : (array_key_exists('inactive', $d_post_data) ? (int) $d_post_data['inactive'] : (int) ($current_row['inactive'] ?? 0)); // Výsledný stav příznaku inactive
+			if ($eff_lnk_rem === 0 AND $eff_lnk_inact === 0) {               // Kontrola pouze u aktivní nebo z koše obnovované vazby
+				$cur_ld_lit = guidliteral((string) ($current_row['link_def'] ?? '')); // SQL literál typu vazby
+				$cur_fr_lit = guidliteral((string) ($current_row['from_object'] ?? '')); // SQL literál zdrojového objektu
+				$cur_to_lit = guidliteral((string) ($current_row['to_object'] ?? '')); // SQL literál cílového objektu
+				$ld_upd_info = ($cur_ld_lit !== 'NULL') ? sqlfirstrow("SELECT TOP 1 link_code FROM meta_link_def WHERE original = {$cur_ld_lit} AND record_type = 'A' AND removed = 0") : []; // Načtení kódu vztahu
+				$ld_upd_code = (string) ($ld_upd_info['link_code'] ?? '');   // Kód upravovaného typu vazby
+				if ($ld_upd_code === 'asset_additional_class') {             // Přímý směr: aktivum -> vedlejší třída aktiv
+					if (! $this->validate_asset_class_compatibility($cur_fr_lit, $cur_to_lit, $rec_owner_sql, true)) { // Kontrola slučitelnosti tříd
+						return '';                                           // Zastavení obnovy nebo uložení při konfliktu tříd
+					}
+				} elseif ($ld_upd_code === 'asset_class_has_asset') {        // Zpětný směr: třída aktiv -> aktivum
+					if (! $this->validate_asset_class_compatibility($cur_to_lit, $cur_fr_lit, $rec_owner_sql, true)) { // Kontrola slučitelnosti tříd
+						return '';                                           // Zastavení obnovy nebo uložení při konfliktu tříd
+					}
+				}
+			}
+		}
+
 		if ($orig_guid_sql === '') { // Validace klíčových položek a unikátnosti originálu u nového záznamu (NEW)
 			$src_key_data = ! empty($a_post_data) ? $a_post_data : $d_post_data; // Pole hodnot pro výpočet klíče
 			$key_info = sqlfirstrow("SELECT key1_column, key2_column FROM meta_original_keys WHERE table_name = " . charliteral($table)); // Klíčové sloupce
@@ -649,10 +674,10 @@ trait entity_manager_write {
 		sqlrun("BEGIN TRAN"); // Zahájení databázové transakce
 
 		// Automatické rozčlenění nadřízeného koncového uzlu (is_leaf = 1 -> 0 + uzel _oth), pokud pod něj ukládáme položku
-		if ($target_status === 'A' AND isset($a_post_data['parent_uuid']) AND $a_post_data['parent_uuid'] !== 'NULL' AND $a_post_data['parent_uuid'] !== '0x00' AND in_array('is_leaf', $this->physical_cols, true)) { // Kontrola rodiče
+		if ($target_status === 'A' AND isset($a_post_data['parent_uuid']) AND $a_post_data['parent_uuid'] !== 'NULL' AND $a_post_data['parent_uuid'] !== '0x00' AND in_array('is_leaf', $this->physical_cols, true) AND db_object_exists('p_split_hierarchy_node_to_folder', 'P')) { // Kontrola rodiče a existence procedury
 			$par_split_sql = (string) $a_post_data['parent_uuid']; // SQL literál nadřízeného uzlu
 			$safe_split_tab = charliteral($table, 128); // SQL literál tabulky
-			sqlrun("IF OBJECT_ID('dbo.p_split_hierarchy_node_to_folder', 'P') IS NOT NULL EXEC dbo.p_split_hierarchy_node_to_folder @table_name = {$safe_split_tab}, @node_original = {$par_split_sql}, @org_uuid = {$rec_owner_sql}, @user_session = {$user_uuid_sql};"); // Rozčlenění
+			sqlrun("EXEC dbo.p_split_hierarchy_node_to_folder @table_name = {$safe_split_tab}, @node_original = {$par_split_sql}, @org_uuid = {$rec_owner_sql}, @user_session = {$user_uuid_sql};"); // Rozčlenění koncového uzlu
 		}
 
 		$audit_base_map = ['date_created' => 'GETDATE()', 'date_modified' => 'GETDATE()', 'who_created' => $user_uuid_sql, 'who_modified' => $user_uuid_sql]; // Základní auditní mapa

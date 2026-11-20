@@ -1,23 +1,32 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-01 11:15
+ * Verze: 2026-11-20 23:15
  * Soubor: phrase_manager.php
  * Třída: phrase_manager
- * Účel: Centralizovaný správce pro dávkové načítání, kešování, lokalizaci
- *       a interpolaci textových frází (globálních i specifických pro třídy/stránky).
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancován v `abstract_page` (a uložen v `$GLOBALS['phrase_manager']`)
- *   nebo prostřednictvím funkce `translate_phrase()` (`new_functions.php`)
- *   a třídy `global_phrase` (`global_phrase.php`).
- * - Využívá `language_manager` (`language_manager.php`) a databázové procedury
- *   `dbo.p_get_phrases` a `dbo.p_auto_register_phrase` (`p_phrases.sql`).
- * - Globální fráze jsou uloženy pod pevným `source_code = 'global_phrase'`.
- * - Poskytuje kompletní metadata frází (včetně `svg_icon`, `css_class` a `helptext`)
- *   pro vykreslování tlačítek ve třídě `abstract_button`.
+ * 1. Role souboru v celém systému:
+ *    Centralizovaný správce pro dávkové načítání, kešování, lokalizaci
+ *    a interpolaci textových frází (globálních i specifických pro třídy/stránky).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancován v `abstract_page` (a uložen v `$GLOBALS['phrase_manager']`)
+ *      nebo prostřednictvím funkce `translate_phrase()` (`new_functions.php`)
+ *      a třídy `global_phrase` (`global_phrase.php`).
+ *    - Využívá `language_manager` (`language_manager.php`), `db_object_exists()`
+ *      (`new_functions.php`) a databázové procedury `dbo.p_get_phrases`
+ *      a `dbo.p_auto_register_phrase` (`p_phrases.sql`).
+ *    - Globální fráze jsou uloženy pod pevným `source_code = 'global_phrase'`.
+ *    - Poskytuje kompletní metadata frází (včetně `svg_icon`, `css_class` a `helptext`)
+ *      pro vykreslování tlačítek ve třídě `abstract_button`.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte kontext aktivního jazyka přes `language_manager` (z `$dbsession`, cookie
+ *      nebo číselníku jazyků) a v databázi přes tabulku `dbsession` pro `@@SPID`.
  *
  * Změny:
+ * 2026-11-20 23:15 - V check_table_exists() nahrazen opakovaný dotaz SELECT OBJECT_ID(...)
+ *                    voláním kešované funkce db_object_exists('meta_phrase', 'U').
  * 2026-11-01 11:15 - Rozsáhlé inline T-SQL dotazy v metodách load_sources() a
  *                    auto_register_phrase() přesunuty do uložených procedur
  *                    dbo.p_get_phrases a dbo.p_auto_register_phrase (p_phrases.sql).
@@ -94,10 +103,7 @@ class phrase_manager {
 	 * Ověří, zda v databázi již existuje tabulka meta_phrase (pojistka pro postupné nasazení).
 	 */
 	private function check_table_exists(): void {
-		$row = sqlfirstrow("SELECT OBJECT_ID('meta_phrase') AS obj_id");     // Dotaz na existenci tabulky přes sqlfirstrow
-		if (! empty($row)) {                                                 // Načtení výsledku kontroly tabulky
-			$this->table_exists = ! empty($row['obj_id']);                   // Nastavení příznaku existence
-		}
+		$this->table_exists = db_object_exists('meta_phrase', 'U');          // Kešovaná kontrola existence tabulky v DB
 	}
 
 	/**

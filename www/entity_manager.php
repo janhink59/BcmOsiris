@@ -1,24 +1,33 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-06 13:30
+ * Verze: 2026-11-20 23:45
  * Soubor: entity_manager.php
- * Účel: Dynamický správce entit – jádro třídy a metadatová vrstva (STI Architektura).
- *       Pro přehlednost a malý rozsah jednotlivých zdrojových souborů je třída
- *       rozdělena do 5 modulů:
- *       1. entity_manager.php       - Jádro, načtení metadat (přes p_em_get_*), gettery
- *       2. entity_manager_read.php  - Trait: Čtecí dotazy (fetch_rows, fetch_row) a překlady
- *       3. entity_manager_ui.php    - Trait: Generování UI prvků a roletek pro formuláře i filtry
- *       4. entity_manager_write.php - Trait: Autonomní zápis, klonování, validace klíčů a škál
- *       5. entity_manager_ssc.php   - Trait: Schvalovací cyklus SSC (koncepty D/F/R, schválení, zamítnutí)
+ * Třída: entity_manager
  *
- * VAZBY NA OKOLÍ:
- * - Instancován z potomků `abstract_page_master_detail` / `abstract_page_tree`,
- *   `filter_manager.php`, `csv_package_simple_class.php` a `page_approval.php`.
- * - Volá databázové procedury `dbo.p_em_get_class_meta` a `dbo.p_em_get_columns_meta`
- *   (definované v `p_em_metadata.sql`).
+ * 1. Role souboru v celém systému:
+ *    Dynamický správce entit – jádro třídy a metadatová vrstva (STI Architektura).
+ *    Pro přehlednost a malý rozsah jednotlivých zdrojových souborů je třída
+ *    rozdělena do 5 modulů:
+ *    1. entity_manager.php       - Jádro, načtení metadat (přes p_em_get_*), gettery
+ *    2. entity_manager_read.php  - Trait: Čtecí dotazy (fetch_rows, fetch_row) a překlady
+ *    3. entity_manager_ui.php    - Trait: Generování UI prvků a roletek pro formuláře i filtry
+ *    4. entity_manager_write.php - Trait: Autonomní zápis, klonování, validace klíčů a škál
+ *    5. entity_manager_ssc.php   - Trait: Schvalovací cyklus SSC (koncepty D/F/R, schválení, zamítnutí)
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancován z potomků `abstract_page_master_detail` / `abstract_page_tree`,
+ *      `filter_manager.php`, `csv_package_simple_class.php` a `page_approval.php`.
+ *    - Volá databázové procedury `dbo.p_em_get_class_meta` a `dbo.p_em_get_columns_meta`
+ *      (definované v `p_em_metadata.sql`) a čte `v_syscolumns` a `meta_original_keys`.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole `$dbsession` (v databázi `dbsession` pro aktuální `@@SPID`),
+ *      zejména aktivní organizaci (`organization`) a jazyk (`language`).
  *
  * Změny:
+ * 2026-11-20 23:45 - Doplněna metoda set_column_computed() pro bezpečné uzamčení
+ *                    počítaných sloupců v UI i na serveru (extract_post_data).
  * 2026-11-06 13:30 - Vyčlenění SSC metod do samostatného traitu entity_manager_ssc.php
  *                    a doplnění metod get_column_sql_type() a get_filter_select_options()
  *                    pro univerzální třídu filter_manager.
@@ -63,33 +72,33 @@ class entity_manager {
 	 * @param string $class_name Identifikátor logické třídy z DB (např. 'asset_class')
 	 */
 	public function __construct(string $class_name) {                        // Inicializace správce pro danou třídu
-		$this->class_name = $class_name;                                     // Uložení identifikátoru třídy
+		$this->class_name =$class_name;                                     // Uložení identifikátoru třídy
 		$this->lang_manager = new language_manager();                        // Inicializace jazykového manažeru
 		$this->load_metadata();                                              // Načtení metadat třídy a sloupců
 	}
 
 	/**
 	 * Pomocná metoda pro překlad interních textů třídy entity_manager.
-	 * Podporuje jak pořadí ($code, $default_caption, $vars), tak pořadí ($code, $vars, $default_caption).
+	 * Podporuje jak pořadí ($code, $default_caption,$vars), tak pořadí ($code, $vars,$default_caption).
 	 */
-	private function phrase(string $builtin_code, mixed $default_caption = '', mixed $vars = []): string { // Překlad interní fráze
+	private function phrase(string $builtin_code, mixed $default_caption = '', mixed$vars = []): string { // Překlad interní fráze
 		if (is_array($default_caption)) {                                    // Pokud bylo pole proměnných předáno jako 2. argument
-			$actual_vars = $default_caption;                                 // Pole proměnných pro interpolaci
-			$actual_default = is_string($vars) ? $vars : '';                 // Výchozí text ze 3. argumentu
+			$actual_vars =$default_caption;                                 // Pole proměnných pro interpolaci
+			$actual_default = is_string($vars) ?$vars : '';                 // Výchozí text ze 3. argumentu
 		} else {
-			$actual_default = (string) $default_caption;                     // Výchozí text z 2. argumentu
-			$actual_vars = is_array($vars) ? $vars : [];                     // Pole proměnných ze 3. argumentu
+			$actual_default = (string)$default_caption;                     // Výchozí text z 2. argumentu
+			$actual_vars = is_array($vars) ?$vars : [];                     // Pole proměnných ze 3. argumentu
 		}
 
 		if (function_exists('translate_phrase')) {                           // Pokud je načten společný helper z new_functions.php
-			return translate_phrase($builtin_code, $actual_default, $actual_vars, 'entity_manager'); // Překlad přes společný helper
+			return translate_phrase($builtin_code, $actual_default,$actual_vars, 'entity_manager'); // Překlad přes společný helper
 		}
 		global $phrase_manager;                                              // Záložní přístup ke globální instanci správce frází
 		if (! isset($phrase_manager) OR ! ($phrase_manager instanceof phrase_manager)) { // Kontrola existence správce frází
 			$phrase_manager = new phrase_manager();                          // Nouzová inicializace správce frází
-			$GLOBALS['phrase_manager'] = $phrase_manager;                    // Uložení do globálního kontextu
+			$GLOBALS['phrase_manager'] =$phrase_manager;                    // Uložení do globálního kontextu
 		}
-		return $phrase_manager->get($builtin_code, $actual_vars, $actual_default, 'entity_manager'); // Vrácení přeložené fráze
+		return $phrase_manager->get($builtin_code, $actual_vars,$actual_default, 'entity_manager'); // Vrácení přeložené fráze
 	}
 
 	/**
@@ -103,7 +112,7 @@ class entity_manager {
 	 * Určí, zda je daný klíčový sloupec z meta_original_keys povinný.
 	 */
 	public function is_key_column_mandatory(string $column_name): bool {     // Kontrola povinnosti klíčového sloupce
-		if (! in_array($column_name, $this->original_key_cols, true) OR $column_name === 'ancestor_link') { // Mimo klíčové sloupce
+		if (! in_array($column_name, $this->original_key_cols, true) OR$column_name === 'ancestor_link') { // Mimo klíčové sloupce
 			return false;                                                    // Nejde o povinný klíčový sloupec
 		}
 		return true;                                                         // Všechny klíčové sloupce originálu jsou povinné
@@ -238,15 +247,15 @@ class entity_manager {
 				$col['is_mandatory'] = 1;                                    // Vynucení příznaku povinného sloupce
 			}
 
-			foreach ($trans_col_fields as $tf) {                             // Průchod překládanými vlastmi sloupce
-				$col[$tf] = $this->resolve_field_from_arrays($orig, $tf, $col_a_map, $col_anc_map, $col_l_map, $curr_lang, $lang_chain, 'ancestor'); // Překlad
+			foreach ($trans_col_fields as$tf) {                             // Průchod překládanými vlastmi sloupce
+				$col[$tf] = $this->resolve_field_from_arrays($orig, $tf,$col_a_map, $col_anc_map,$col_l_map, $curr_lang,$lang_chain, 'ancestor'); // Překlad
 			}
 
-			$this->columns_meta[$c_name] = $col;                             // Uložení kompletních metadat sloupce
+			$this->columns_meta[$c_name] =$col;                             // Uložení kompletních metadat sloupce
 
 			if ($col['list_order'] !== null) {                               // Pokud má sloupec pořadí v Master panelu
-				$header_val = $col['header'] ?: $col['caption'];             // Záhlaví sloupce v seznamu
-				$list_cols_temp[(int) $col['list_order']] = [                // Uložení sloupce pod klíčem pořadí
+				$header_val = $col['header'] ?:$col['caption'];             // Záhlaví sloupce v seznamu
+				$list_cols_temp[(int)$col['list_order']] = [                // Uložení sloupce pod klíčem pořadí
 					'name'   => $c_name,                                     // Technický název sloupce
 					'header' => $header_val ?: $c_name                       // Zobrazované záhlaví sloupce
 				];                                                           // Konec položky seznamu
@@ -255,15 +264,15 @@ class entity_manager {
 
 		if (! empty($list_cols_temp)) {                                      // Seřazení sloupců levého panelu dle list_order
 			ksort($list_cols_temp);                                          // Seřazení podle klíče pořadí
-			foreach ($list_cols_temp as $lc) {                               // Přepis do finálního pole
-				$this->list_columns[$lc['name']] = $lc['header'];            // Naplnění finálního seznamu
+			foreach ($list_cols_temp as$lc) {                               // Přepis do finálního pole
+				$this->list_columns[$lc['name']] =$lc['header'];            // Naplnění finálního seznamu
 			}
 		} else {
 			$fallback_candidates = ['caption', 'name', 'code', 'builtin_code']; // Kandidáti na náhradní sloupec
-			foreach ($fallback_candidates as $fc) {                          // Hledání vhodného sloupce
+			foreach ($fallback_candidates as$fc) {                          // Hledání vhodného sloupce
 				if (isset($this->columns_meta[$fc])) {                       // Pokud kandidát v tabulce existuje
 					$col = $this->columns_meta[$fc];                         // Vybraný náhradní sloupec
-					$header_val = $col['header'] ?: $col['caption'];         // Záhlaví náhradního sloupce
+					$header_val = $col['header'] ?:$col['caption'];         // Záhlaví náhradního sloupce
 					$this->list_columns[$fc] = $header_val ?: $col['column_name']; // Nastavení náhradního sloupce
 					break;                                                   // Ukončení hledání
 				}
@@ -381,6 +390,15 @@ class entity_manager {
 
 	public function get_column_meta(string $column_name): array {            // Získání metadat vybraného sloupce
 		return $this->columns_meta[$column_name] ?? [];                      // Vrácení metadat sloupce
+	}
+
+	/**
+	 * Nastaví příznak počítaného (readonly) sloupce přímo v metadatech v paměti.
+	 */
+	public function set_column_computed(string $column_name, bool $is_computed = true): void { // Nastavení příznaku počítaného sloupce
+		if (isset($this->columns_meta[$column_name])) {                      // Kontrola existence sloupce v metadatech
+			$this->columns_meta[$column_name]['is_computed'] = $is_computed ? 1 : 0; // Přímý zápis příznaku is_computed
+		}
 	}
 
 	public function get_columns(): array {

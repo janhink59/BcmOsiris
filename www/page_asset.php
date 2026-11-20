@@ -1,22 +1,33 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-11 22:00
+ * Verze: 2026-11-20 23:55
  * Soubor: page_asset.php
  * Třída: page_asset
- * Účel: Správa prostorů (Okres -> Město -> Lokalita -> Budova -> Místnost při
- *       parametru &group=SPACE) a všech archetypů aktiv organizace (Fyzická
- *       aktiva, Hosté, Kabeláž, Dokumenty, Média, Data, Software, Aplikace,
- *       Služby, Služby typu Interface, Personál a Dodavatelé) nad STI tabulkou asset.
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z routeru `index.php` při `?page=page_asset`.
- * - Dědí ze stromové šablony `abstract_page_tree` (`abstract_page_tree.php`).
- * - V hlavičce detailu (`render_detail_header_buttons`) nabízí přímé prokliky
- *   do vazeb (`page_link`), hodnocení scénářů (`page_scenario_assessment`)
- *   a implementace protiopatření (`page_countermeasure_implementation`).
+ * 1. Role souboru v celém systému:
+ *    Správa prostorů (Okres -> Město -> Lokalita -> Budova -> Místnost při
+ *    parametru &group=SPACE) a všech archetypů aktiv organizace (Fyzická
+ *    aktiva, Hosté, Kabeláž, Dokumenty, Média, Data, Software, Aplikace,
+ *    Služby, Služby typu Interface, Personál a Dodavatelé) nad STI tabulkou asset.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z routeru `index.php` při `?page=page_asset`.
+ *    - Dědí ze stromové šablony `abstract_page_tree` (`abstract_page_tree.php`).
+ *    - Využívá proceduru `dbo.p_em_get_select_options` (`p_em_metadata.sql`) pro
+ *      čtení archetypů a koncových tříd aktiv (`@mode = 'asset_class_by_archetype'`).
+ *    - V hlavičce detailu (`render_detail_header_buttons`) nabízí přímé prokliky
+ *      do vazeb (`page_link`), hodnocení scénářů (`page_scenario_assessment`)
+ *      a implementace protiopatření (`page_countermeasure_implementation`).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole `$dbsession` (v databázi `dbsession` pro aktuální `@@SPID`)
+ *      a volitelné GET parametry `group` a `archetype`.
  *
  * Změny:
+ * 2026-11-20 23:55 - Do process_save() doplněna serverová validace platnosti
+ *                    asset_archetype (vč. shody s režimem Prostory vs. Evidence aktiv)
+ *                    a příslušnosti primary_asset_class k podstromu zvoleného archetypu.
  * 2026-11-11 22:00 - Odstraněny vyčleněné 1:N sloupce (building_uuid, room_uuid,
  *                    host_uuid, software_uuid, supplier_uuid); v tabulce asset
  *                    zůstává pouze přímý parent_uuid a ostatní vazby jsou v link.
@@ -178,18 +189,60 @@ class page_asset extends abstract_page_tree {
 	}
 
 	/**
-	 * Doplní výchozí `primary_asset_class` podle zvoleného archetypu před uložením.
+	 * Ověří na serveru, zda zadaná třída aktiv (`primary_asset_class`) patří mezi
+	 * povolené koncové třídy podstromu zvoleného archetypu (`asset_archetype`).
+	 */
+	private function is_valid_asset_class_for_archetype(string $archetype, string $class_uuid): bool { // Serverová validace třídy dle archetypu
+		if ($class_uuid === '' OR ! is_guid($class_uuid)) {                  // Kontrola platného formátu UUID třídy
+			return false;                                                    // Neplatné UUID třídy aktiv
+		}
+		$safe_arch = charliteral(strtoupper($archetype), 30);                // SQL literál archetypu
+		$rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'asset_class_by_archetype', @param_code = {$safe_arch}"); // Povolené koncové třídy
+		if (! is_array($rows) OR empty($rows)) {                             // Pokud katalog pro archetyp nemá definované podtřídy
+			return true;                                                     // Neblokujeme při prázdném katalogu
+		}
+		foreach ($rows as $r) {                                              // Průchod povolenými koncovými třídami archetypu
+			if (strcasecmp((string) ($r['original'] ?? ''), $class_uuid) === 0) { // Nalezena shoda s koncovou třídou
+				return true;                                                 // Třída aktiv odpovídá archetypu
+			}
+		}
+		return false;                                                        // Třída nepatří do podstromu zvoleného archetypu
+	}
+
+	/**
+	 * Ověří na serveru soulad `asset_archetype` s režimem stránky a příslušnost
+	 * `primary_asset_class` k podstromu zvoleného archetypu a případně doplní výchozí třídu.
 	 */
 	protected function process_save(): void {
-		if (isset($_POST['btn_save']) OR isset($_POST['btn_save_draft']) OR isset($_POST['btn_forward_approval'])) { // Při ukládání záznamu
+		if (! $this->is_readonly AND (isset($_POST['btn_save']) OR isset($_POST['btn_save_draft']) OR isset($_POST['btn_forward_approval']))) { // Při ukládání záznamu
+			$update_guid = trim((string) getinput('update_guid'));           // Identifikátor ukládaného záznamu
+			$is_removing = (isset($_POST['removed']) AND (string) $_POST['removed'] === '1'); // Zda se záznam ruší do koše
 			$arch = strtoupper(trim((string) ($_POST['asset_archetype'] ?? ($this->group_mode === 'SPACE' ? 'ROOM' : 'PHYSICAL')))); // Zvolený archetyp
 			$pac = trim((string) ($_POST['primary_asset_class'] ?? ''));     // Zvolená primární třída aktiva
+
+			if (! $is_removing) {                                            // Serverová validace pro aktivní záznamy
+				if ($arch === '' OR ! isset(self::ARCHETYPE_CLASS_MAP[$arch])) { // Kontrola platnosti archetypu
+					$this->save_error_message = $this->phrase('err_invalid_asset_archetype', [], 'Zvolený archetyp aktiva není platný.'); // Chybová zpráva
+					return;                                                  // Zastavení uložení se zachováním hodnot formuláře
+				}
+				$is_space_arch = in_array($arch, self::SPACE_ARCHETYPES, true); // Zda jde o prostorový archetyp
+				if ($update_guid === 'NEW' AND (($this->group_mode === 'SPACE' AND ! $is_space_arch) OR ($this->group_mode !== 'SPACE' AND $is_space_arch))) { // Neshoda s režimem stránky
+					$this->save_error_message = $this->phrase('err_archetype_group_mismatch', [], 'Zvolený archetyp nepatří do této evidence (Prostory vs. Evidence aktiv).'); // Chybová zpráva
+					return;                                                  // Zastavení uložení
+				}
+			}
 
 			if ($pac === '') {                                               // Pokud uživatel nevybral primární třídu aktiv
 				$def_pac = $this->resolve_default_asset_class_uuid($arch);   // Odvození výchozí koncové třídy podle archetypu
 				if ($def_pac !== '') {                                       // Pokud výchozí třída v katalogu existuje
 					$_POST['primary_asset_class'] = $def_pac;                // Doplnění do $_POST před voláním entity_manageru
+					$pac = $def_pac;                                         // Aktualizace proměnné pro navazující validaci
 				}
+			}
+
+			if (! $is_removing AND ! $this->is_valid_asset_class_for_archetype($arch, $pac)) { // Serverová kontrola příslušnosti třídy k archetypu
+				$this->save_error_message = $this->phrase('err_invalid_asset_class_for_archetype', [], 'Zvolená primární třída aktiv neodpovídá vybranému archetypu (nebo není koncovou třídou aktiv).'); // Chybová zpráva
+				return;                                                      // Zastavení uložení se zachováním hodnot formuláře
 			}
 		}
 

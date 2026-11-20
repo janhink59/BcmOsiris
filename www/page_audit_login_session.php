@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-16 15:40
+ * Verze: 2026-11-20 23:15
  * Soubor: page_audit_login_session.php
  * Třída: page_audit_login_session
  *
@@ -23,6 +23,8 @@
  *      zejména klíče active_role ('A', 'S', 'D') a organization.
  *
  * Změny:
+ * 2026-11-20 23:15 - Opraveny sloučené řádky přiřazení $role_cls u rolí D, S, A
+ *                    a doplněny chybějící mezery před znakem $ dle Anti-LaTeX pravidla.
  * 2026-11-16 15:40 - Inline SQL dotazy vyčleněny do uložené procedury
  *                    dbo.page_audit_login_session (page_audit_login_session.sql).
  * 2026-11-09 13:00 - Doplněno automatické uzavření expirovaných a osiřelých relací
@@ -51,7 +53,7 @@ class page_audit_login_session extends abstract_page {
 
 		global $dbsession;                                                   // Globální kontext relace přihlášeného uživatele
 
-		$this->page_title =$this->phrase('page_title', [], 'Aktivita uživatelů - BCM Osiris'); // Lokalizovaný titulek stránky
+		$this->page_title = $this->phrase('page_title', [], 'Aktivita uživatelů - BCM Osiris'); // Lokalizovaný titulek stránky
 		$this->full_width = true;                                            // Roztažení hlavního panelu na plnou šířku okna
 
 		$active_role = (string)($dbsession['active_role'] ?? 'U');           // Aktuální efektivní role v relaci
@@ -61,14 +63,14 @@ class page_audit_login_session extends abstract_page {
 		}
 
 		$org_raw = (string)($dbsession['organization'] ?? '0x00');           // Surové UUID aktivní organizace z relace
-		$this->is_sys_org = ($org_raw === '0x00' OR$org_raw === '00000000-0000-0000-0000-000000000000'); // Detekce systémové organizace
+		$this->is_sys_org = ($org_raw === '0x00' OR $org_raw === '00000000-0000-0000-0000-000000000000'); // Detekce systémové organizace
 
 		// Načtení a validace filtru počtu zobrazených řádků (výchozí 100, rozsah 1 až 10 000)
 		$raw_limit = trim((string)getinput('limit'));                        // Surová hodnota limitu z požadavku
 		if ($raw_limit !== '' AND is_numeric($raw_limit)) {                  // Pokud byl zadán číselný limit
 			$parsed_limit = intval($raw_limit);                              // Převod limitu na celé číslo
-			if ($parsed_limit >= 1 AND$parsed_limit <= 10000) {             // Kontrola povoleného rozsahu řádků
-				$this->limit =$parsed_limit;                                // Uložení platného limitu záznamů
+			if ($parsed_limit >= 1 AND $parsed_limit <= 10000) {             // Kontrola povoleného rozsahu řádků
+				$this->limit = $parsed_limit;                                // Uložení platného limitu záznamů
 			}
 		}
 
@@ -208,7 +210,7 @@ HTML;
 			if ($logout_raw !== '') {                                        // Pokud má relace zaznamenaný čas odhlášení/expirace
 				$logout_val = htmlspecialchars(date_format4($logout_raw, 16)); // Zformátovaný čas odhlášení
 				$logout_tip = htmlspecialchars($logout_raw);                 // Přesný čas odhlášení do tooltipu
-				$exp_html =$is_expired ? "<span class=\"exp-badge\">{$txt_expired}</span>" : ''; // Štítek expirace
+				$exp_html = $is_expired ? "<span class=\"exp-badge\">{$txt_expired}</span>" : ''; // Štítek expirace
 				$logout_html = "<span title=\"{$logout_tip}\">{$logout_val}</span>{$exp_html}"; // Výpis času odhlášení a případné expirace
 			} else {
 				$logout_html = "<span style=\"color: #15803d; font-style: italic; font-size: 12px; font-weight: bold;\">{$txt_open_sess}</span>"; // Relace bez logout_time
@@ -230,7 +232,7 @@ HTML;
 
 			$dept = trim((string)($row['department_name'] ?? ''));           // Oddělení uživatele v organizaci
 			$job  = trim((string)($row['job_title'] ?? ''));                 // Pracovní pozice uživatele v organizaci
-			$dept_job_raw = ($dept !== '' AND$job !== '') ? "{$dept} / {$job}" : ($dept ?: $job); // Spojení oddělení a pozice
+			$dept_job_raw = ($dept !== '' AND $job !== '') ? "{$dept} / {$job}" : ($dept ?: $job); // Spojení oddělení a pozice
 			$dept_job_val = htmlspecialchars($dept_job_raw);                 // Ošetřený text oddělení a pozice
 
 			$inact_badge = !empty($row['user_inactive'])
@@ -240,12 +242,15 @@ HTML;
 			$role_code = (string)($row['assumed_role'] ?? 'U');              // Kód zvolené role v relaci
 			$role_cls = 'role-badge-usr';                                    // Výchozí styl odznaku role
 			$role_label = 'User';                                            // Výchozí text role
-			if ($role_code === 'D') {                                        // Role Developer$role_cls = 'role-badge-sys';                                // Červený odznak
-				$role_label = 'Developer';                                   // Popisek Developer
-			} elseif ($role_code === 'S') {                                  // Role Sysadmin$role_cls = 'role-badge-sys';                                // Červený odznak
-				$role_label = 'Sysadmin';                                    // Popisek Sysadmin
-			} elseif ($role_code === 'A') {                                  // Role Admin organizace$role_cls = 'role-badge-org';                                // Modrý odznak
-				$role_label = 'Admin';                                       // Popisek Admin
+			if ($role_code === 'D') {                                        // Systémová role Developer
+				$role_cls = 'role-badge-sys';                                // Červený odznak
+				$role_label = 'Developer';                                   // Popisek vývojáře
+			} elseif ($role_code === 'S') {                                  // Systémová role Sysadmin
+				$role_cls = 'role-badge-sys';                                // Červený odznak
+				$role_label = 'Sysadmin';                                    // Popisek správce systému
+			} elseif ($role_code === 'A') {                                  // Správcovská role Admin organizace
+				$role_cls = 'role-badge-org';                                // Modrý odznak
+				$role_label = 'Admin';                                       // Popisek správce organizace
 			}
 			$safe_role_label = htmlspecialchars($role_label);                // Ošetřený popisek role
 			$ip_val = htmlspecialchars((string)($row['ip_address'] ?? ''));  // Ošetřená IP adresa

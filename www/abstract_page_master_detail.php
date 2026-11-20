@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-16 16:15
+ * Verze: 2026-11-20 23:30
  * Soubor: abstract_page_master_detail.php
  * Třída: abstract_page_master_detail
  *
@@ -24,6 +24,9 @@
  *      v $_SESSION přes filter_manager.
  *
  * Změny:
+ * 2026-11-20 23:30 - Doplněn hook is_record_readonly(array $row): bool vyhodnocovaný
+ *                    v render_detail() před vykreslením tlačítek hlavičky i na serveru
+ *                    v process_save() (spolehlivé uzamčení záznamů s is_derived = 1).
  * 2026-11-16 16:15 - Stabilní klientské CSS a JS bloky v render_body() vyčleněny
  *                    do samostatné třídy master_detail_scripts (master_detail_scripts.php)
  *                    pro snížení velikosti souboru z 34 KB na ~20 KB.
@@ -311,14 +314,7 @@ HTML;
 		$page_param = urlencode($this->get_current_page_name()); // Kanonický název aktuální stránky
 		$url_suffix = $this->get_context_url_suffix(); // Kontextové parametry URL
 
-		if (isset($_POST['btn_delete_draft'])) { // Detekce stisku tlačítka Smazat koncept
-			if ($update_guid !== 'NEW') { // Pouze pro již uložený záznam
-				$this->em->delete_draft($update_guid); // Fyzické smazání konceptu z databáze
-			}
-			autoredirect("index.php?page={$page_param}{$url_suffix}"); // Návrat na výchozí seznam po smazání konceptu
-			return; // Ukončení zpracování
-		}
-
+		$is_delete_draft = isset($_POST['btn_delete_draft']); // Detekce stisku tlačítka Smazat koncept
 		$target_status = ''; // Výchozí prázdný cílový stav
 		if (isset($_POST['btn_save'])) { // Přímé uložení jako schválené
 			$target_status = 'A'; // Stav Schváleno
@@ -328,8 +324,24 @@ HTML;
 			$target_status = 'F'; // Stav Postoupeno ke schválení
 		}
 
-		if ($target_status === '') { // Pokud nebylo stisknuto žádné ukládací tlačítko
+		if (! $is_delete_draft AND $target_status === '') { // Pokud nebylo stisknuto žádné ukládací ani mazací tlačítko
 			return; // Ukončení bez uložení
+		}
+
+		if ($update_guid !== 'NEW' AND is_guid($update_guid)) { // Serverová kontrola uzamčení konkrétního záznamu (např. is_derived = 1)
+			$check_row = $this->em->fetch_row("m.original = " . guidliteral($update_guid), false, true); // Načtení existujícího záznamu
+			if (! empty($check_row) AND $this->is_record_readonly($check_row)) { // Pokud je záznam uzamčen proti úpravám
+				$this->save_error_message = $this->phrase('msg_record_readonly_save_denied', [], 'Tento záznam je uzamčen pouze pro čtení a nelze jej upravovat ani mazat.'); // Chybová zpráva
+				return; // Zablokování uložení i smazání konceptu
+			}
+		}
+
+		if ($is_delete_draft) { // Provedení smazání konceptu
+			if ($update_guid !== 'NEW') { // Pouze pro již uložený záznam
+				$this->em->delete_draft($update_guid); // Fyzické smazání konceptu z databáze
+			}
+			autoredirect("index.php?page={$page_param}{$url_suffix}"); // Návrat na výchozí seznam po smazání konceptu
+			return; // Ukončení zpracování
 		}
 
 		$save_guid = ($update_guid === 'NEW') ? '' : $update_guid; // Pro nový záznam předáme prázdný řetězec
@@ -523,6 +535,17 @@ HTML;
 	}
 
 	/**
+	 * Hook pro potomky: umožňuje dynamicky uzamknout konkrétní záznam (např. is_derived = 1)
+	 * ještě před vykreslením hlavičky detailu i při zpracování POST v process_save().
+	 *
+	 * @param array<string, mixed> $row Načtený datový řádek z databáze
+	 * @return bool True, pokud má být tento konkrétní záznam pouze pro čtení
+	 */
+	protected function is_record_readonly(array $row): bool { // Kontrola uzamčení konkrétního záznamu
+		return false; // Výchozí povolení úprav dle $this->is_readonly
+	}
+
+	/**
 	 * Hook pro potomky: umožňuje přepsat hlavní titulek detailního panelu.
 	 */
 	protected function get_detail_header(): string {
@@ -622,6 +645,12 @@ HTML;
 			}
 			
 			$is_mine = (bool) $datarow['object_is_mine']; // Zda záznam vlastní aktuální tenant
+		}
+
+		// Vyhodnocení dynamického uzamčení konkrétního záznamu ještě před vykreslením hlavičky a tlačítek
+		$prev_readonly = $this->is_readonly; // Zapamatování původního stavu readonly stránky
+		if ($update_guid !== 'NEW' AND $this->is_record_readonly($datarow)) { // Kontrola hooku pro tento záznam
+			$this->is_readonly = true; // Uzamčení hlavičky, tlačítek i všech polí formuláře
 		}
 
 		// Pokud došlo k validační chybě při ukládání (POST), zachováme ve formuláři zadané hodnoty z $_POST
@@ -772,6 +801,7 @@ HTML;
 		$this->render_audit_trail(); // Vykreslení informací o změnách
 
 		echo "\t\t\t</div>\n\t\t</form>\n";
+		$this->is_readonly = $prev_readonly; // Obnovení původního stavu readonly stránky
 	}
 
 	/**
