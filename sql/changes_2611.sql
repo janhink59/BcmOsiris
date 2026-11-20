@@ -1,8 +1,8 @@
 /* =============================================================================
- * Verze: 2026-11-15 19:55
+ * Verze: 2026-11-20 17:00
  * Soubor: changes_2611.sql
  * Účel:   Jednorázové změny struktury a dat databáze za období 11/2026
- *         (aktuální cílová verze '26.11.15.0').
+ *         (aktuální cílová verze '26.11.20.0').
  *         Spouští se v abecedním pořadí v rámci masky changes_*.sql.
  *
  * Pravidla pro údržbu a přidávání změn:
@@ -495,6 +495,126 @@ BEGIN
 		@version = '26.11.15.0',
 		@script_name = 'changes_2611.sql',
 		@content = 'Kompletní vyčištění systémových záznamů (object_owner = 0x00) v tabulkách meta_* před čistou inicializací přes sysinit_*';
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Verze 26.11.20.0: Likvidace zastaralé tabulky impact a všech jejích vazeb a
+--                   metadat (nahrazena dvojicí impact_type a impact_area),
+--                   odstranění nenormalizovaných limitů max_*_score z organization
+--                   a doplnění default_impact_scale_uuid a scale.is_area_guideline
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('system_constant', 'U') IS NOT NULL AND EXISTS (
+	SELECT 1
+	FROM system_constant
+	WHERE database_version < '26.11.20.0'
+)
+BEGIN
+	PRINT '20.11.2026 (26.11.20.0): Likvidace staré tabulky impact, úklid max_*_score v organization a rozšíření scale';
+
+	-- 1. Úklid vazeb, definic vztahů a metadat svázaných se starou tabulkou impact a stránkou page_impact
+	DECLARE @old_imp_classes TABLE (
+		original uniqueidentifier NOT NULL PRIMARY KEY
+	);
+
+	IF OBJECT_ID('meta_class', 'U') IS NOT NULL
+	BEGIN
+		INSERT INTO @old_imp_classes (original)
+		SELECT DISTINCT original
+		FROM meta_class
+		WHERE class_name = 'impact';
+	END
+
+	DECLARE @old_imp_link_defs TABLE (
+		original uniqueidentifier NOT NULL PRIMARY KEY
+	);
+
+	IF OBJECT_ID('meta_link_def', 'U') IS NOT NULL
+	BEGIN
+		INSERT INTO @old_imp_link_defs (original)
+		SELECT DISTINCT mld.original
+		FROM meta_link_def mld
+		JOIN @old_imp_classes oc ON oc.original = mld.from_class OR oc.original = mld.to_class;
+	END
+
+	IF OBJECT_ID('link', 'U') IS NOT NULL
+	BEGIN
+		DELETE l
+		FROM link l
+		JOIN @old_imp_link_defs d ON d.original = l.link_def;
+	END
+
+	IF OBJECT_ID('meta_link_def', 'U') IS NOT NULL
+	BEGIN
+		DELETE mld
+		FROM meta_link_def mld
+		JOIN @old_imp_link_defs d ON d.original = mld.original;
+	END
+
+	IF OBJECT_ID('meta_column', 'U') IS NOT NULL
+	BEGIN
+		DELETE mc
+		FROM meta_column mc
+		JOIN @old_imp_classes oc ON oc.original = mc.parent_class;
+
+		UPDATE mc
+		SET mc.referenced_class = NULL
+		FROM meta_column mc
+		JOIN @old_imp_classes oc ON oc.original = mc.referenced_class;
+
+		DELETE FROM meta_column
+		WHERE column_name IN ('max_threat_score', 'max_vulnerability_score', 'max_impact_score', 'max_risk_score');
+	END
+
+	IF OBJECT_ID('meta_class', 'U') IS NOT NULL
+	BEGIN
+		DELETE FROM meta_class WHERE class_name = 'impact';
+	END
+
+	IF OBJECT_ID('meta_phrase', 'U') IS NOT NULL
+	BEGIN
+		DELETE FROM meta_phrase WHERE source_code = 'page_impact';
+	END
+
+	IF OBJECT_ID('meta_menu', 'U') IS NOT NULL
+	BEGIN
+		DELETE FROM meta_menu WHERE builtin_code = 'impact';
+	END
+
+	IF OBJECT_ID('meta_object', 'U') IS NOT NULL
+	BEGIN
+		DELETE FROM meta_object
+		WHERE (object_type = 'T' AND builtin_code = 'impact')
+		   OR (object_type = 'P' AND builtin_code = 'page_impact');
+	END
+
+	IF OBJECT_ID('meta_original_keys', 'U') IS NOT NULL
+	BEGIN
+		DELETE FROM meta_original_keys WHERE table_name = 'impact';
+	END
+
+	EXEC dropni 'impact';
+
+	-- 2. Odstranění zastaralých nenormalizovaných limitů max_*_score z organization a doplnění default_impact_scale_uuid
+	IF OBJECT_ID('organization', 'U') IS NOT NULL
+	BEGIN
+		EXEC sp_drop_column 'organization', 'max_threat_score';
+		EXEC sp_drop_column 'organization', 'max_vulnerability_score';
+		EXEC sp_drop_column 'organization', 'max_impact_score';
+		EXEC sp_drop_column 'organization', 'max_risk_score';
+		EXEC p_create_missing_column 'organization', 'default_impact_scale_uuid', 'uuid NULL';
+	END
+
+	-- 3. Rozšíření tabulky scale o příznak oblastní škály vodítek (is_area_guideline)
+	IF OBJECT_ID('scale', 'U') IS NOT NULL
+	BEGIN
+		EXEC p_create_missing_column 'scale', 'is_area_guideline', 'bit NOT NULL DEFAULT 0';
+	END
+
+	EXEC dbo.p_update_database_version
+		@version = '26.11.20.0',
+		@script_name = 'changes_2611.sql',
+		@content = 'Likvidace staré tabulky impact a jejích vazeb/metadat, odstranění max_*_score z organization a doplnění default_impact_scale_uuid a scale.is_area_guideline';
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
 	COMMIT;
@@ -510,7 +630,7 @@ GO
 
 IF OBJECT_ID('system_constant', 'U') IS NOT NULL
 BEGIN
-	DECLARE @expected_version varchar(20) = '26.11.15.0';                      -- Požadovaná cílová verze tohoto skriptu
+	DECLARE @expected_version varchar(20) = '26.11.20.0';                      -- Požadovaná cílová verze tohoto skriptu
 	DECLARE @current_version varchar(20) = '';                                 -- Skutečná verze zjištěná v system_constant
 
 	SELECT TOP 1 @current_version = ISNULL(database_version, '')

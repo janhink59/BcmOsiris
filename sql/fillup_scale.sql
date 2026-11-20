@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-16 16:25
+ * Verze: 2026-11-20 15:50
  * Soubor: fillup_scale.sql
  *
  * 1. Role souboru v celém systému:
@@ -25,6 +25,10 @@
  * 3. Očekávaná kontextová data:
  *    - Běží jako součást sestavovací dávky databáze (pracuje nad systémovými
  *      záznamy s object_owner = 0x00, nevyžaduje relaci v dbsession).
+ *
+ * Změny:
+ * - 2026-11-20 15:50: Opraven překlep se znaky cyrilice v popisu lvl_4 u
+ *   scale_vulnerability ('zastaralá technologie').
  * ============================================================================= */
 SET NOCOUNT ON;
 GO
@@ -185,7 +189,7 @@ BEGIN
 	('scale_vulnerability', 'lvl_1', 0.0000, 10.0000, '#16a34a', 1, '1 - Zanedbatelná', 'Zanedbatelná zranitelnost', 'Aktivum je robustně chráněno, redundantní a odolné vůči danému scénáři (0 až 20 %).', 'Zneužití nebo selhání vyžaduje extrémní úsilí či nepravděpodobnou souhru chyb.'),
 	('scale_vulnerability', 'lvl_2', 20.0000, 30.0000, '#65a30d', 0, '2 - Nízká', 'Nízká zranitelnost', 'Dobrá úroveň zabezpečení s drobnými, obtížně zneužitelnými slabinami (20 až 40 %).', 'Většina standardních obranných mechanismů je funkční.'),
 	('scale_vulnerability', 'lvl_3', 40.0000, 50.0000, '#eab308', 0, '3 - Střední', 'Střední zranitelnost', 'Částečná ochrana, existují známá slabá místa nebo chybí plná redundance (40 až 60 %).', 'Při cíleném útoku nebo větší provozní závadě může dojít k prolomení.'),
-	('scale_vulnerability', 'lvl_4', 60.0000, 70.0000, '#ea580c', 0, '4 - Vysoká', 'Vysoká zranitelnost', 'Výrazné slabiny v zabezpečení, застаrálá technologie nebo chybějící klíčové kontroly (60 až 80 %).', 'Snadno zneužitelné známými postupy nebo běžnou provozní poruchou.'),
+	('scale_vulnerability', 'lvl_4', 60.0000, 70.0000, '#ea580c', 0, '4 - Vysoká', 'Vysoká zranitelnost', 'Výrazné slabiny v zabezpečení, zastaralá technologie nebo chybějící klíčové kontroly (60 až 80 %).', 'Snadno zneužitelné známými postupy nebo běžnou provozní poruchou.'),
 	('scale_vulnerability', 'lvl_5', 80.0000, 90.0000, '#dc2626', 0, '5 - Kritická', 'Kritická zranitelnost', 'Zcela nechráněné aktivum, Single Point of Failure (SPOF) bez jakékoliv zálohy (80 až 100 %).', 'Jakékoliv působení hrozby vede téměř okamžitě k naplnění negativního scénáře.');
 
 	-- 2a. Aktualizace nemodifikovaných 'A' záznamů v tabulce scale_value

@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-22 16:15
+ * Verze: 2026-11-20 15:50
  * Stránka: page_password_reset.php
  * Účel: Univerzální stránka pro vyžádání obnovy hesla (Fáze 1) 
  *       a následné nastavení nového hesla na základě tokenu (Fáze 2).
@@ -13,6 +13,7 @@
  * - Odesílá odkaz pro obnovu hesla pomocí funkce send_global_mail().
  * 
  * Změny:
+ * 2026-11-20 15:50 - Opraven překlep se znaky cyrilice v komentáři ('Výpočet').
  * 2026-10-22 16:15 - Sjednocení všech URL na prefix page_ (page_password_reset, page_login).
  *                  - Odstraněno duplicitní volání require_once "config.php".
  *                  - Doplněna podpora vyhledání účtu i při zadání e-mailu do pole loginu
@@ -142,7 +143,7 @@ if ($token !== '') {                                                     // Rozl
 			} elseif ($newPwd !== $newPwdConfirm) {                      // Kontrola shody obou hesel
 				$messageHtml = "<div class='msg-err'>Zadaná hesla se neshodují.</div>"; // Chyba neshody hesel
 			} else {
-				$pwdHash = password_hash($newPwd, PASSWORD_DEFAULT);     // Выpočet bcrypt/argon2 hashe hesla
+				$pwdHash = password_hash($newPwd, PASSWORD_DEFAULT);     // Výpočet bcrypt/argon2 hashe hesla
 				$safePwdHash = charliteral($pwdHash, 255);               // SQL literál hashe hesla
 				$safeTokenUuid = guidliteral($tokenUuidForReset);        // SQL literál UUID tokenu
 

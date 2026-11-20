@@ -2,20 +2,32 @@ EXECUTE dropni 'p_split_hierarchy_node_to_folder', 'P';
 GO
 
 /* =============================================================================
- * Verze:     2026-11-12 17:10
+ * Verze:     2026-11-20 17:15
  * Soubor:    p_split_hierarchy_node_to_folder.sql
  * Procedura: dbo.p_split_hierarchy_node_to_folder
- * Účel:      Automaticky rozčlení koncový uzel (is_leaf = 1) na vnitřní složku
- *            (is_leaf = 0) a v případě, že je uzel již uzamčen existujícími
- *            vazbami (dbo.f_is_hierarchy_node_locked = 1), převede stávající
- *            záznamy a vazby na novou podpoložku '<parent>_oth'.
- * Vazby:     - Čte tabulky dbsession a meta_link_def.
- *            - Čte a modifikuje tabulky asset_class, threat, impact, scenario,
- *              countermeasure, hierarchy_item, asset, scenario_assessment,
- *              countermeasure_implementation a link.
- *            - Využívá funkce dbo.f_is_hierarchy_node_locked,
- *              dbo.f_generate_original, dbo.f_syscolumns, dbo.f_link_original
- *              a proceduru dbo.p_sync_derived_links.
+ *
+ * 1. Role souboru v celém systému:
+ *    Automaticky rozčlení koncový uzel (is_leaf = 1) na vnitřní složku
+ *    (is_leaf = 0) a v případě, že je uzel již uzamčen existujícími
+ *    vazbami (dbo.f_is_hierarchy_node_locked = 1), převede stávající
+ *    záznamy a vazby na novou podpoložku '<parent>_oth'.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Čte tabulky dbsession a meta_link_def.
+ *    - Čte a modifikuje tabulky asset_class, threat, impact_type, impact_area,
+ *      scenario, countermeasure, hierarchy_item, asset, scenario_assessment,
+ *      countermeasure_implementation a link.
+ *    - Využívá funkce dbo.f_is_hierarchy_node_locked,
+ *      dbo.f_generate_original, dbo.f_syscolumns, dbo.f_link_original
+ *      a proceduru dbo.p_sync_derived_links.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Pokud nejsou předány @org_uuid nebo @user_session, načte je z tabulky
+ *      dbsession pro aktuální @@SPID.
+ *
+ * Změny:
+ * - 2026-11-20 17:15: Zastaralá tabulka impact nahrazena dvojicí impact_type
+ *   a impact_area.
  * ============================================================================= */
 CREATE PROCEDURE dbo.p_split_hierarchy_node_to_folder
 	@table_name varchar(128),
@@ -33,7 +45,7 @@ BEGIN
 	IF @node_original IS NULL OR @node_original = 0x00
 		RETURN;
 
-	IF @table_name NOT IN ('asset_class', 'threat', 'impact', 'scenario', 'countermeasure', 'hierarchy_item', 'asset')
+	IF @table_name NOT IN ('asset_class', 'threat', 'impact_type', 'impact_area', 'scenario', 'countermeasure', 'hierarchy_item', 'asset')
 		RETURN;
 
 	IF OBJECT_ID(@table_name, 'U') IS NULL OR COL_LENGTH(@table_name, 'is_leaf') IS NULL

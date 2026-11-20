@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-16 16:25
+ * Verze: 2026-11-20 17:00
  * Soubor: fillup_countermeasure_state_en.sql
  *
  * 1. Role souboru v celém systému:
@@ -15,6 +15,10 @@
  * 3. Očekávaná kontextová data:
  *    - Běží jako součást sestavovací dávky databáze (pracuje nad systémovými
  *      záznamy s object_owner = 0x00, nevyžaduje relaci v dbsession).
+ *
+ * Změny:
+ * - 2026-11-20 17:00: Upraven anglický popis stavu cm_state_na v souladu s
+ *   opravou reduction_factor = 0.0000 a risk_factor = 0.0000.
  * ============================================================================= */
 SET NOCOUNT ON;
 GO
@@ -36,7 +40,7 @@ BEGIN
 	INSERT INTO @tr (builtin_code, shortname, caption, description_text, help_text) VALUES
 	('cm_state_implemented', 'Implemented', 'Implemented in operation (unaudited)', 'Countermeasure is deployed in production, but has not yet undergone independent audit or practical effectiveness testing (85% reduction, 15% floor).', 'Standard state for routinely operated technical and organizational controls.'),
 	('cm_state_in_progress', 'In Progress', 'Partially implemented / In progress', 'Countermeasure is under implementation or deployed only partially (40% of target reduction, 60% of risk floor).', 'Use during phased rollouts or partial asset coverage.'),
-	('cm_state_na', 'Not Applicable', 'Not applicable (compensated)', 'Control is technically or operationally irrelevant for the asset, or fully compensated by another control (100% reduction, 0% floor).', 'Does not enforce the non-implementation minimum risk floor.'),
+	('cm_state_na', 'Not Applicable', 'Not applicable (compensated)', 'Control is technically or operationally irrelevant for the asset, or addressed by another control (0% reduction, 0% floor — neutral in both risk reduction and floor calculation).', 'Does not enforce the non-implementation minimum risk floor and does not distort the combined reduction of other controls.'),
 	('cm_state_none', 'Not Implemented', 'Not implemented (missing)', 'Countermeasure is neither implemented nor started (0% risk reduction, 100% enforcement of non-implementation risk floor).', 'Default state when a missing control is identified. Fully enforces the minimum risk floor (risk_factor) from the countermeasure catalog.'),
 	('cm_state_planned', 'Planned / Approved', 'Approved for implementation (planned)', 'Countermeasure is approved with allocated budget/deadline, but only basic awareness is currently active (10% reduction, 90% floor).', 'State between formal approval and start of actual rollout.'),
 	('cm_state_verified', 'Verified / Audited', 'Fully implemented and regularly verified', 'Countermeasure is fully operational, documented, and its effectiveness is regularly tested or audited (100% reduction, 0% floor).', 'Highest maturity state providing full reduction effectiveness.');

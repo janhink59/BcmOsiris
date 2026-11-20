@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-16 16:25
+ * Verze: 2026-11-20 17:00
  * Soubor: fillup_countermeasure_state.sql
  *
  * 1. Role souboru v celém systému:
@@ -18,6 +18,11 @@
  * 3. Očekávaná kontextová data:
  *    - Běží jako součást sestavovací dávky databáze (pracuje nad systémovými
  *      záznamy s object_owner = 0x00, nevyžaduje relaci v dbsession).
+ *
+ * Změny:
+ * - 2026-11-20 17:00: Opraven stav cm_state_na z reduction_factor = 100.0000 na
+ *   0.0000 (neaplikovatelné opatření nesmí uměle redukovat riziko scénáře ani
+ *   uplatňovat spodní penalizační práh risk_factor = 0.0000).
  * ============================================================================= */
 SET NOCOUNT ON;
 GO
@@ -46,7 +51,7 @@ BEGIN
 	) VALUES
 	('cm_state_implemented', '040', 85.0000, 15.0000, '#65a30d', 0, 'Zavedeno', 'Zavedeno v provozu (neauditováno)', 'Protiopatření je plně nasazeno do provozu, zatím však neprošlo nezávislým auditem či praktickým testem účinnosti (85 % redukce, 15 % zbytkový práh).', 'Standardní stav pro běžně provozovaná technická a organizační opatření.'),
 	('cm_state_in_progress', '030', 40.0000, 60.0000, '#eab308', 0, 'V realizaci', 'Částečně zavedeno / V realizaci', 'Protiopatření je rozpracováno nebo nasazeno pouze částečně (40 % cílové redukce, 60 % rizikového prahu).', 'Použijte při postupném nasazování opatření nebo při částečném pokrytí aktiva.'),
-	('cm_state_na', '060', 100.0000, 0.0000, '#64748b', 0, 'Neaplikovatelné', 'Neaplikovatelné (nahrazeno kompenzací)', 'Opatření není pro dané aktivum technicky či provozně relevantní, nebo je plně kompenzováno jiným opatřením (100 % redukce, 0 % práh).', 'Neuplatňuje spodní penalizační práh rizika za neimplementaci.'),
+	('cm_state_na', '060', 0.0000, 0.0000, '#64748b', 0, 'Neaplikovatelné', 'Neaplikovatelné (nahrazeno kompenzací)', 'Opatření není pro dané aktivum technicky či provozně relevantní, nebo je řešeno jiným opatřením (0 % redukce, 0 % práh — nevstupuje do výpočtu redukce ani penalizace).', 'Neuplatňuje spodní penalizační práh rizika za neimplementaci a nijak nezkresluje souhrnnou redukci ostatních opatření.'),
 	('cm_state_none', '010', 0.0000, 100.0000, '#dc2626', 1, 'Nezavedeno', 'Nezavedeno (chybí)', 'Protiopatření není zavedeno ani zahájeno (0 % redukce rizika, 100 % uplatnění prahu rizika neimplementace).', 'Výchozí stav při zjištění chybějícího opatření. Plně uplatňuje spodní práh rizika (risk_factor) z katalogu protiopatření.'),
 	('cm_state_planned', '020', 10.0000, 90.0000, '#ea580c', 0, 'Schváleno v plánu', 'Schváleno k realizaci (v plánu)', 'Opatření je schváleno a má přidělený rozpočet/termín, v provozu však zatím působí jen základní povědomí (10 % redukce, 90 % prahu).', 'Stav mezi rozhodnutím o zavedení a zahájením vlastní implementace.'),
 	('cm_state_verified', '050', 100.0000, 0.0000, '#16a34a', 0, 'Ověřeno / Auditováno', 'Plně zavedeno a pravidelně ověřováno', 'Protiopatření je plně funkční, dokumentované a jeho účinnost je pravidelně testována nebo auditována (100 % redukce, 0 % práh).', 'Nejvyšší stupeň zralosti protiopatření poskytující plný redukční účinek.');

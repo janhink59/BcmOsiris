@@ -2,17 +2,30 @@ EXECUTE dropni 'f_is_hierarchy_node_locked', 'FN';
 GO
 
 /* =============================================================================
- * Verze:  2026-11-12 17:10
+ * Verze:  2026-11-20 17:15
  * Soubor: f_is_hierarchy_node_locked.sql
  * Funkce: dbo.f_is_hierarchy_node_locked
- * Účel:   Ověří, zda je daný uzel hierarchie (nebo libovolný podřízený uzel
- *         v jeho podstromu) již navázán na jiné entity v tabulkách link
- *         (mimo interní stromové vazby parent_to_child a odvozené vazby
- *         diagramů), scenario, asset, scenario_assessment nebo
- *         countermeasure_implementation.
- * Vazby:  Čte tabulky asset_class, threat, impact, scenario, countermeasure,
- *         asset, hierarchy, hierarchy_item, scenario_assessment,
- *         countermeasure_implementation, link a meta_link_def.
+ *
+ * 1. Role souboru v celém systému:
+ *    Ověří, zda je daný uzel hierarchie (nebo libovolný podřízený uzel
+ *    v jeho podstromu) již navázán na jiné entity v tabulkách link
+ *    (mimo interní stromové vazby parent_to_child a odvozené vazby
+ *    diagramů), scenario, asset, scenario_assessment nebo
+ *    countermeasure_implementation.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Čte tabulky asset_class, threat, impact_type, impact_area, scenario,
+ *      countermeasure, asset, hierarchy, hierarchy_item, scenario_assessment,
+ *      countermeasure_implementation, link a meta_link_def.
+ *    - Volána z entity_manager_ui::is_hierarchy_node_locked() a z procedury
+ *      dbo.p_split_hierarchy_node_to_folder.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Přijímá @table_name, @node_original a @object_owner; je bezstavová.
+ *
+ * Změny:
+ * - 2026-11-20 17:15: Zastaralá tabulka impact nahrazena dvojicí impact_type
+ *   a impact_area.
  * ============================================================================= */
 CREATE FUNCTION dbo.f_is_hierarchy_node_locked(
 	@table_name varchar(128),
@@ -65,13 +78,25 @@ BEGIN
 			IF EXISTS (SELECT 1 FROM scenario sc JOIN @subtree s ON s.original = sc.threat_uuid WHERE sc.record_type = 'A' AND sc.removed = 0)
 				RETURN 1;
 	END
-	ELSE IF @table_name = 'impact' AND OBJECT_ID('impact', 'U') IS NOT NULL
+	ELSE IF @table_name = 'impact_type' AND OBJECT_ID('impact_type', 'U') IS NOT NULL
 	BEGIN
 		WHILE @@ROWCOUNT > 0
 		BEGIN
 			INSERT INTO @subtree (original)
 			SELECT DISTINCT c.original
-			FROM impact c
+			FROM impact_type c
+			JOIN @subtree s ON c.parent_uuid = s.original
+			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
+				AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);
+		END
+	END
+	ELSE IF @table_name = 'impact_area' AND OBJECT_ID('impact_area', 'U') IS NOT NULL
+	BEGIN
+		WHILE @@ROWCOUNT > 0
+		BEGIN
+			INSERT INTO @subtree (original)
+			SELECT DISTINCT c.original
+			FROM impact_area c
 			JOIN @subtree s ON c.parent_uuid = s.original
 			WHERE c.record_type = 'A' AND c.removed = 0 AND c.object_owner IN (0x00, @object_owner)
 				AND NOT EXISTS (SELECT 1 FROM @subtree ex WHERE ex.original = c.original);

@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-16 14:40
+ * Verze: 2026-11-20 17:00
  * Soubor: p_crmm_recalculate.sql
  * Procedura: dbo.p_crmm_recalculate
  *
@@ -10,8 +10,10 @@
  *      countermeasure_implementation jako součin faktoru opatření
  *      (countermeasure) a váhy stavu (countermeasure_state) v % (0..100).
  *    - Přepočítá hodnocení scénářů v tabulce scenario_assessment:
- *      inherent_risk_score, reduction_score, min_risk_floor_score
- *      a residual_risk_score.
+ *      inherent_risk_score (normalizovaný součet logaritmicky chápaných skóre
+ *      H, Z, D do intervalu 0..100 %), reduction_score (multiplikativní
+ *      kombinace 100 * (1 - PROD(1 - r_i/100)) bez zkreslení nulovými/N/A
+ *      opatřeními), min_risk_floor_score a residual_risk_score.
  *    - Agreguje vypočtené inherentní a reziduální riziko na jednotlivá
  *      aktiva v tabulce asset a propaguje skóre rizik po orientovaných
  *      provozních vazbách v tabulce link (Data/Host/SW -> Aplikace -> Služba).
@@ -31,6 +33,9 @@
  *      organizaci (organization) z tabulky dbsession pro aktuální @@SPID.
  *
  * Změny:
+ * - 2026-11-20 17:00: V sekci 2c nahrazena chybná agregace AVG(effective_reduction_factor)
+ *   multiplikativní kombinací 100 * (1 - EXP(SUM(LOG(1 - r/100)))) s ošetřením
+ *   r >= 100 % a ignorováním nulové redukce (r <= 0 %, např. cm_state_na / cm_state_none).
  * - 2026-11-16 14:40: Odstraněny korelované poddotazy EXISTS / NOT EXISTS
  *   uvnitř OUTER APPLY v sekci 2b a opakované skenování tabulek link a
  *   meta_link_def v sekci 3b; nahrazeno indexovanými tabulkovými proměnnými
@@ -264,7 +269,7 @@ BEGIN
 	SELECT DISTINCT source_obj
 	FROM @scen_cm_map;
 
-	-- 2c. Výpočet inherentního rizika, redukce, spodního prahu a reziduálního rizika
+	-- 2c. Výpočet inherentního rizika, multiplikativní redukce, spodního prahu a reziduálního rizika
 	UPDATE sa
 	SET sa.inherent_risk_score = calc.inh_score,
 		sa.reduction_score = calc.red_score,
@@ -283,9 +288,25 @@ BEGIN
 		ORDER BY CASE WHEN sc.object_owner = @org_uuid THEN 0 ELSE 1 END
 	) sc_info
 	OUTER APPLY (
-		-- Aplikovaná protiopatření vyhodnocená výhradně přes přímé Index Seeky
+		-- Multiplikativní kombinace redukce opatření: 100 * (1 - PROD(1 - r_i / 100)) přes přímé Index Seeky
 		SELECT
-			ISNULL(AVG(ci.effective_reduction_factor), 0.0000) AS avg_red,
+			CASE
+				WHEN MAX(CASE WHEN ci.effective_reduction_factor >= 100.0000 THEN 1 ELSE 0 END) = 1 THEN 100.0000
+				ELSE 100.0 * (
+					1.0 - EXP(
+						ISNULL(
+							SUM(
+								CASE
+									WHEN ci.effective_reduction_factor > 0.0000 AND ci.effective_reduction_factor < 100.0000
+										THEN LOG(1.0 - CAST(ci.effective_reduction_factor AS float) / 100.0)
+									ELSE 0.0
+								END
+							),
+							0.0
+						)
+					)
+				)
+			END AS comb_red,
 			ISNULL(MAX(ci.effective_risk_factor), 0.0000) AS max_rsk
 		FROM @asset_scope ascope
 		JOIN countermeasure_implementation ci
@@ -336,7 +357,13 @@ BEGIN
 							4
 						) AS decimal(9,4)
 					) AS inh_val,
-					CAST(ROUND(ISNULL(cm_agg.avg_red, 0.0000), 4) AS decimal(9,4)) AS red_val,
+					CAST(
+						CASE
+							WHEN ISNULL(cm_agg.comb_red, 0.0) < 0.0 THEN 0.0000
+							WHEN ISNULL(cm_agg.comb_red, 0.0) > 100.0 THEN 100.0000
+							ELSE ROUND(ISNULL(cm_agg.comb_red, 0.0), 4)
+						END AS decimal(9,4)
+					) AS red_val,
 					CAST(
 						ROUND(
 							CASE

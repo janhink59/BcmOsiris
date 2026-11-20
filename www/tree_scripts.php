@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-16 16:15
+ * Verze: 2026-11-20 16:45
  * Soubor: tree_scripts.php
  * Třída: tree_scripts
  *
@@ -25,6 +25,11 @@
  *    - Přijímá konfigurační pole stromu ($cfg) z volající stránky; při AJAX
  *      volání (?ajax_panel=master) již nevypisuje duplicitně CSS ani JS engine,
  *      ale pouze zavolá window.bcmInitTreeMaster(cfg).
+ *
+ * Změny:
+ * 2026-11-20 16:45 - Doplněno flexbox zarovnání buňky názvu (.tree-caption-wrap,
+ *                    .tree-caption-text) a flex-shrink: 0 pro ikony/úchyty,
+ *                    aby zalomené dlouhé názvy nepodtékaly pod ikony vlevo.
  * =============================================================================
  */
 
@@ -44,10 +49,20 @@ class tree_scripts {
 
 		return <<<HTML
 		<style>
+			.tree-caption-wrap {
+				display: flex;
+				align-items: flex-start;
+			}
+			.tree-caption-text {
+				flex: 1 1 auto;
+				min-width: 0;
+				line-height: 1.35;
+			}
 			.tree-toggle-btn {
 				display: inline-flex;
 				align-items: center;
 				justify-content: center;
+				flex-shrink: 0;
 				width: 18px;
 				height: 18px;
 				margin-right: 4px;
@@ -63,7 +78,7 @@ class tree_scripts {
 				vertical-align: middle;
 			}
 			.tree-toggle-btn:hover { background-color: #e2e8f0; color: #004488; }
-			.tree-toggle-spacer { display: inline-block; width: 18px; margin-right: 4px; }
+			.tree-toggle-spacer { display: inline-block; flex-shrink: 0; width: 18px; margin-right: 4px; }
 			.tree-ctrl-link {
 				font-size: 11px;
 				color: #004488;
@@ -79,8 +94,9 @@ class tree_scripts {
 				display: inline-flex;
 				align-items: center;
 				justify-content: center;
+				flex-shrink: 0;
 				min-width: 16px;
-				height: 16px;
+				height: 18px;
 				margin-right: 5px;
 				font-size: 13px;
 				line-height: 1;
@@ -104,7 +120,7 @@ class tree_scripts {
 			.dnd-grip svg:not([fill]), .tree-node-icon svg:not([fill]) {
 				fill: currentColor;
 			}
-			.tree-folder-icon { font-size: 12px; margin-right: 4px; vertical-align: middle; }
+			.tree-folder-icon { flex-shrink: 0; font-size: 12px; line-height: 18px; margin-right: 4px; vertical-align: middle; }
 			.tree-lock-icon { font-size: 11px; margin-left: 5px; vertical-align: middle; cursor: help; }
 			tr.tree-ancestor-context td { opacity: 0.72; background-color: #f8fafc; }
 			tr.dnd-dragging { opacity: 0.45; }

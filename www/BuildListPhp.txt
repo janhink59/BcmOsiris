@@ -1,4 +1,4 @@
-limit=380000
 exclude=config_*.php
-exclude=htmLawed.php 
+exclude=htmLawed.php
+OsirisLib.php
 *.php

@@ -26,7 +26,7 @@ drop_abandoned_objects.sql
 final_scripts.sql
 
 # Doplnek kontextu pro AI
-output=BcmOsirisConcat.txt
+output=../temp/BcmOsirisConcat.txt
 BuildDB.bat
 BuildListDb.txt
 ../BuildRelease.php
@@ -34,4 +34,4 @@ BuildListDb.txt
 # Slepenec pro spusteni vcelku
 limit=0
 output=BcmOsirisDb.sql
-BcmOsirisDb*.txt
+../temp/BcmOsirisDb*.txt

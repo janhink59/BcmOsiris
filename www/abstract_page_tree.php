@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-16 16:15
+ * Verze: 2026-11-20 16:45
  * Soubor: abstract_page_tree.php
  * Třída: abstract_page_tree
  *
@@ -25,6 +25,10 @@
  *      větví v klientském sessionStorage.
  *
  * Změny:
+ * 2026-11-20 16:45 - Obsah buňky cell-tree-caption obalen do .tree-caption-wrap
+ *                    (flexbox zarovnání zalomených názvů pod první písmeno) a
+ *                    doplněna metoda format_tree_extra_value() pro čisté formátování
+ *                    desetinných čísel (bez .0000 a bez zobrazení 0 u složek).
  * 2026-11-16 16:15 - Stabilní klientské CSS a JS bloky stromu a Drag & Dropu
  *                    vyčleněny do samostatné třídy tree_scripts (tree_scripts.php)
  *                    pro snížení velikosti souboru ze 39 KB na ~19 KB.
@@ -100,6 +104,32 @@ abstract class abstract_page_tree extends abstract_page_master_detail {
 		}
 		$code = (string) ($row[$this->code_column] ?? '');                   // Technický kód uzlu
 		return ($code !== '' AND in_array($code, $this->protected_root_codes, true)); // Kontrola v poli chráněných kódů
+	}
+
+	/**
+	 * Naformátuje hodnotu doplňkového sloupce ve stromu (např. skóre bez koncových nul a bez 0 u složek).
+	 */
+	protected function format_tree_extra_value(string $col_name, mixed $raw_val, array $row, bool $is_folder): string { // Formátování doplňkového sloupce
+		if ($raw_val === null) {                                             // Hodnota NULL zůstane prázdná
+			return '';                                                       // Prázdná buňka
+		}
+		$str_val = trim((string) $raw_val);                                  // Oříznutá textová reprezentace hodnoty
+		if ($str_val === '') {                                               // Prázdný řetězec zůstane prázdný
+			return '';                                                       // Prázdná buňka
+		}
+
+		$sql_type = ($this->em !== null) ? strtolower($this->em->get_column_sql_type($col_name)) : ''; // Datový typ sloupce v DB
+		if (in_array($sql_type, ['decimal', 'numeric', 'float', 'real', 'money'], true) AND is_numeric($str_val)) { // Desetinná čísla
+			$num_val = (float) $str_val;                                     // Převod na plovoucí číslo (řeší MSSQL '.0000')
+			if ($is_folder AND abs($num_val) < 0.00005) {                    // U vnitřní složky nulové skóre nezobrazujeme
+				return '';                                                   // Prázdná buňka pro složku bez vlastního skóre
+			}
+			$formatted = number_format($num_val, 4, '.', ' ');               // Formátování s úvodní nulou
+			$trimmed = rtrim(rtrim($formatted, '0'), '.');                   // Ořezání nadbytečných koncových nul a tečky
+			return ($trimmed === '' OR $trimmed === '-0') ? '0' : $trimmed;  // Čisté číslo bez koncových nul
+		}
+
+		return $str_val;                                                     // Ostatní typy vrátíme beze změny
 	}
 
 	/**
@@ -214,7 +244,7 @@ abstract class abstract_page_tree extends abstract_page_master_detail {
 
 		// 1. Při založení nového záznamu (NEW) pod vybraným uzlem předvyplníme parent_uuid a další volný sort_code
 		if ($update_guid === 'NEW' AND is_array($datarow)) {                 // Režim zakládání nového uzlu
-			if ($this->dnd_parent !== '' AND ($datarow[$this->parent_column] ?? '') === '') { // Pokud byl předán nadřazený uzel
+			if ($this->dnd_parent !== '' AND ($datarow[$this->parent_column] ?? '') === '') { // Pokud byl předán nadřízený uzel
 				$datarow[$this->parent_column] = $this->dnd_parent;          // Předvyplnění nadřízeného uzlu
 			}
 			if ($this->dnd_sort !== '' AND ($datarow[$this->sort_column] ?? '') === '') { // Pokud byl předán řadicí kód
@@ -606,7 +636,7 @@ HTML;
 						data-row-url="{$row_url}"
 						style="cursor: pointer;"
 						onclick="if (window.loadDetailPanel) { window.loadDetailPanel('{$row_url}', this); } else { document.location='{$row_url}'; }">
-						<td class="cell-tree-caption" style="padding-left: calc(6px + {$indent_px}px);">{$grip_html}{$toggle_html}{$folder_icon_html}<span class="tree-caption-text">{$cap_html}</span>{$lock_icon_html}{$ssc_badge}</td>
+						<td class="cell-tree-caption" style="padding-left: calc(6px + {$indent_px}px);"><div class="tree-caption-wrap">{$grip_html}{$toggle_html}{$folder_icon_html}<span class="tree-caption-text">{$cap_html}{$lock_icon_html}{$ssc_badge}</span></div></td>
 HTML;
 
 			if ($has_code_col) {                                             // Buňka technického kódu
@@ -615,7 +645,8 @@ HTML;
 			echo "\t\t\t\t\t\t<td class=\"cell-tree-sort\" style=\"text-align: center; font-family: monospace; font-size: 12px;\">{$safe_sort}</td>\n"; // Pořadí
 
 			foreach ($this->tree_extra_columns as $ex_col => $ex_cfg) {      // Vykreslení buněk volitelných sloupců
-				$ex_val = htmlspecialchars((string) ($row[$ex_col] ?? ''));  // Hodnota volitelného sloupce
+				$ex_fmt = $this->format_tree_extra_value((string) $ex_col, $row[$ex_col] ?? null, $row, $is_folder); // Formátování hodnoty
+				$ex_val = htmlspecialchars($ex_fmt);                         // Ošetřená hodnota volitelného sloupce
 				$ex_al  = ! empty($ex_cfg['align']) ? "text-align: {$ex_cfg['align']}; " : ""; // Zarovnání
 				$ex_fw  = ! empty($ex_cfg['bold']) ? "font-weight: bold; " : ""; // Tučné písmo
 				echo "\t\t\t\t\t\t<td style=\"{$ex_al}{$ex_fw}font-size: 11px;\">{$ex_val}</td>\n"; // Buňka
