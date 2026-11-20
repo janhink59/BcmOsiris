@@ -1,12 +1,24 @@
 /* =============================================================================
- * Verze: 2026-11-12 16:45
+ * Verze: 2026-11-20 10:05
  * Soubor: fillup_meta_link_def_en.sql
- * Účel:   Idempotentní nastavení výchozích anglických překladů (jazyk 'en',
- *         record_type = 'L') pro všechny primární, zpětné, vnitrotřídní
- *         i exkluzivní stromové vztahy (parent_to_child / child_to_parent)
- *         v tabulce meta_link_def (object_owner = 0x00), seřazené abecedně
- *         podle (from_class_code, link_code).
- * Vazby:  - Navazuje na fillup_meta_link_def.sql.
+ *
+ * 1. Role souboru v celém systému:
+ *    Idempotentní nastavení výchozích anglických překladů (jazyk 'en',
+ *    record_type = 'L') pro všechny 98 primárních, zpětných, vnitrotřídních
+ *    i exkluzivních stromových vztahů (parent_to_child / child_to_parent)
+ *    v tabulce meta_link_def (object_owner = 0x00), včetně vztahu
+ *    sw_contains_data / data_belongs_to_sw a úklidu osiřelých 'L' záznamů
+ *    s who_modified = 0x00.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Navazuje na fillup_meta_link_def.sql.
+ *    - Automaticky zařazen do buildu databáze maskou fillup_*.sql v BuildListDb.txt.
+ *    - Zapisuje záznamy record_type = 'L' (language = 'en') do meta_link_def.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (BcmOsirisDb.sql) nad
+ *      systémovými záznamy (object_owner = 0x00) bez závislosti na dbsession
+ *      či SESSION_CONTEXT.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -51,6 +63,7 @@ INSERT INTO @links_en (from_class_code, link_code, caption_forward, caption_back
 ('asset_class','countermeasure_applies_to_asset_class','Recommended countermeasure for asset class','Applies to asset class (inherited down the tree)','Catalog link specifying which countermeasures are relevant for a given asset class and its child classes.','Assign countermeasures to be offered for assets in this class.'),
 ('asset_class','parent_to_child','Contains child asset class (parent_uuid)','Belongs under parent asset class (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the asset class catalog.','Child asset classes in the tree.'),
 ('asset_class','threat_applies_to_asset_class','Is exposed to threat','Affects asset class (inherited down the tree)','Catalog link specifying which threats affect a given asset class and are automatically inherited by child classes.','Assign threats relevant to this asset class.'),
+('asset_data','data_belongs_to_sw','Belongs to software product (procurement / development)','Includes data asset (source code / installation packages / licences)','Reverse relationship from a data asset (source code, installation packages, activation keys) to the software product.','Software products to which this data belongs.'),
 ('asset_data','data_evaluated_by_impact','Is evaluated for impact in area (breach / corruption / loss)','Is an impact area for data asset','Evaluation of impacts of data disclosure, inconsistency, or errors across impact areas.','Assess the impacts of compromise or loss of this data asset.'),
 ('asset_data','data_in_document','Is recorded in document','Contains data asset','Storage of a data asset in a paper or controlled electronic document.','Select documents containing this data.'),
 ('asset_data','data_on_host','Is stored on host computer / server','Stores data asset (propagates HW errors and outages)','Physical or virtual storage of a database or files on a host computer. Host failure or compromise directly threatens the data.','Select host computers (servers) storing this data.'),
@@ -89,6 +102,7 @@ INSERT INTO @links_en (from_class_code, link_code, caption_forward, caption_back
 ('asset_service','service_supports_service','Supports parent service (propagates outages)','Requires underlying (internal) service','Primary intra-class directed relationship from a supporting service to parent services (with cycle detection).','Parent services dependent on this service.'),
 ('asset_site','site_contains_building','Contains building','Is located in site / campus','Primary spatial relationship from a site (campus) to buildings located within it.','Buildings registered in this site.'),
 ('asset_site','site_in_city','Is located in city / municipality','Contains site / campus','Reverse spatial placement of a site within a city (when cities are defined in the organization).','If you track cities, select the city where the site is located.'),
+('asset_software','sw_contains_data','Includes data asset (source code / installation packages / licences)','Belongs to software product (procurement / development)','Optional link from a software product to related data assets (e.g., source code during development or installation packages and activation keys during procurement).','Assign source code, installation packages, or activation keys belonging to this software.'),
 ('asset_software','sw_deployed_as_app','Is deployed as installed application (propagates SW defects)','Is an installation of software','Reverse relationship from a software product to its installed application instances.','Installed application instances of this software.'),
 ('asset_supplier','supplier_maintains_asset','Supplies / maintains asset','Is supplied / maintained by supplier','Reverse relationship from a supplier to supplied or maintained assets.','Assets supplied or maintained by this supplier.'),
 ('asset_supplier','supplier_provides_interface','Provides Interface service (internet / voice / video)','Is provided by supplier (service provider)','Reverse relationship from a supplier to communication interfaces provided by them.','Interface services provided by this supplier.'),
@@ -121,6 +135,19 @@ INSERT INTO @links_en (from_class_code, link_code, caption_forward, caption_back
 ('threat','child_to_parent','Belongs under parent threat group (parent_uuid)','Contains child threat (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link in the threat catalog.','Parent group in the threat catalog.'),
 ('threat','countermeasure_mitigates_threat','Is suppressed by countermeasure','Acts against threat','Methodological link between a catalog threat and preventive or detective countermeasures.','Select countermeasures that reduce the impact or likelihood of this threat.'),
 ('threat','parent_to_child','Contains child threat (parent_uuid)','Belongs under parent threat group (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the threat catalog.','Child threats in the tree.');
+
+-- 0. Úklid zastaralých anglických 'L' záznamů (0x00, who_modified = 0x00) mimo odvozené 1:N FK a diagramy
+DELETE l
+FROM meta_link_def l
+LEFT JOIN meta_class mc ON mc.original = l.from_class AND mc.object_owner = @sys_owner AND mc.record_type = 'A'
+LEFT JOIN @links_en s ON s.from_class_code = mc.class_name AND LOWER(s.link_code) = LOWER(l.link_code)
+WHERE l.object_owner = @sys_owner
+  AND l.who_modified = @sys_owner
+  AND l.record_type = 'L'
+  AND l.[language] = 'en'
+  AND l.diagram_uuid IS NULL
+  AND (l.is_derived = 0 OR l.is_exclusive_parent = 1)
+  AND s.link_code IS NULL;
 
 -- 1. Hromadný UPDATE existujících anglických 'L' záznamů (language = 'en')
 UPDATE l

@@ -1,11 +1,12 @@
 /* =============================================================================
- * Verze: 2026-11-19 16:05
+ * Verze: 2026-11-20 10:00
  * Soubor: fillup_asset_class_en.sql
  *
  * 1. Role souboru v celém systému:
  *    Idempotentní naplnění výchozích anglických překladů (jazyk 'en',
  *    record_type = 'L') pro systémový katalog tříd aktiv v tabulce asset_class
- *    (object_owner = 0x00), seřazené abecedně podle builtin_code.
+ *    (object_owner = 0x00, celkem 119 uzlů) včetně automatického úklidu
+ *    osiřelých systémových 'L' záznamů (who_modified = 0x00).
  *
  * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
  *    - Navazuje na základní skript fillup_asset_class.sql.
@@ -14,7 +15,8 @@
  *
  * 3. Očekávaná kontextová data:
  *    - Běží jako součást sestavovací dávky databáze nad systémovými záznamy
- *      (object_owner = 0x00) bez závislosti na uživatelské relaci v dbsession.
+ *      (object_owner = 0x00) bez závislosti na uživatelské relaci v dbsession
+ *      či SESSION_CONTEXT.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -35,6 +37,7 @@ BEGIN
 
 	INSERT INTO @ac_en (builtin_code, caption, shortname, description_text) VALUES
 	('ac_app_collab','Office, Email & Collaboration Applications','APP-COL','Installed systems for email, document sharing, messaging, and team collaboration.'),
+	('ac_app_dev_tools','Development, Testing & CI/CD Tools','APP-DEV','Operational development environments, version control systems (Git), build servers (CI/CD), test platforms, and artifact repositories.'),
 	('ac_app_erp_crm','Enterprise ERP / CRM / Core Information Systems','APP-ERP','Core enterprise information systems (ERP, CRM, order management, manufacturing, and logistics).'),
 	('ac_app_financial','Financial, Accounting & Payment Applications','APP-FIN','Applications processing financial transfers, accounting, billing, banking, and payment transactions.'),
 	('ac_app_hr','Human Resources & Payroll Applications','APP-HR','Applications managing employee records, payroll, attendance, and staff evaluation.'),
@@ -42,7 +45,7 @@ BEGIN
 	('ac_app_safety','Safety-Critical & Operational Technology Apps (OT)','APP-OT','Industrial and control applications (SCADA/OT) whose failure may endanger human life, health, or critical technology.'),
 	('ac_app_security','Security, Monitoring & Administration Apps','APP-SEC','Applications for identity management (IAM/PAM), SIEM, backup, monitoring, and cybersecurity.'),
 	('ac_app_web','Web Portals, E-Commerce & API Gateways','APP-WEB','Externally and internally published web applications, client portals, e-shops, and integration APIs.'),
-	('ac_application','Applications (Installed)','APP','Specific installed application instances running on host computers and requiring data assets and personnel.'),
+	('ac_application','Applications / End User Services (EUS)','APP','Installed and operational application instances (End User Services) running on host computers and requiring data assets and personnel.'),
 	('ac_bld_datacenter','Data Center / Technology Facility','BLD-DC','Dedicated building facility housing a data center or critical communication technology.'),
 	('ac_bld_office','Administrative / Office Building','BLD-OFF','Organization headquarters, branch office, or administrative building.'),
 	('ac_bld_other','Other Building / Facility','BLD-OTH','Other building facilities or a fictitious building grouping rooms.'),
@@ -56,10 +59,12 @@ BEGIN
 	('ac_data','Data Assets (Information & Databases)','DATA','Data assets, databases, and logical information sets stored on host computers, media, or documents.'),
 	('ac_data_business','Trade Secrets, Contractual & Customer Data','DAT-BUS','Customer databases, contracts, pricing, intellectual property, and strategic business records.'),
 	('ac_data_financial','Financial, Accounting & Payment Data','DAT-FIN','Accounting ledgers, tax records, payment orders, and financial statements.'),
-	('ac_data_operational','Operational, Technical & Configuration Data','DAT-OPS','Operational registers, production data, source code, and infrastructure configuration databases.'),
+	('ac_data_install_lic','Installation Packages, Licences & Activation Keys','DAT-LIC','Software installation media/packages, licence files, serial numbers, and activation codes required for installation, recovery, and licence compliance.'),
+	('ac_data_operational','Operational, Technical & Configuration Data','DAT-OPS','Operational registers, production data, and infrastructure configuration databases.'),
 	('ac_data_other','Other Data Assets','DAT-OTH','Other electronic or logical information sets and databases.'),
 	('ac_data_personal','Personal & Sensitive Data (GDPR / HR)','DAT-PII','Personal data of employees, customers, or third parties subject to statutory protection (GDPR).'),
 	('ac_data_security','Security Data (Credentials, Keys, Logs)','DAT-SEC','Cryptographic keys, certificates, account directories, audit logs, and security records.'),
+	('ac_data_source_code','Source Code & Development Artifacts','DAT-SRC','Source code of developed software, database scripts, development branches, build signing keys, and code documentation.'),
 	('ac_district','Districts & Regions','DIST','Geographical districts and regions representing the highest optional level of spatial asset organization.'),
 	('ac_doc_legal','Contracts, Legal & Statutory Documents','DOC-LEG','Original contracts, incorporation deeds, licences, permits, and legally binding vital records.'),
 	('ac_doc_ops','Operational, Security & Contingency Documentation','DOC-OPS','Controlled policies, crisis and recovery plans (BCP/DRP), operational manuals, and diagrams.'),
@@ -69,11 +74,10 @@ BEGIN
 	('ac_fac_other','Other Building Support Utility','FAC-OTH','Other supporting facility technology and building equipment.'),
 	('ac_fac_power','Backup Power (UPS / Diesel Generator)','FAC-PWR','Uninterruptible power supplies (UPS), battery banks, diesel generators, and PDUs.'),
 	('ac_fac_sec','Physical Security (Fire / Intrusion / CCTV / Access)','FAC-SEC','Fire detection and suppression, intrusion alarms, CCTV cameras, and physical access control systems.'),
-	('ac_grp_info','Information, Data, Documents & Media','INFO','Folder of data assets, documents, and portable or backup storage media.'),
+	('ac_grp_info','Information, Data, Documents & Media','INFO','Folder of data assets, source code, licence keys, documents, and portable or backup storage media.'),
 	('ac_grp_people_ext','Personnel & External Suppliers','PPL','Folder of human resources, key roles, and external suppliers or service partners.'),
 	('ac_grp_services','Services & Communication Interfaces','SRV','Folder of primary business services, internal support services, and external/internal interfaces.'),
 	('ac_grp_space','Spaces & Locations','LOC','Hierarchical folder of spatial asset placement (District -> City -> Site -> Building -> Room).'),
-	('ac_grp_sw_apps','Software & Installed Applications','SW','Folder of developed or procured software packages and specific installed applications.'),
 	('ac_grp_tech','Technical & Physical Assets (HW & Networks)','TECH','Folder of tangible equipment, host computers, servers, network devices, building utilities, and cabling.'),
 	('ac_host','Host Computers, Servers & Workstations','HOST','Physical and virtual servers as well as end-user workstations. Server roles (multi_class = 1) may be combined on a single host, whereas workstations (multi_class = 0) are mutually exclusive with servers.'),
 	('ac_host_app','Application Server','HST-APP','Server running enterprise, line-of-business, or integration applications (combinable role).'),
@@ -127,7 +131,7 @@ BEGIN
 	('ac_room_tech','Technical Room / Wiring Closet / UPS Room','RM-TEC','Room housing wiring panels, cabling hubs, UPS units, HVAC, or building utilities.'),
 	('ac_service','Services (Internal & Customer-Facing)','SVC','Core business and internal support services supported by applications, interfaces, and personnel, evaluated for outage impacts across impact areas.'),
 	('ac_site','Sites & Campuses','SITE','Sites, campuses, and branches grouping multiple buildings within a city or municipality (optional spatial hierarchy level).'),
-	('ac_software','Software (Developed & Procured)','SWP','Source software products, internally developed software, and installation packages that may be a source of software defects for installed applications.'),
+	('ac_software','Software (Procurement, Development & Maintenance)','SWP','Standalone branch for software products in development or procurement lifecycle (installation media, activation keys, testing, distribution, and maintenance). Linked to installed applications (EUS) only optionally.'),
 	('ac_srv_business','Core Customer / Business Service','SRV-BUS','Primary product or customer-facing service generating revenue or fulfilling statutory mandate.'),
 	('ac_srv_cloud','Externally Hosted SaaS / Cloud Service','SRV-CLD','Service delivered as SaaS / PaaS by a third-party provider.'),
 	('ac_srv_internal','Internal Support & IT Service','SRV-INT','Internal operational, infrastructure, or administrative service supporting the organization.'),
@@ -140,11 +144,11 @@ BEGIN
 	('ac_sup_other','Other External Supplier / Partner','SUP-OTH','Other contractual partners, advisors, and supply chain vendors.'),
 	('ac_sup_telecom','Telecom Carrier / ISP','SUP-TEL','Providers of internet connectivity, data circuits, and voice/mobile telecom services.'),
 	('ac_supplier','Suppliers & External Partners','SUP','External providers of communication interfaces, cloud services, hardware, software, and maintenance support.'),
-	('ac_sw_bespoke','Bespoke / Internally Developed Software','SW-BSP','Custom software developed internally or by an external vendor with source code lifecycle management.'),
-	('ac_sw_oss','Open-Source & Community Software','SW-OSS','Open-source software and libraries operated without commercial vendor support or with community support.'),
-	('ac_sw_other','Other Software Product','SW-OTH','Other software packages and utilities.'),
-	('ac_sw_package','Commercial Off-the-Shelf Software (COTS)','SW-PKG','Standard commercial packaged application software procured from an external vendor.'),
-	('ac_sw_system','System Software (OS / DBMS / Middleware)','SW-SYS','Operating systems, database management systems, application servers, and virtualization platforms.'),
+	('ac_sw_bespoke','Bespoke / Internally Developed Software','SW-BSP','Custom software developed internally or by a vendor (risks of source code, testing, build distribution, licences, and maintenance).'),
+	('ac_sw_oss','Open-Source & Community Software','SW-OSS','Open-source software and libraries operated without commercial vendor support or with community support (dependency and licence compatibility risks).'),
+	('ac_sw_other','Other Software Product','SW-OTH','Other software packages and utilities in procurement or development inventory.'),
+	('ac_sw_package','Procured Commercial Software (COTS)','SW-PKG','Standard procured commercial software (risks of preserving installation media, activation codes, installation process, and patching/maintenance).'),
+	('ac_sw_system','System Software (OS / DBMS / Middleware)','SW-SYS','Operating systems, database management systems, application servers, and virtualization platforms (installation kits, licences, and update cycles).'),
 	('ac_workstation','Workstations & End-User Devices','WS','End-user computers and mobile devices (multi_class = 0: cannot be combined with server roles).'),
 	('ac_ws_desktop','Fixed Workstation / Desktop PC','WS-PC','Desktop personal computer or workstation permanently located at a workplace.'),
 	('ac_ws_laptop','Portable Computer / Laptop','WS-NB','Laptop or portable workstation used both on premises and remotely.'),

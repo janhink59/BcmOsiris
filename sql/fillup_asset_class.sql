@@ -1,12 +1,15 @@
 /* =============================================================================
- * Verze: 2026-11-19 16:05
+ * Verze: 2026-11-20 10:00
  * Soubor: fillup_asset_class.sql
  *
  * 1. Role souboru v celém systému:
  *    Prvotní idempotentní naplnění systémového hierarchického katalogu tříd
  *    aktiv v tabulce asset_class (object_owner = 0x00, jazyk 'cs', záznamy 'A'
  *    a symetrické 'L') s čistým, disjunktním členěním pod všemi 17 STI
- *    archetypy a s řízením vícenásobného přiřazení přes sloupec multi_class.
+ *    archetypy (celkem 119 uzlů) a s řízením vícenásobného přiřazení přes
+ *    sloupec multi_class.
+ *    Aplikace / Služby koncovým uživatelům (ac_application) a Software pro
+ *    nákup a vývoj (ac_software) jsou odděleny již na 1. úrovni stromu.
  *    Osiřelé systémové záznamy (object_owner = 0x00 AND who_modified = 0x00),
  *    které již nejsou v aktuální sadě, jsou automaticky odstraněny.
  *
@@ -16,12 +19,14 @@
  *    - Všechny podřízené třídy nesou vyplněný sloupec instance_class_name
  *      ('asset_<archetype>') pro přesné filtrování v dbo.p_em_get_select_options
  *      (@mode = 'asset_class_by_archetype') a na stránce page_asset.php.
- *    - Navazuje překladový skript fillup_asset_class_en.sql.
+ *    - Navazuje překladový skript fillup_asset_class_en.sql a vazby v
+ *      fillup_meta_link_def.sql (app_instance_of_sw, sw_contains_data).
  *    - V závěru volá dbo.p_sync_derived_links pro zrcadlení parent_to_child.
  *
  * 3. Očekávaná kontextová data:
  *    - Běží jako součást sestavovací dávky databáze (maska fillup_*.sql) nad
- *      systémovými záznamy (object_owner = 0x00) bez závislosti na dbsession.
+ *      systémovými záznamy (object_owner = 0x00) bez závislosti na dbsession
+ *      či SESSION_CONTEXT.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -50,6 +55,7 @@ BEGIN
 		instance_class_name, caption, shortname, description_text, svg_icon
 	) VALUES
 	('ac_app_collab','ac_application','050',1,1,'asset_application','Kancelářské, poštovní a komunikační aplikace','APP-COL','Instalované systémy pro elektronickou poštu, sdílení dokumentů, chat a týmovou spolupráci.',''),
+	('ac_app_dev_tools','ac_application','080',1,1,'asset_application','Vývojové, testovací a CI/CD nástroje','APP-DEV','Provozované vývojové prostředí, verzovací systémy (Git), sestavovací servery (CI/CD), testovací platformy a repozitáře artefaktů.',''),
 	('ac_app_erp_crm','ac_application','020',1,1,'asset_application','Podnikové ERP / CRM / jádrové systémy','APP-ERP','Hlavní podnikové informační systémy (ERP, CRM, řízení zakázek, výroby a logistiky).',''),
 	('ac_app_financial','ac_application','010',1,1,'asset_application','Finanční, účetní a platební aplikace','APP-FIN','Aplikace zpracovávající finanční převody, účetnictví, fakturaci, bankovní a platební transakce.',''),
 	('ac_app_hr','ac_application','030',1,1,'asset_application','Personalistické a mzdové aplikace','APP-HR','Aplikace pro evidenci zaměstnanců, mezd, docházky a hodnocení personálu.',''),
@@ -57,7 +63,7 @@ BEGIN
 	('ac_app_safety','ac_application','040',1,1,'asset_application','Aplikace kritické pro bezpečnost osob a provozu (OT)','APP-OT','Řídicí a průmyslové aplikace (SCADA/OT), jejichž selhání může ohrozit život, zdraví nebo klíčovou technologii.',''),
 	('ac_app_security','ac_application','070',1,1,'asset_application','Bezpečnostní, dohledové a správcovské aplikace','APP-SEC','Aplikace pro správu identit (IAM/PAM), SIEM, zálohování, monitoring a kybernetickou bezpečnost.',''),
 	('ac_app_web','ac_application','060',1,1,'asset_application','Webové portály, e-shopy a API brány','APP-WEB','Externě i interně publikované webové aplikace, klientské portály, e-commerce a integrační API.',''),
-	('ac_application','ac_grp_sw_apps','020',0,0,'asset_application','Aplikace (instalované)','APP','Konkrétní instalované instance aplikačního vybavení provozované na hostitelských počítačích a vyžadující datová aktiva a personál.','<svg viewBox="0 0 24 24" fill="#2563EB"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>'),
+	('ac_application',NULL,'040',0,0,'asset_application','Aplikace / Služby koncovým uživatelům (EUS)','APP','Instalované a provozované instance aplikačního vybavení (End User Services) běžící na hostitelských počítačích a vyžadující datová aktiva a personál.','<svg viewBox="0 0 24 24" fill="#2563EB"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11z"/></svg>'),
 	('ac_bld_datacenter','ac_building','020',1,1,'asset_building','Datové centrum / technologický objekt','BLD-DC','Vyhrazený stavební objekt pro datové centrum nebo kritickou komunikační technologii.',''),
 	('ac_bld_office','ac_building','010',1,1,'asset_building','Administrativní / kancelářská budova','BLD-OFF','Sídlo organizace, pobočka nebo kancelářská budova.',''),
 	('ac_bld_other','ac_building','090',1,1,'asset_building','Jiná budova / objekt','BLD-OTH','Ostatní stavební objekty nebo fiktivní budova pro sdružení místností.',''),
@@ -71,10 +77,12 @@ BEGIN
 	('ac_data','ac_grp_info','010',0,0,'asset_data','Datová aktiva (Informace a databáze)','DATA','Datová aktiva, databáze a logické informační celky uložené na hostitelských počítačích, médiích nebo v dokumentech.','<svg viewBox="0 0 24 24" fill="#7C3AED"><path d="M12 3C7.58 3 4 4.79 4 7s3.58 4 8 4 8-1.79 8-4-3.58-4-8-4zM4 9v3c0 2.21 3.58 4 8 4s8-1.79 8-4V9c0 2.21-3.58 4-8 4s-8-1.79-8-4zm0 5v3c0 2.21 3.58 4 8 4s8-1.79 8-4v-3c0 2.21-3.58 4-8 4s-8-1.79-8-4z"/></svg>'),
 	('ac_data_business','ac_data','030',1,1,'asset_data','Obchodní tajemství, smluvní a zákaznická data','DAT-BUS','Databáze klientů, smluv, cenotvorby, know-how a strategických podkladů organizace.',''),
 	('ac_data_financial','ac_data','020',1,1,'asset_data','Finanční, účetní a platební data','DAT-FIN','Účetní knihy, daňové doklady, platební příkazy a finanční výkazy.',''),
-	('ac_data_operational','ac_data','040',1,1,'asset_data','Provozní, technická a konfigurační data','DAT-OPS','Provozní evidence, výrobní data, zdrojové kódy a konfigurační databáze infrastruktury.',''),
+	('ac_data_install_lic','ac_data','070',1,1,'asset_data','Instalační balíčky, licence a aktivační klíče','DAT-LIC','Instalační sady softwaru, licenční soubory, sériová čísla a aktivační kódy nezbytné pro instalaci, obnovu a audit licencí.',''),
+	('ac_data_operational','ac_data','040',1,1,'asset_data','Provozní, technická a konfigurační data','DAT-OPS','Provozní evidence, výrobní data a konfigurační databáze infrastruktury.',''),
 	('ac_data_other','ac_data','090',1,1,'asset_data','Jiná datová aktiva','DAT-OTH','Ostatní elektronické nebo logické soubory informací a databáze.',''),
 	('ac_data_personal','ac_data','010',1,1,'asset_data','Osobní a citlivé údaje (GDPR / HR)','DAT-PII','Osobní údaje zaměstnanců, zákazníků nebo třetích stran podléhající zákonné ochraně (GDPR).',''),
 	('ac_data_security','ac_data','050',1,1,'asset_data','Bezpečnostní data (přístupové údaje, klíče, logy)','DAT-SEC','Kryptografické klíče, certifikáty, databáze účtů, auditní logy a bezpečnostní záznamy.',''),
+	('ac_data_source_code','ac_data','060',1,1,'asset_data','Zdrojové kódy a vývojové artefakty','DAT-SRC','Zdrojové kódy vyvíjeného softwaru, skripty databází, vývojové větve, podepisovací klíče sestavení a dokumentace kódu.',''),
 	('ac_district','ac_grp_space','010',1,0,'asset_district','Okresy a regiony','DIST','Územní okresy a regiony představující nejvyšší volitelnou úroveň prostorového členění aktiv.','<svg viewBox="0 0 24 24" fill="#0D9488"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>'),
 	('ac_doc_legal','ac_document','010',1,1,'asset_document','Smlouvy, právní a statutární dokumenty','DOC-LEG','Originály smluv, zřizovacích listin, licencí, povolení a právně závazných spisů (Vital Records).',''),
 	('ac_doc_ops','ac_document','020',1,1,'asset_document','Provozní, bezpečnostní a havarijní dokumentace','DOC-OPS','Listinné či řízené směrnice, krizové plány (BCP/DRP), provozní manuály a schémata.',''),
@@ -84,11 +92,10 @@ BEGIN
 	('ac_fac_other','ac_phys_facility','090',1,0,'asset_physical','Jiná podpůrná technologie budovy','FAC-OTH','Ostatní podpůrná technická zařízení budov a sálů.',''),
 	('ac_fac_power','ac_phys_facility','010',1,0,'asset_physical','Záložní napájení (UPS / dieselagregát)','FAC-PWR','Nepřerušitelné zdroje napájení (UPS), bateriová pole, motorgenerátory a PDU.',''),
 	('ac_fac_sec','ac_phys_facility','030',1,0,'asset_physical','Fyzické zabezpečení (EPS / EZS / CCTV / EKV)','FAC-SEC','Elektrická požární a zabezpečovací signalizace, stabilní hasicí zařízení, kamery a kontrola vstupu.',''),
-	('ac_grp_info',NULL,'030',0,0,'','Informace, data, dokumenty a média','INFO','Složka datových aktiv, dokumentů a přenosných či záložních paměťových médií.','<svg viewBox="0 0 24 24" fill="#7C3AED"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>'),
+	('ac_grp_info',NULL,'030',0,0,'','Informace, data, dokumenty a média','INFO','Složka datových aktiv, zdrojových kódů, licenčních klíčů, dokumentů a přenosných či záložních paměťových médií.','<svg viewBox="0 0 24 24" fill="#7C3AED"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>'),
 	('ac_grp_people_ext',NULL,'060',0,0,'','Personál a externí dodavatelé','PPL','Složka lidských zdrojů, klíčových rolí a externích dodavatelů či servisních partnerů.','<svg viewBox="0 0 24 24" fill="#059669"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>'),
 	('ac_grp_services',NULL,'050',0,0,'','Služby a komunikační rozhraní','SRV','Složka primárních byznys služeb, interních podpůrných služeb a externích/interních rozhraní (interface).','<svg viewBox="0 0 24 24" fill="#EA580C"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>'),
 	('ac_grp_space',NULL,'010',0,0,'','Prostory a lokality','LOC','Hierarchická složka prostorového umístění aktiv (Okres -> Město -> Lokalita -> Budova -> Místnost).','<svg viewBox="0 0 24 24" fill="#0284C7"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>'),
-	('ac_grp_sw_apps',NULL,'040',0,0,'','Software a instalované aplikace','SW','Složka vyvíjeného či nakupovaného softwaru a konkrétních instalovaných aplikací.','<svg viewBox="0 0 24 24" fill="#2563EB"><path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 14H4v-4h11v4zm0-5H4V9h11v4zm5 5h-4V9h4v9z"/></svg>'),
 	('ac_grp_tech',NULL,'020',0,0,'','Technická a fyzická aktiva (HW a sítě)','TECH','Složka hmotného vybavení, hostitelských počítačů, serverů, síťových prvků, technologií budov a kabeláže.','<svg viewBox="0 0 24 24" fill="#475569"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>'),
 	('ac_host','ac_grp_tech','010',0,0,'asset_host','Hostitelské počítače, servery a stanice','HOST','Fyzické a virtuální servery i koncové pracovní stanice. Role serverů (multi_class = 1) lze na jednom stroji kombinovat, pracovní stanice (multi_class = 0) jsou vůči serverům výlučné.','<svg viewBox="0 0 24 24" fill="#1D4ED8"><path d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>'),
 	('ac_host_app','ac_host','010',1,1,'asset_host','Aplikační server','HST-APP','Server provozující podnikové, oborové nebo integrační aplikace (kombinovatelná role).',''),
@@ -142,7 +149,7 @@ BEGIN
 	('ac_room_tech','ac_room','020',1,1,'asset_room','Technická místnost / rozvodna / UPS','RM-TEC','Místnost s rozvaděči, kabelovými uzly, UPS, klimatizací nebo fyzickou technologií budovy.',''),
 	('ac_service','ac_grp_services','010',0,0,'asset_service','Služby (interní a zákaznické)','SVC','Hlavní byznys služby a interní podpůrné služby organizace podporované aplikacemi, rozhraními a personálem, u nichž se hodnotí dopady výpadků do jednotlivých oblastí.','<svg viewBox="0 0 24 24" fill="#EA580C"><path d="M12 2l-5.5 9h11L12 2zm0 3.84L13.93 9h-3.87L12 5.84zM17.5 13c-2.49 0-4.5 2.01-4.5 4.5s2.01 4.5 4.5 4.5 4.5-2.01 4.5-4.5-2.01-4.5-4.5-4.5zM3 21.5h8v-8H3v8z"/></svg>'),
 	('ac_site','ac_grp_space','030',1,0,'asset_site','Lokality a areály','SITE','Areály, kampusy a pobočky sdružující více budov v rámci města nebo obce (volitelná úroveň prostorové hierarchie).','<svg viewBox="0 0 24 24" fill="#0284C7"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>'),
-	('ac_software','ac_grp_sw_apps','010',0,0,'asset_software','Software (vyvíjený a pořizovaný)','SWP','Zdrojové softwarové produkty, interně vyvíjený software a instalační balíky, které mohou být zdrojem softwarových chyb pro instalované aplikace.','<svg viewBox="0 0 24 24" fill="#4F46E5"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>'),
+	('ac_software',NULL,'070',0,0,'asset_software','Software (nákup, vývoj a údržba)','SWP','Samostatná větev pro softwarové produkty v životním cyklu vývoje nebo nákupu (instalační média, aktivační klíče, testování, distribuce a údržba). S instalovanými aplikacemi (EUS) je spojen pouze nepovinnou vazbou.','<svg viewBox="0 0 24 24" fill="#4F46E5"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>'),
 	('ac_srv_business','ac_service','010',1,1,'asset_service','Klíčová zákaznická / byznys služba','SRV-BUS','Hlavní produktová nebo zákaznická služba generující výnosy či plnící zákonné poslání organizace.',''),
 	('ac_srv_cloud','ac_service','030',1,1,'asset_service','Externě provozovaná SaaS / cloudová služba','SRV-CLD','Služba poskytovaná formou SaaS / PaaS třetí stranou.',''),
 	('ac_srv_internal','ac_service','020',1,1,'asset_service','Interní podpůrná a IT služba','SRV-INT','Interní provozní, infrastrukturní nebo administrativní služba podporující chod organizace.',''),
@@ -155,11 +162,11 @@ BEGIN
 	('ac_sup_other','ac_supplier','090',1,1,'asset_supplier','Jiný externí dodavatel / partner','SUP-OTH','Ostatní smluvní partneři, poradci a dodavatelé v dodavatelském řetězci.',''),
 	('ac_sup_telecom','ac_supplier','020',1,1,'asset_supplier','Telekomunikační operátor / ISP','SUP-TEL','Poskytovatelé internetového připojení, datových okruhů a hlasových/mobilních služeb.',''),
 	('ac_supplier','ac_grp_people_ext','020',0,0,'asset_supplier','Dodavatelé a externí partneři','SUP','Externí dodavatelé komunikačních rozhraní (interface), cloudových služeb, hardwaru, softwaru a servisní podpory.','<svg viewBox="0 0 24 24" fill="#16A34A"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4z"/></svg>'),
-	('ac_sw_bespoke','ac_software','010',1,0,'asset_software','Software vyvíjený na zakázku / interní vývoj','SW-BSP','Aplikace vyvíjené na míru interně nebo externím dodavatelem se správou zdrojového kódu.',''),
-	('ac_sw_oss','ac_software','030',1,0,'asset_software','Open-source a komunitní software','SW-OSS','Otevřený software a knihovny provozované bez komerční podpory nebo s komunitní podporou.',''),
-	('ac_sw_other','ac_software','090',1,0,'asset_software','Jiný softwarový produkt','SW-OTH','Ostatní softwarové balíky a nástroje.',''),
-	('ac_sw_package','ac_software','020',1,0,'asset_software','Komerční krabicový software (COTS)','SW-PKG','Standardní komerčně pořizovaný aplikační software od externího výrobce.',''),
-	('ac_sw_system','ac_software','040',1,0,'asset_software','Systémový software (OS / DBMS / middleware)','SW-SYS','Operační systémy, databázové stroje, aplikační servery a virtualizační platformy.',''),
+	('ac_sw_bespoke','ac_software','010',1,0,'asset_software','Software vyvíjený na zakázku / interní vývoj','SW-BSP','Software vyvíjený na míru interně nebo dodavatelem (rizika zdrojových kódů, testování, distribuce sestavení, licencí a údržby).',''),
+	('ac_sw_oss','ac_software','030',1,0,'asset_software','Open-source a komunitní software','SW-OSS','Otevřený software a knihovny provozované bez komerční podpory nebo s komunitní podporou (rizika závislostí a licenční kompatibility).',''),
+	('ac_sw_other','ac_software','090',1,0,'asset_software','Jiný softwarový produkt','SW-OTH','Ostatní softwarové balíky a nástroje v evidenci nákupu nebo vývoje.',''),
+	('ac_sw_package','ac_software','020',1,0,'asset_software','Nakupovaný komerční software (COTS)','SW-PKG','Standardní nakupovaný aplikační software (rizika uchování instalačních médií, aktivačních kódů, procesu instalace a údržby/patchování).',''),
+	('ac_sw_system','ac_software','040',1,0,'asset_software','Systémový software (OS / DBMS / middleware)','SW-SYS','Operační systémy, databázové stroje, aplikační servery a virtualizační platformy (instalační sady, licence a aktualizační cykly).',''),
 	('ac_workstation','ac_host','200',0,0,'asset_host','Pracovní stanice a koncová zařízení','WS','Koncové počítače a mobilní zařízení uživatelů (multi_class = 0: nelze kombinovat se servery).',''),
 	('ac_ws_desktop','ac_workstation','010',1,0,'asset_host','Pevná pracovní stanice / PC','WS-PC','Stolní osobní počítač nebo pracovní stanice pevně umístěná na pracovišti.',''),
 	('ac_ws_laptop','ac_workstation','020',1,0,'asset_host','Přenosný počítač / notebook','WS-NB','Notebook nebo přenosná pracovní stanice využívaná v kanceláři i mimo prostory organizace.',''),

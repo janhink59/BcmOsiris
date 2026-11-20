@@ -1,16 +1,31 @@
 /* =============================================================================
- * Verze: 2026-11-12 16:45
+ * Verze: 2026-11-20 10:05
  * Soubor: fillup_meta_link_def.sql
- * Účel:   1. Zajistí v tabulce meta_class existenci bázové třídy 'asset', všech
- *            17 odvozených STI logických tříd aktiv, třídy 'organization_unit'
- *            a třídy 'link_diagram'.
- *         2. Idempotentně naplní tabulku meta_link_def (object_owner = 0x00,
- *            jazyk 'cs', záznamy 'A' a symetrické 'L') všemi předdefinovanými
- *            primárními ('P') i zpětnými ('R') vztahy, vnitrotřídními vztahy
- *            a exkluzivními stromovými vztahy parent_to_child ('P') /
- *            child_to_parent ('R'), seřazenými abecedně podle (from_class_code, link_code).
- * Vazby:  - Vyžaduje tabulky meta_object, meta_class, meta_link_def a funkci
- *           dbo.f_generate_original se složeným klíčem (from_class, link_code).
+ *
+ * 1. Role souboru v celém systému:
+ *    1. Zajistí v tabulce meta_class existenci bázové třídy 'asset', všech
+ *       17 odvozených STI logických tříd aktiv, třídy 'organization_unit'
+ *       a třídy 'link_diagram'.
+ *    2. Idempotentně naplní tabulku meta_link_def (object_owner = 0x00,
+ *       jazyk 'cs', záznamy 'A' a symetrické 'L') všemi 98 předdefinovanými
+ *       primárními ('P') i zpětnými ('R') vztahy, vnitrotřídními vztahy
+ *       a exkluzivními stromovými vztahy parent_to_child ('P') /
+ *       child_to_parent ('R'), včetně nepovinného vztahu sw_contains_data /
+ *       data_belongs_to_sw mezi asset_software a asset_data.
+ *    3. Odstraní osiřelé systémové definice vztahů (object_owner = 0x00
+ *       AND who_modified = 0x00) mimo odvozené nativní 1:N FK vztahy a
+ *       vztahy vygenerované z diagramů sítě (diagram_uuid IS NOT NULL).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Vyžaduje tabulky meta_object, meta_class, meta_link_def (table_meta_link_def.sql)
+ *      a funkci dbo.f_generate_original se složeným klíčem (from_class, link_code).
+ *    - Navazuje překladový skript fillup_meta_link_def_en.sql.
+ *    - Automaticky zařazen do buildu databáze maskou fillup_*.sql v BuildListDb.txt.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (BcmOsirisDb.sql) nad
+ *      systémovými záznamy (object_owner = 0x00) bez závislosti na dbsession
+ *      či SESSION_CONTEXT.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -166,6 +181,7 @@ INSERT INTO @links_cs (
 ('asset_class','countermeasure_applies_to_asset_class','countermeasure','asset_class_uses_countermeasure','P',0,0,1,0,1,0,'Doporučené protiopatření pro třídu aktiv','Je aplikovatelné na třídu aktiv (dědí se po stromu)','Katalogová vazba určující, která protiopatření jsou relevantní pro danou třídu aktiv a její podřízené třídy.','Přiřaďte protiopatření, která se mají nabízet pro aktiva této třídy.'),
 ('asset_class','parent_to_child','asset_class','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízenou třídu aktiv (parent_uuid)','Patří pod nadřízenou třídu aktiv (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu tříd aktiv.','Podřízené třídy aktiv ve stromu.'),
 ('asset_class','threat_applies_to_asset_class','threat','asset_class_exposed_to_threat','P',0,0,1,0,1,0,'Je vystavena působení hrozby','Působí na třídu aktiv (dědí se po stromu)','Katalogová vazba určující, které hrozby působí na danou třídu aktiv a automaticky se dědí na podřízené třídy.','Přiřaďte hrozby relevantní pro tuto třídu aktiv.'),
+('asset_data','data_belongs_to_sw','asset_software','sw_contains_data','R',0,0,1,0,1,1,'Patří k softwarovému produktu (nákup / vývoj)','Zahrnuje datové aktivum (zdrojové kódy / instalační balíčky / licence)','Zpětný vztah od datového aktiva (zdrojových kódů, instalačních balíčků, aktivačních klíčů) k softwarovému produktu.','Softwarové produkty, k nimž tato data patří.'),
 ('asset_data','data_evaluated_by_impact','impact','impact_evaluates_data','P',0,0,1,0,1,1,'Má hodnocen dopad v oblasti (prozrazení / chyby / ztráta)','Je oblastí dopadu pro datové aktivum','Hodnocení dopadů prozrazení dat, nekonzistence nebo chyb dat do jednotlivých oblastí.','Ohodnoťte dopady kompromitace nebo ztráty tohoto datového aktiva.'),
 ('asset_data','data_in_document','asset_document','document_contains_data','P',0,0,1,0,1,0,'Je zaznamenáno v dokumentu','Obsahuje datové aktivum','Uložení datového aktiva v listinném nebo řízeném elektronickém dokumentu.','Vyberte dokumenty, ve kterých se tato data nacházejí.'),
 ('asset_data','data_on_host','asset_host','host_stores_data','P',0,0,1,0,1,1,'Je uloženo na hostitelském počítači / serveru','Ukládá datové aktivum (přenáší HW chyby a výpadky)','Fyzické nebo virtuální uložení databáze či souborů na hostitelském počítači. Selhání nebo kompromitace hosta přímo ohrožuje data.','Vyberte hostitelské počítače (servery), na kterých jsou data uložena.'),
@@ -203,7 +219,8 @@ INSERT INTO @links_cs (
 ('asset_service','service_requires_service','asset_service','service_supports_service','R',0,0,1,0,1,1,'Vyžaduje podřízenou (interní) službu','Podporuje nadřazenou službu (přenáší výpadky)','Zpětný vnitrotřídní vztah mezi závislou službou a podpůrnou interní službou.','Vyberte jiné interní služby, na kterých je tato služba závislá.'),
 ('asset_service','service_supports_service','asset_service','service_requires_service','P',0,0,1,0,1,1,'Podporuje nadřazenou službu (přenáší výpadky)','Vyžaduje podřízenou (interní) službu','Primární vnitrotřídní orientovaný vztah od podpůrné služby k nadřazeným službám (s kontrolou acykličnosti).','Nadřazené služby závislé na této službě.'),
 ('asset_site','site_contains_building','asset_building','building_in_site','P',0,0,1,0,1,0,'Obsahuje budovu','Nachází se v lokalitě / areálu','Primární prostorový vztah od lokality (areálu) k budovám, které se v ní nacházejí.','Budovy evidované v této lokalitě.'),
-('asset_site','site_in_city','asset_city','city_contains_site','R',0,0,0,0,1,0,'Nachází se ve městě / obci','Obsahuje lokalitu / areál','Zpětné prostorové zařazení lokality do města (jsou-li města v organizaci definována).','Pokud evidujete města, vyberte město, v němž se lokalita nachází.'),
+('asset_site','site_in_city','asset_city','city_contains_site','R',0,0,0,0,1,0,'Nachází se ve městě / obci','Obsahuje lokalitu / areál','Zpětné prostorové zařazení lokality do města (jsou-li města v organizaci definovány).','Pokud evidujete města, vyberte město, v němž se lokalita nachází.'),
+('asset_software','sw_contains_data','asset_data','data_belongs_to_sw','P',0,0,1,0,1,1,'Zahrnuje datové aktivum (zdrojové kódy / instalační balíčky / licence)','Patří k softwarovému produktu (nákup / vývoj)','Nepovinná vazba softwarového produktu na související datová aktiva (např. zdrojové kódy při vývoji nebo instalační balíčky a aktivační klíče při nákupu).','Přiřaďte zdrojové kódy, instalační balíčky nebo aktivační klíče patřící k tomuto softwaru.'),
 ('asset_software','sw_deployed_as_app','asset_application','app_instance_of_sw','R',0,0,1,0,1,1,'Je nasazen jako instalovaná aplikace (přenáší SW chyby)','Je instalací softwaru','Zpětný vztah od softwarového produktu k jeho instalovaným instancím (aplikacím).','Instalované instance (aplikace) tohoto softwaru.'),
 ('asset_supplier','supplier_maintains_asset','asset','asset_maintained_by_supplier','R',0,0,1,0,1,0,'Dodává / servisuje aktivum','Je dodáváno / servisováno dodavatelem','Zpětný vztah od dodavatele k dodávaným nebo servisovaným aktivům.','Aktiva dodávaná nebo servisovaná tímto dodavatelem.'),
 ('asset_supplier','supplier_provides_interface','asset_interface','interface_provided_by_supplier','R',0,0,1,0,1,1,'Poskytuje službu typu Interface (internet / hlas / video)','Zajišťuje dodavatel (poskytovatel služeb)','Zpětný vztah od dodavatele ke komunikačním rozhraním, která provozuje.','Služby typu Interface poskytované tímto dodavatelem.'),
@@ -236,6 +253,18 @@ INSERT INTO @links_cs (
 ('threat','child_to_parent','threat','parent_to_child','R',1,1,0,0,0,0,'Patří pod nadřízenou skupinu hrozeb (parent_uuid)','Obsahuje podřízenou hrozbu (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid v katalogu hrozeb.','Nadřízená skupina v katalogu hrozeb.'),
 ('threat','countermeasure_mitigates_threat','countermeasure','threat_mitigated_by_cm','P',0,0,1,0,1,1,'Je potlačována protiopatřením','Působí proti hrozbě','Metodická vazba mezi katalogovou hrozbou a preventivními či detekčními protiopatřeními.','Vyberte protiopatření, která snižují působení této hrozby.'),
 ('threat','parent_to_child','threat','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízenou hrozbu (parent_uuid)','Patří pod nadřízenou skupinu hrozeb (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu hrozeb.','Podřízené hrozby ve stromu.');
+
+-- 3b. Úklid zastaralých systémových definic (0x00, who_modified = 0x00) mimo odvozené 1:N FK a diagramy
+DELETE t
+FROM meta_link_def t
+LEFT JOIN meta_class mc ON mc.original = t.from_class AND mc.object_owner = @sys_owner AND mc.record_type = 'A'
+LEFT JOIN @links_cs s ON s.from_class_code = mc.class_name AND s.link_code = t.link_code
+WHERE t.object_owner = @sys_owner
+  AND t.who_modified = @sys_owner
+  AND t.record_type IN ('A', 'L')
+  AND t.diagram_uuid IS NULL
+  AND (t.is_derived = 0 OR t.is_exclusive_parent = 1)
+  AND s.link_code IS NULL;
 
 -- 4. Idempotentní UPDATE existujících hlavních záznamů v meta_link_def (record_type = 'A', language = 'cs')
 UPDATE t
