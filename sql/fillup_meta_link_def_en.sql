@@ -1,14 +1,13 @@
 /* =============================================================================
- * Verze: 2026-11-20 10:05
+ * Verze: 2026-11-21 11:05
  * Soubor: fillup_meta_link_def_en.sql
  *
  * 1. Role souboru v celém systému:
  *    Idempotentní nastavení výchozích anglických překladů (jazyk 'en',
- *    record_type = 'L') pro všechny 98 primárních, zpětných, vnitrotřídních
+ *    record_type = 'L') pro všechny 104 primárních, zpětných, vnitrotřídních
  *    i exkluzivních stromových vztahů (parent_to_child / child_to_parent)
- *    v tabulce meta_link_def (object_owner = 0x00), včetně vztahu
- *    sw_contains_data / data_belongs_to_sw a úklidu osiřelých 'L' záznamů
- *    s who_modified = 0x00.
+ *    v tabulce meta_link_def (object_owner = 0x00), včetně vztahů pro
+ *    impact_type a impact_area a úklidu osiřelých 'L' záznamů s who_modified = 0x00.
  *
  * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
  *    - Navazuje na fillup_meta_link_def.sql.
@@ -19,6 +18,10 @@
  *    - Běží jako součást sestavovací dávky databáze (BcmOsirisDb.sql) nad
  *      systémovými záznamy (object_owner = 0x00) bez závislosti na dbsession
  *      či SESSION_CONTEXT.
+ *
+ * Změny:
+ * - 2026-11-21 11:05: Zrušeno 8 vztahů pro odstraněnou tabulku impact a nahrazeno
+ *   14 anglickými překlady vztahů pro impact_type a impact_area (celkem 104 definic).
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -64,7 +67,8 @@ INSERT INTO @links_en (from_class_code, link_code, caption_forward, caption_back
 ('asset_class','parent_to_child','Contains child asset class (parent_uuid)','Belongs under parent asset class (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the asset class catalog.','Child asset classes in the tree.'),
 ('asset_class','threat_applies_to_asset_class','Is exposed to threat','Affects asset class (inherited down the tree)','Catalog link specifying which threats affect a given asset class and are automatically inherited by child classes.','Assign threats relevant to this asset class.'),
 ('asset_data','data_belongs_to_sw','Belongs to software product (procurement / development)','Includes data asset (source code / installation packages / licences)','Reverse relationship from a data asset (source code, installation packages, activation keys) to the software product.','Software products to which this data belongs.'),
-('asset_data','data_evaluated_by_impact','Is evaluated for impact in area (breach / corruption / loss)','Is an impact area for data asset','Evaluation of impacts of data disclosure, inconsistency, or errors across impact areas.','Assess the impacts of compromise or loss of this data asset.'),
+('asset_data','data_evaluated_by_impact_area','Is evaluated for impact in impact area','Is an impact area for data asset','Evaluation of impacts of data asset compromise or loss across measurable impact areas (organization, state, data subjects).','Specify impact areas relevant to this data asset.'),
+('asset_data','data_evaluated_by_impact_type','Is evaluated for impact type (disclosure / errors / loss)','Is an impact type for data asset','Evaluation of specific impact types and consequences (disclosure, integrity errors, backup/complete loss, unavailability) for a data asset.','Specify consequence types (BIA matrix rows) evaluated for this data asset.'),
 ('asset_data','data_in_document','Is recorded in document','Contains data asset','Storage of a data asset in a paper or controlled electronic document.','Select documents containing this data.'),
 ('asset_data','data_on_host','Is stored on host computer / server','Stores data asset (propagates HW errors and outages)','Physical or virtual storage of a database or files on a host computer. Host failure or compromise directly threatens the data.','Select host computers (servers) storing this data.'),
 ('asset_data','data_on_media','Is stored / backed up on media','Carries data asset (backup / archive)','Storage or backup of a data asset on portable or vault storage media.','Select storage media carrying copies or backups of this data.'),
@@ -94,7 +98,8 @@ INSERT INTO @links_en (from_class_code, link_code, caption_forward, caption_back
 ('asset_room','room_contains_media','Contains storage media','Is stored in room','Primary spatial relationship from a room to storage media kept in it.','Storage media kept in this room.'),
 ('asset_room','room_contains_physical','Contains physical asset','Is located in room','Primary spatial relationship from a room to physical assets and utilities located in it.','Physical assets located in this room.'),
 ('asset_room','room_in_building','Is located in building','Contains room / hall','Reverse mandatory spatial assignment of a room to a building. Every room must belong to exactly one building.','Select the building in which this room is located.'),
-('asset_service','service_evaluated_by_impact','Has outage / degradation evaluated in impact area','Evaluates service outage impact','Evaluation of service outage or degradation impacts across impact areas.','Specify impact areas and severity levels for an outage or degradation of this service.'),
+('asset_service','service_evaluated_by_impact_area','Has outage / degradation evaluated in impact area','Is an impact area for service','Evaluation of service outage or degradation impacts across measurable impact areas (organization, state, data subjects).','Specify impact areas in which outages of this service are evaluated.'),
+('asset_service','service_evaluated_by_impact_type','Is evaluated for impact type (outage duration / consequence)','Is an impact type for service','Evaluation of service outages and disruptions by specific consequence types and downtime duration intervals.','Specify impact types (especially outage durations) evaluated for this service.'),
 ('asset_service','service_requires_app','Requires application (is supported by)','Supports service (propagates outages and errors)','Core M:N link between a service and supporting applications. Application outages as well as data errors/breaches propagate to the service.','Select installed applications required to deliver this service.'),
 ('asset_service','service_requires_interface','Requires interface (internet / voice / video / ext. service)','Provides connectivity / interface for service','Dependency of a service on a communication interface or another previously defined service.','Select Interface services required for the operation of this service.'),
 ('asset_service','service_requires_personnel','Requires personnel for service delivery','Operates and delivers service','Dependency of a service on key staff members and roles.','Assign personnel required to deliver this service.'),
@@ -116,11 +121,15 @@ INSERT INTO @links_en (from_class_code, link_code, caption_forward, caption_back
 ('hierarchy','parent_to_child','Contains child hierarchy (parent_uuid)','Belongs under parent hierarchy folder (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the secondary hierarchies registry.','Child hierarchies in the tree.'),
 ('hierarchy_item','child_to_parent','Belongs under parent hierarchy node (parent_uuid)','Contains child hierarchy item (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link in secondary hierarchy items.','Parent node in the secondary hierarchy.'),
 ('hierarchy_item','parent_to_child','Contains child hierarchy item (parent_uuid)','Belongs under parent hierarchy node (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in hierarchy_item.','Child nodes of the secondary hierarchy.'),
-('impact','child_to_parent','Belongs under parent impact area (parent_uuid)','Contains child impact (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link in the impact catalog.','Parent area in the impact catalog.'),
-('impact','impact_caused_by_scenario','Is caused by risk scenario','Causes impact in area','Reverse relationship from an impact area to risk scenarios.','Risk scenarios causing impact in this area.'),
-('impact','impact_evaluates_data','Is an impact area for data asset','Is evaluated for impact in area','Reverse relationship from an impact area to evaluated data assets.','Data assets evaluated in this impact area.'),
-('impact','impact_evaluates_service','Evaluates service outage impact','Has outage / degradation evaluated in impact area','Reverse relationship from an impact area to services.','Services evaluated in this impact area.'),
-('impact','parent_to_child','Contains child impact (parent_uuid)','Belongs under parent impact area (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the impact catalog.','Child impact items in the tree.'),
+('impact_area','child_to_parent','Belongs under parent impact area group (parent_uuid)','Contains child impact area (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link in the impact area catalog.','Parent perspective or group in the impact area catalog.'),
+('impact_area','impact_area_evaluates_data','Is an impact area for data asset','Is evaluated for impact in impact area','Reverse relationship from an impact area to evaluated data assets.','Data assets evaluated in this impact area.'),
+('impact_area','impact_area_evaluates_service','Is an impact area for service','Has outage / degradation evaluated in impact area','Reverse relationship from an impact area to evaluated services.','Services evaluated in this impact area.'),
+('impact_area','parent_to_child','Contains child impact area (parent_uuid)','Belongs under parent impact area group (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the impact area catalog.','Child impact areas in the tree.'),
+('impact_type','child_to_parent','Belongs under parent impact type category (parent_uuid)','Contains child impact type (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link in the impact type catalog.','Parent CIA category in the impact type catalog.'),
+('impact_type','impact_type_caused_by_scenario','Is caused by risk scenario','Causes impact type (consequence)','Reverse relationship from an impact type (consequence) to risk scenarios that may trigger it.','Risk scenarios causing this consequence type.'),
+('impact_type','impact_type_evaluates_data','Is an impact type for data asset','Is evaluated for impact type (disclosure / errors / loss)','Reverse relationship from an impact type (consequence) to evaluated data assets.','Data assets evaluated for this consequence type.'),
+('impact_type','impact_type_evaluates_service','Is an impact type for service','Is evaluated for impact type (outage duration / consequence)','Reverse relationship from an impact type (consequence) to evaluated services.','Services evaluated for this consequence type.'),
+('impact_type','parent_to_child','Contains child impact type (parent_uuid)','Belongs under parent impact type category (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the impact type catalog.','Child impact types in the tree.'),
 ('link_diagram','diagram_includes_link_def','Includes directed relationship (network edge)','Is part of network diagram (schema)','Assignment of a directed relationship from meta_link_def into a heterogeneous network diagram (link_diagram) for risk propagation path calculation.','Select directed relationships forming the edges of this network diagram.'),
 ('meta_link_def','link_def_in_diagram','Is part of network diagram (schema)','Includes directed relationship (network edge)','Reverse relationship from a link definition to network diagrams using it.','Network diagrams containing this relationship.'),
 ('organization_unit','child_to_parent','Reports to parent organizational unit (parent_uuid)','Governs child organizational unit (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link between organizational units.','Parent department in the organizational structure.'),
@@ -130,7 +139,7 @@ INSERT INTO @links_en (from_class_code, link_code, caption_forward, caption_back
 ('scenario','child_to_parent','Belongs under parent scenario group (parent_uuid)','Contains child scenario (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link in the risk scenario catalog.','Parent group in the scenario catalog.'),
 ('scenario','countermeasure_mitigates_scenario','Is mitigated by countermeasure','Reduces scenario risk (reduction_factor / risk_factor)','Methodological link between a risk scenario and countermeasures that reduce its residual risk.','Select countermeasures mitigating this risk scenario.'),
 ('scenario','parent_to_child','Contains child scenario (parent_uuid)','Belongs under parent scenario group (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the scenario catalog.','Child risk scenarios in the tree.'),
-('scenario','scenario_causes_impact','Causes impact in area','Is caused by risk scenario','Specifies which impact areas (financial, reputation, general hazard, criminal liability, management disruption, legal breach) are triggered by the scenario.','Assign impact areas threatened by this risk scenario.'),
+('scenario','scenario_causes_impact_type','Causes impact type (consequence)','Is caused by risk scenario','Specifies which impact types / consequences (disclosure, integrity errors, unavailability, data loss, communication tampering) are triggered by the scenario.','Assign impact types (consequences) caused by this risk scenario.'),
 ('threat','asset_class_exposed_to_threat','Affects asset class (inherited down the tree)','Is exposed to threat','Reverse relationship from a catalog threat to asset classes exposed to it.','Asset classes threatened by this threat.'),
 ('threat','child_to_parent','Belongs under parent threat group (parent_uuid)','Contains child threat (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link in the threat catalog.','Parent group in the threat catalog.'),
 ('threat','countermeasure_mitigates_threat','Is suppressed by countermeasure','Acts against threat','Methodological link between a catalog threat and preventive or detective countermeasures.','Select countermeasures that reduce the impact or likelihood of this threat.'),

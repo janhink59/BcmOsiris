@@ -1,24 +1,39 @@
 /* =============================================================================
- * Verze: 2026-11-12 18:30
+ * Verze: 2026-11-21 10:50
  * Soubor: p_em_metadata.sql
  * Procedury: dbo.p_em_get_class_meta, dbo.p_em_get_columns_meta,
  *            dbo.p_em_get_select_options
- * Účel:   1. dbo.p_em_get_class_meta načte definici logické třídy ('A' a 'L'
- *            záznamy ve fallback řetězci < 1000), úložnou fyzickou tabulku
- *            a efektivní nadřazenou třídu pro načtení sloupců (s podporou STI
- *            dědění u odvozených hierarchií a STI tříd aktiv nad tabulkou asset).
- *         2. dbo.p_em_get_columns_meta načte definici sloupců ('A'), jejich
- *            předků v sys_global_columns ('ANC_A') a překladů ('L').
- *         3. dbo.p_em_get_select_options načte lokalizované položky pro <select>
- *            roletky v UI (source_code, meta_codetable, referenced_class včetně
- *            STI filtrování podle asset_archetype, asset_class_by_archetype a
- *            rekurzivní stromové vazby parent_uuid s vyloučením vlastního podstromu).
- * Vazby:  - Voláno z PHP třídy entity_manager (entity_manager.php, entity_manager_ui.php),
- *           page_asset.php, page_link.php, page_link_diagram.php, page_hierarchy_item.php,
- *           page_scale_value.php a page_approval.php.
- * Změny:  - 2026-11-12 18:30: U výběru z meta_link_def doplněn prefix zdrojové
- *           třídy (class_name + '.' + link_code) pro jednoznačné odlišení
- *           stejnojmenných vztahů (např. parent_to_child) napříč třídami.
+ *
+ * 1. Role souboru v celém systému:
+ *    - dbo.p_em_get_class_meta načte definici logické třídy ('A' a 'L' záznamy
+ *      ve fallback řetězci < 1000), úložnou fyzickou tabulku a efektivní
+ *      nadřazenou třídu pro načtení sloupců (s podporou STI dědění).
+ *    - dbo.p_em_get_columns_meta načte definici sloupců ('A'), jejich předků
+ *      v sys_global_columns ('ANC_A') a překladů ('L').
+ *    - dbo.p_em_get_select_options načte lokalizované položky pro výběrové
+ *      roletky v UI (source_code, meta_codetable, referenced_class včetně STI
+ *      filtrování podle asset_archetype, filtrování škál dopadů podle
+ *      scale_type / is_area_guideline a stromové vazby parent_uuid).
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Voláno z PHP třídy entity_manager (entity_manager.php, entity_manager_ui.php),
+ *      page_asset.php, page_link.php, page_link_diagram.php, page_hierarchy_item.php,
+ *      page_scale_value.php a page_approval.php.
+ *    - Čte tabulky dbsession, meta_class, meta_object, meta_column,
+ *      meta_codetable, meta_link_def, asset_class, scale a cílové věcné tabulky.
+ *    - Využívá funkci dbo.f_language_list (f_language_list.sql).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Načítá aktivní organizaci (organization) a jazyk relace (language)
+ *      z tabulky dbsession pro aktuální @@SPID (pokud nejsou předány parametry).
+ *
+ * Změny:
+ * - 2026-11-21 10:50: V @mode = 'parent_tree' nahrazena zrušená tabulka 'impact'
+ *   dvojicí 'impact_type', 'impact_area'; v @mode = 'ref_class' doplněno
+ *   filtrování tabulky scale pro sloupce default_impact_scale_uuid (pouze
+ *   scale_type = 'IMPACT' AND is_area_guideline = 0) a scale_uuid (scale_type = 'IMPACT').
+ * - 2026-11-12 18:30: U výběru z meta_link_def doplněn prefix zdrojové třídy
+ *   (class_name + '.' + link_code) pro jednoznačné odlišení stejnojmenných vztahů.
  * ============================================================================= */
 
 EXECUTE dropni 'p_em_get_class_meta', 'P';
@@ -408,7 +423,7 @@ BEGIN
 		DECLARE @code_expr nvarchar(100) = CASE WHEN @has_code = 1 THEN N'a.builtin_code' WHEN @has_short = 1 THEN N'a.shortname' ELSE N'''''' END;
 		DECLARE @sort_expr nvarchar(100) = CASE WHEN @has_sort = 1 THEN N'a.sort_code' ELSE N'''''' END;
 		DECLARE @leaf_cond nvarchar(200) = CASE
-			WHEN @storage_table IN ('meta_menu', 'asset', 'asset_class', 'threat', 'impact', 'scenario', 'countermeasure', 'hierarchy_item') AND @curr_guid IS NULL THEN N''
+			WHEN @storage_table IN ('meta_menu', 'asset', 'asset_class', 'threat', 'impact_type', 'impact_area', 'scenario', 'countermeasure', 'hierarchy_item') AND @curr_guid IS NULL THEN N''
 			WHEN @storage_table IN ('meta_menu', 'asset') THEN N''
 			WHEN @has_leaf = 1 THEN N'AND (a.is_leaf = 0 OR a.original = @p_cur_val)'
 			ELSE N''
@@ -601,9 +616,11 @@ BEGIN
 			WHEN @ref_has_thresh = 1 THEN N'RIGHT(''0000000000'' + CAST(CAST(a.threshold_value * 10000 AS bigint) AS varchar(20)), 10)'
 			ELSE N''''''
 		END;
-		DECLARE @extra_ref_cond nvarchar(400) = CASE
+		DECLARE @extra_ref_cond nvarchar(500) = CASE
 			WHEN @ref_table = 'hierarchy' AND @param_code = 'hierarchy' THEN N'AND (a.is_leaf = 1 OR a.original = @p_cur_val)'
 			WHEN @ref_table = 'asset_class' AND @param_code = 'primary_asset_class' THEN N'AND (a.is_leaf = 1 OR a.original = @p_cur_val)'
+			WHEN @ref_table = 'scale' AND @param_code = 'default_impact_scale_uuid' THEN N'AND ((a.scale_type = ''IMPACT'' AND a.is_area_guideline = 0) OR a.original = @p_cur_val)'
+			WHEN @ref_table = 'scale' AND @param_code = 'scale_uuid' THEN N'AND (a.scale_type = ''IMPACT'' OR a.original = @p_cur_val)'
 			WHEN @ref_table = 'asset' AND @ref_class_name LIKE 'asset[_]%' THEN
 				N'AND (a.asset_archetype = ''' + UPPER(SUBSTRING(@ref_class_name, 7, 40)) + N''' OR a.original = @p_cur_val)'
 			ELSE N''

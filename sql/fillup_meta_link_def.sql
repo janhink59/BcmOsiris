@@ -1,17 +1,16 @@
 /* =============================================================================
- * Verze: 2026-11-20 10:05
+ * Verze: 2026-11-21 11:05
  * Soubor: fillup_meta_link_def.sql
  *
  * 1. Role souboru v celém systému:
  *    1. Zajistí v tabulce meta_class existenci bázové třídy 'asset', všech
- *       17 odvozených STI logických tříd aktiv, třídy 'organization_unit'
- *       a třídy 'link_diagram'.
+ *       17 odvozených STI logických tříd aktiv, třídy 'link_diagram' a nových
+ *       katalogových tříd 'impact_type' a 'impact_area'.
  *    2. Idempotentně naplní tabulku meta_link_def (object_owner = 0x00,
- *       jazyk 'cs', záznamy 'A' a symetrické 'L') všemi 98 předdefinovanými
+ *       jazyk 'cs', záznamy 'A' a symetrické 'L') všemi 104 předdefinovanými
  *       primárními ('P') i zpětnými ('R') vztahy, vnitrotřídními vztahy
  *       a exkluzivními stromovými vztahy parent_to_child ('P') /
- *       child_to_parent ('R'), včetně nepovinného vztahu sw_contains_data /
- *       data_belongs_to_sw mezi asset_software a asset_data.
+ *       child_to_parent ('R'), včetně vztahů pro impact_type a impact_area.
  *    3. Odstraní osiřelé systémové definice vztahů (object_owner = 0x00
  *       AND who_modified = 0x00) mimo odvozené nativní 1:N FK vztahy a
  *       vztahy vygenerované z diagramů sítě (diagram_uuid IS NOT NULL).
@@ -26,6 +25,11 @@
  *    - Běží jako součást sestavovací dávky databáze (BcmOsirisDb.sql) nad
  *      systémovými záznamy (object_owner = 0x00) bez závislosti na dbsession
  *      či SESSION_CONTEXT.
+ *
+ * Změny:
+ * - 2026-11-21 11:05: Zrušeno 8 vztahů pro odstraněnou tabulku impact a nahrazeno
+ *   14 vztahy pro novou dvojici impact_type a impact_area (celkem 104 definic);
+ *   doplněno idempotentní zajištění meta_object / meta_class pro impact_type a impact_area.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -36,8 +40,12 @@ DECLARE @stg_asset uuid = dbo.f_generate_original('meta_object', @sys_owner, 'T'
 DECLARE @cls_asset uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'asset', '');
 DECLARE @stg_diag uuid = dbo.f_generate_original('meta_object', @sys_owner, 'T', 'link_diagram');
 DECLARE @cls_diag uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'link_diagram', '');
+DECLARE @stg_impt uuid = dbo.f_generate_original('meta_object', @sys_owner, 'T', 'impact_type');
+DECLARE @cls_impt uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'impact_type', '');
+DECLARE @stg_impa uuid = dbo.f_generate_original('meta_object', @sys_owner, 'T', 'impact_area');
+DECLARE @cls_impa uuid = dbo.f_generate_original('meta_class', CAST(@sys_owner AS varchar(36)), 'impact_area', '');
 
--- 1. Zajištění existence fyzického objektu 'asset' a 'link_diagram' v meta_object a bázových tříd v meta_class
+-- 1. Zajištění existence fyzických objektů a bázových tříd v meta_object a meta_class
 IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @stg_asset AND object_owner = @sys_owner AND record_type = 'A')
 BEGIN
 	INSERT INTO meta_object (
@@ -79,6 +87,50 @@ BEGIN
 	) VALUES (
 		@cls_diag, @sys_owner, @cls_diag, 'A', 'A', 'cs',
 		'link_diagram', @stg_diag, NULL, '180', 'Schéma sítě vztahů', 'Schémata sítí vztahů', 0, 1
+	);
+END
+
+IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @stg_impt AND object_owner = @sys_owner AND record_type = 'A')
+BEGIN
+	INSERT INTO meta_object (
+		uuid, object_owner, original, record_type, approval_status, [language],
+		object_type, builtin_code, caption, caption_plural, system_role
+	) VALUES (
+		@stg_impt, @sys_owner, @stg_impt, 'A', 'A', 'cs',
+		'T', 'impact_type', 'Druh dopadu (následek)', 'Druhy dopadů (následky)', 'U'
+	);
+END
+
+IF NOT EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_impt AND object_owner = @sys_owner AND record_type = 'A')
+BEGIN
+	INSERT INTO meta_class (
+		uuid, object_owner, original, record_type, approval_status, [language],
+		class_name, storage_object, ancestor_class, sort_code, caption, caption_plural, is_final, is_protected
+	) VALUES (
+		@cls_impt, @sys_owner, @cls_impt, 'A', 'A', 'cs',
+		'impact_type', @stg_impt, NULL, '', 'Druh dopadu (následek)', 'Druhy dopadů (následky)', 1, 0
+	);
+END
+
+IF NOT EXISTS (SELECT 1 FROM meta_object WHERE original = @stg_impa AND object_owner = @sys_owner AND record_type = 'A')
+BEGIN
+	INSERT INTO meta_object (
+		uuid, object_owner, original, record_type, approval_status, [language],
+		object_type, builtin_code, caption, caption_plural, system_role
+	) VALUES (
+		@stg_impa, @sys_owner, @stg_impa, 'A', 'A', 'cs',
+		'T', 'impact_area', 'Oblast dopadu', 'Oblasti dopadů', 'U'
+	);
+END
+
+IF NOT EXISTS (SELECT 1 FROM meta_class WHERE original = @cls_impa AND object_owner = @sys_owner AND record_type = 'A')
+BEGIN
+	INSERT INTO meta_class (
+		uuid, object_owner, original, record_type, approval_status, [language],
+		class_name, storage_object, ancestor_class, sort_code, caption, caption_plural, is_final, is_protected
+	) VALUES (
+		@cls_impa, @sys_owner, @cls_impa, 'A', 'A', 'cs',
+		'impact_area', @stg_impa, NULL, '', 'Oblast dopadu', 'Oblasti dopadů', 1, 0
 	);
 END
 
@@ -182,7 +234,8 @@ INSERT INTO @links_cs (
 ('asset_class','parent_to_child','asset_class','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízenou třídu aktiv (parent_uuid)','Patří pod nadřízenou třídu aktiv (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu tříd aktiv.','Podřízené třídy aktiv ve stromu.'),
 ('asset_class','threat_applies_to_asset_class','threat','asset_class_exposed_to_threat','P',0,0,1,0,1,0,'Je vystavena působení hrozby','Působí na třídu aktiv (dědí se po stromu)','Katalogová vazba určující, které hrozby působí na danou třídu aktiv a automaticky se dědí na podřízené třídy.','Přiřaďte hrozby relevantní pro tuto třídu aktiv.'),
 ('asset_data','data_belongs_to_sw','asset_software','sw_contains_data','R',0,0,1,0,1,1,'Patří k softwarovému produktu (nákup / vývoj)','Zahrnuje datové aktivum (zdrojové kódy / instalační balíčky / licence)','Zpětný vztah od datového aktiva (zdrojových kódů, instalačních balíčků, aktivačních klíčů) k softwarovému produktu.','Softwarové produkty, k nimž tato data patří.'),
-('asset_data','data_evaluated_by_impact','impact','impact_evaluates_data','P',0,0,1,0,1,1,'Má hodnocen dopad v oblasti (prozrazení / chyby / ztráta)','Je oblastí dopadu pro datové aktivum','Hodnocení dopadů prozrazení dat, nekonzistence nebo chyb dat do jednotlivých oblastí.','Ohodnoťte dopady kompromitace nebo ztráty tohoto datového aktiva.'),
+('asset_data','data_evaluated_by_impact_area','impact_area','impact_area_evaluates_data','P',0,0,1,0,1,1,'Má hodnocen dopad v oblasti dopadu','Je oblastí dopadu pro datové aktivum','Hodnocení dopadů kompromitace nebo ztráty datového aktiva do měřitelných oblastí dopadů (organizace, stát, subjekt údajů).','Určete oblasti dopadů relevantní pro toto datové aktivum.'),
+('asset_data','data_evaluated_by_impact_type','impact_type','impact_type_evaluates_data','P',0,0,1,0,1,1,'Má hodnocen druh dopadu (prozrazení / chyby / ztráta)','Je druhem dopadu pro datové aktivum','Hodnocení konkrétních druhů dopadů a následků (prozrazení, chyby integrity, ztráta od zálohy, úplná ztráta, nedostupnost) u datového aktiva.','Určete druhy následků (řádky matice BIA), které se u tohoto datového aktiva hodnotí.'),
 ('asset_data','data_in_document','asset_document','document_contains_data','P',0,0,1,0,1,0,'Je zaznamenáno v dokumentu','Obsahuje datové aktivum','Uložení datového aktiva v listinném nebo řízeném elektronickém dokumentu.','Vyberte dokumenty, ve kterých se tato data nacházejí.'),
 ('asset_data','data_on_host','asset_host','host_stores_data','P',0,0,1,0,1,1,'Je uloženo na hostitelském počítači / serveru','Ukládá datové aktivum (přenáší HW chyby a výpadky)','Fyzické nebo virtuální uložení databáze či souborů na hostitelském počítači. Selhání nebo kompromitace hosta přímo ohrožuje data.','Vyberte hostitelské počítače (servery), na kterých jsou data uložena.'),
 ('asset_data','data_on_media','asset_media','media_carries_data','P',0,0,1,0,1,0,'Je uloženo / zálohováno na médiu','Nese datové aktivum (zálohu / archiv)','Uložení nebo zálohování datového aktiva na přenosném či trezorovém médiu.','Vyberte paměťová média, na nichž jsou uloženy kopie nebo zálohy těchto dat.'),
@@ -212,7 +265,8 @@ INSERT INTO @links_cs (
 ('asset_room','room_contains_media','asset_media','media_in_room','P',0,0,1,0,1,0,'Obsahuje paměťové médium','Je uloženo v místnosti','Primární prostorový vztah od místnosti k paměťovým médiím v ní uloženým.','Paměťová média uložená v této místnosti.'),
 ('asset_room','room_contains_physical','asset_physical','physical_in_room','P',0,0,1,0,1,0,'Obsahuje fyzické aktivum','Je umístěno v místnosti','Primární prostorový vztah od místnosti k fyzickým aktivům a technologiím v ní umístěným.','Fyzická aktiva umístěna v této místnosti.'),
 ('asset_room','room_in_building','asset_building','building_contains_room','R',0,0,0,1,1,0,'Nachází se v budově','Obsahuje místnost / sál','Zpětné povinné prostorové zařazení místnosti do budovy. Každá místnost musí patřit právě do jedné budovy.','Vyberte budovu, ve které se tato místnost nachází.'),
-('asset_service','service_evaluated_by_impact','impact','impact_evaluates_service','P',0,0,1,0,1,1,'Má hodnocen výpadek / degradaci v oblasti dopadu','Slouží k hodnocení dopadu výpadku služby','Hodnocení dopadů výpadku nebo degradace služby do jednotlivých oblastí.','Určete oblasti dopadů a míru závažnosti při výpadku nebo degradaci této služby.'),
+('asset_service','service_evaluated_by_impact_area','impact_area','impact_area_evaluates_service','P',0,0,1,0,1,1,'Má hodnocen výpadek / degradaci v oblasti dopadu','Je oblastí dopadu pro službu','Hodnocení dopadů výpadku nebo degradace služby do měřitelných oblastí dopadů (organizace, stát, subjekt údajů).','Určete oblasti dopadů, ve kterých se hodnotí výpadek této služby.'),
+('asset_service','service_evaluated_by_impact_type','impact_type','impact_type_evaluates_service','P',0,0,1,0,1,1,'Má hodnocen druh dopadu (délka výpadku / následek)','Je druhem dopadu pro službu','Hodnocení dopadů výpadku nebo narušení služby podle konkrétních druhů následků a časových intervalů nedostupnosti.','Určete druhy dopadů (zejména délky výpadku), které se pro tuto službu hodnotí.'),
 ('asset_service','service_requires_app','asset_application','app_supports_service','P',0,0,1,0,1,1,'Vyžaduje aplikaci (je jí podporována)','Podporuje službu (přenáší na ni výpadky a chyby)','Klíčová vazba M:N mezi službou a podpůrnými aplikacemi. Výpadky aplikací i chyby/prozrazení jejich dat se přenášejí na službu.','Vyberte instalované aplikace, které jsou nezbytné pro poskytování této služby.'),
 ('asset_service','service_requires_interface','asset_interface','interface_supports_service','P',0,0,1,0,1,1,'Vyžaduje rozhraní (internet / hlas / video / ext. službu)','Zajišťuje přenos / rozhraní pro službu','Závislost služby na komunikačním rozhraní nebo jiné dříve definované službě.','Vyberte služby typu Interface, které tato služba ke svému provozu potřebuje.'),
 ('asset_service','service_requires_personnel','asset_personnel','personnel_supports_service','P',0,0,1,0,1,1,'Vyžaduje personál pro zajištění služby','Zajišťuje provoz a obsluhu služby','Závislost služby na klíčových pracovnících a rolích.','Přiřaďte personál nezbytný pro poskytování této služby.'),
@@ -234,11 +288,15 @@ INSERT INTO @links_cs (
 ('hierarchy','parent_to_child','hierarchy','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízenou hierarchii (parent_uuid)','Patří pod nadřízenou složku hierarchií (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v registru sekundárních hierarchií.','Podřízené hierarchie ve stromu.'),
 ('hierarchy_item','child_to_parent','hierarchy_item','parent_to_child','R',1,1,0,0,0,0,'Patří pod nadřízený uzel hierarchie (parent_uuid)','Obsahuje podřízenou položku hierarchie (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid v položkách sekundárních hierarchií.','Nadřízený uzel v sekundární hierarchii.'),
 ('hierarchy_item','parent_to_child','hierarchy_item','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízenou položku hierarchie (parent_uuid)','Patří pod nadřízený uzel hierarchie (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v tabulce hierarchy_item.','Podřízené uzly sekundární hierarchie.'),
-('impact','child_to_parent','impact','parent_to_child','R',1,1,0,0,0,0,'Patří pod nadřízenou oblast dopadu (parent_uuid)','Obsahuje podřízený dopad (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid v katalogu dopadů.','Nadřízená oblast v katalogu dopadů.'),
-('impact','impact_caused_by_scenario','scenario','scenario_causes_impact','R',0,0,1,0,1,1,'Je způsoben rizikovým scénářem','Způsobuje dopad v oblasti','Zpětný vztah od oblasti dopadu k rizikovým scénářům.','Rizikové scénáře vyvolávající dopad v této oblasti.'),
-('impact','impact_evaluates_data','asset_data','data_evaluated_by_impact','R',0,0,1,0,1,1,'Je oblastí dopadu pro datové aktivum','Má hodnocen dopad v oblasti','Zpětný vztah od oblasti dopadu k hodnoceným datovým aktivům.','Datová aktiva hodnocená v této oblasti dopadu.'),
-('impact','impact_evaluates_service','asset_service','service_evaluated_by_impact','R',0,0,1,0,1,1,'Slouží k hodnocení dopadu výpadku služby','Má hodnocen výpadek / degradaci v oblasti dopadu','Zpětný vztah od oblasti dopadu ke službám.','Služby hodnocené v této oblasti dopadu.'),
-('impact','parent_to_child','impact','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízený dopad (parent_uuid)','Patří pod nadřízenou oblast dopadu (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu dopadů.','Podřízené položky dopadů ve stromu.'),
+('impact_area','child_to_parent','impact_area','parent_to_child','R',1,1,0,0,0,0,'Patří pod nadřízenou perspektivu / skupinu oblastí (parent_uuid)','Obsahuje podřízenou oblast dopadu (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid v katalogu oblastí dopadů.','Nadřízená perspektiva nebo skupina v katalogu oblastí dopadů.'),
+('impact_area','impact_area_evaluates_data','asset_data','data_evaluated_by_impact_area','R',0,0,1,0,1,1,'Je oblastí dopadu pro datové aktivum','Má hodnocen dopad v oblasti dopadu','Zpětný vztah od oblasti dopadu k hodnoceným datovým aktivům.','Datová aktiva hodnocená v této oblasti dopadu.'),
+('impact_area','impact_area_evaluates_service','asset_service','service_evaluated_by_impact_area','R',0,0,1,0,1,1,'Je oblastí dopadu pro službu','Má hodnocen výpadek / degradaci v oblasti dopadu','Zpětný vztah od oblasti dopadu k hodnoceným službám.','Služby hodnocené v této oblasti dopadu.'),
+('impact_area','parent_to_child','impact_area','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízenou oblast dopadu (parent_uuid)','Patří pod nadřízenou perspektivu / skupinu oblastí (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu oblastí dopadů.','Podřízené oblasti dopadů ve stromu.'),
+('impact_type','child_to_parent','impact_type','parent_to_child','R',1,1,0,0,0,0,'Patří pod nadřízenou kategorii druhů dopadů (parent_uuid)','Obsahuje podřízený druh dopadu (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid v katalogu druhů dopadů.','Nadřízená kategorie (CIA) v katalogu druhů dopadů.'),
+('impact_type','impact_type_caused_by_scenario','scenario','scenario_causes_impact_type','R',0,0,1,0,1,1,'Je vyvolán rizikovým scénářem','Způsobuje druh dopadu (následek)','Zpětný vztah od druhu dopadu (následku) k rizikovým scénářům, které jej mohou způsobit.','Rizikové scénáře vyvolávající tento druh následku.'),
+('impact_type','impact_type_evaluates_data','asset_data','data_evaluated_by_impact_type','R',0,0,1,0,1,1,'Je druhem dopadu pro datové aktivum','Má hodnocen druh dopadu (prozrazení / chyby / ztráta)','Zpětný vztah od druhu dopadu (následku) k hodnoceným datovým aktivům.','Datová aktiva hodnocená pro tento druh následku.'),
+('impact_type','impact_type_evaluates_service','asset_service','service_evaluated_by_impact_type','R',0,0,1,0,1,1,'Je druhem dopadu pro službu','Má hodnocen druh dopadu (délka výpadku / následek)','Zpětný vztah od druhu dopadu (následku) k hodnoceným službám.','Služby hodnocené pro tento druh následku.'),
+('impact_type','parent_to_child','impact_type','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízený druh dopadu (parent_uuid)','Patří pod nadřízenou kategorii druhů dopadů (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu druhů dopadů.','Podřízené druhy dopadů ve stromu.'),
 ('link_diagram','diagram_includes_link_def','meta_link_def','link_def_in_diagram','P',0,0,1,1,0,1,'Zahrnuje orientovaný vztah (spojnici sítě)','Je součástí schématu sítě (diagramu)','Zařazení orientovaného vztahu z meta_link_def do schématu heterogenní sítě (link_diagram) pro výpočet cest přenosu rizik.','Vyberte orientované vztahy tvořící spojnice tohoto diagramu sítě.'),
 ('meta_link_def','link_def_in_diagram','link_diagram','diagram_includes_link_def','R',0,0,1,0,0,0,'Je součástí schématu sítě (diagramu)','Zahrnuje orientovaný vztah (spojnici sítě)','Zpětný vztah od definice vztahu ke schématům sítě, v nichž je vztah použit.','Diagramy sítě obsahující tento vztah.'),
 ('organization_unit','child_to_parent','organization_unit','parent_to_child','R',1,1,0,0,0,1,'Podléhá nadřízené organizační jednotce (parent_uuid)','Řídí podřízenou organizační jednotku (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid mezi organizačními útvary.','Nadřízený útvar v organizační struktuře.'),
@@ -247,8 +305,8 @@ INSERT INTO @links_cs (
 ('organization_unit','parent_to_child','organization_unit','child_to_parent','P',1,1,1,0,0,1,'Řídí podřízenou organizační jednotku (parent_uuid)','Podléhá nadřízené organizační jednotce (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid mezi organizačními jednotkami.','Podřízené organizační jednotky.'),
 ('scenario','child_to_parent','scenario','parent_to_child','R',1,1,0,0,0,0,'Patří pod nadřízenou skupinu scénářů (parent_uuid)','Obsahuje podřízený scénář (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid v katalogu rizikových scénářů.','Nadřízená skupina v katalogu scénářů.'),
 ('scenario','countermeasure_mitigates_scenario','countermeasure','scenario_mitigated_by_cm','P',0,0,1,0,1,1,'Je ošetřen protiopatřením','Snižuje riziko scénáře (reduction_factor / risk_factor)','Metodická vazba mezi rizikovým scénářem a protiopatřeními, která snižují jeho zbytkové riziko.','Vyberte protiopatření působící proti tomuto rizikovému scénáři.'),
-('scenario','parent_to_child','scenario','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízený scénář (parent_uuid)','Patří pod nadřízenou skupinu scénářů (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu scénářů.','Podřízené rizikové scénáře ve stromu.'),
-('scenario','scenario_causes_impact','impact','impact_caused_by_scenario','P',0,0,1,0,1,1,'Způsobuje dopad v oblasti','Je způsoben rizikovým scénářem','Určuje, které oblasti dopadů (finanční, pověst, obecné ohrožení, trestní odpovědnost, řízení firmy, zákony) daný scénář vyvolává.','Přiřaďte oblasti dopadů, které tento rizikový scénář ohrožuje.'),
+('scenario','parent_to_child','scenario','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízený scénář (parent_uuid)','Patří pod nadřízenou skupinu scénářů (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu rizikových scénářů.','Podřízené rizikové scénáře ve stromu.'),
+('scenario','scenario_causes_impact_type','impact_type','impact_type_caused_by_scenario','P',0,0,1,0,1,1,'Způsobuje druh dopadu (následek)','Je vyvolán rizikovým scénářem','Určuje, jaké druhy dopadů / následků (prozrazení, chyby integrity, nedostupnost, ztráta dat, narušení komunikace) daný rizikový scénář vyvolává.','Přiřaďte druhy dopadů (následky), ke kterým tento rizikový scénář vede.'),
 ('threat','asset_class_exposed_to_threat','asset_class','threat_applies_to_asset_class','R',0,0,1,0,1,0,'Působí na třídu aktiv (dědí se po stromu)','Je vystavena působení hrozby','Zpětný vztah od katalogové hrozby ke třídám aktiv, na které hrozba působí.','Třídy aktiv ohrožované touto hrozbou.'),
 ('threat','child_to_parent','threat','parent_to_child','R',1,1,0,0,0,0,'Patří pod nadřízenou skupinu hrozeb (parent_uuid)','Obsahuje podřízenou hrozbu (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid v katalogu hrozeb.','Nadřízená skupina v katalogu hrozeb.'),
 ('threat','countermeasure_mitigates_threat','countermeasure','threat_mitigated_by_cm','P',0,0,1,0,1,1,'Je potlačována protiopatřením','Působí proti hrozbě','Metodická vazba mezi katalogovou hrozbou a preventivními či detekčními protiopatřeními.','Vyberte protiopatření, která snižují působení této hrozby.'),

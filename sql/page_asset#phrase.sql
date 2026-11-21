@@ -1,9 +1,24 @@
 ﻿/* =============================================================================
- * Verze: 2026-11-13 16:15
+ * Verze: 2026-11-21 11:30
  * Soubor: page_asset#phrase.sql
- * Účel:   Registrace stránky page_asset do sysinit_object, položek menu
- *         asset_locations a asset do sysinit_menu a frází do sysinit_phrase.
- * Vazby:  Zpracováváno procedurou dbo.p_sysinit_process (p_sysinit_process.sql).
+ *
+ * 1. Role souboru v celém systému:
+ *    Registrace stránky page_asset do sysinit_object, položek menu
+ *    asset_locations a asset do sysinit_menu a českých i anglických frází
+ *    do sysinit_phrase.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Odpovídá voláním $this->phrase() a new abstract_button() v page_asset.php.
+ *    - Zpracováváno procedurou dbo.p_sysinit_process (p_sysinit_process.sql).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (maska *#phrase.sql) nad
+ *      staging tabulkami sysinit_* bez závislosti na relaci v dbsession.
+ *
+ * Změny:
+ * - 2026-11-21 11:30: Doplněny 3 nové validační fráze z page_asset::process_save()
+ *   (err_archetype_group_mismatch, err_invalid_asset_archetype,
+ *   err_invalid_asset_class_for_archetype) pro cs i en.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -31,6 +46,9 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('page_asset','btn_asset_scenarios','cs','Scénáře ({$count}) →','Přejde na hodnocení rizikových scénářů tohoto aktiva','btn-secondary'),
 ('page_asset','btn_new_asset','cs','+ Nové aktivum','Založí nové aktivum v evidenci aktiv',''),
 ('page_asset','btn_new_space','cs','+ Nový prostor / lokalita','Založí nový prostor, budovu nebo místnost',''),
+('page_asset','err_archetype_group_mismatch','cs','Zvolený archetyp nepatří do této evidence (Prostory vs. Evidence aktiv).','',''),
+('page_asset','err_invalid_asset_archetype','cs','Zvolený archetyp aktiva není platný.','',''),
+('page_asset','err_invalid_asset_class_for_archetype','cs','Zvolená primární třída aktiv neodpovídá vybranému archetypu (nebo není koncovou třídou aktiv).','',''),
 ('page_asset','grp_bia_risk_scores','cs','Parametry dostupnosti (BIA) a agregované skóre rizik (0 až 100 %)','',''),
 ('page_asset','grp_identification','cs','Klasifikace, archetyp a identifikace','',''),
 ('page_asset','grp_placement_relations','cs','Zařazení ve stromu (parent_uuid)','',''),
@@ -59,6 +77,9 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('page_asset','btn_asset_scenarios','en','Scenarios ({$count}) →','Open risk scenario assessments for this asset'),
 ('page_asset','btn_new_asset','en','+ New Asset','Create a new asset in the asset inventory'),
 ('page_asset','btn_new_space','en','+ New Space / Location','Create a new space, building, or room'),
+('page_asset','err_archetype_group_mismatch','en','The selected archetype does not belong to this inventory (Spaces vs. Asset Inventory).',''),
+('page_asset','err_invalid_asset_archetype','en','The selected asset archetype is not valid.',''),
+('page_asset','err_invalid_asset_class_for_archetype','en','The selected primary asset class does not match the chosen archetype (or is not a leaf asset class).',''),
 ('page_asset','grp_bia_risk_scores','en','Availability Parameters (BIA) & Aggregated Risk Scores (0 to 100%)',''),
 ('page_asset','grp_identification','en','Classification, Archetype & Identification',''),
 ('page_asset','grp_placement_relations','en','Tree Placement (parent_uuid)',''),

@@ -1,27 +1,38 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-10-29 16:40
+ * Verze: 2026-11-21 11:20
  * Soubor: page_organization.php
  * Třída: page_organization
- * Účel: Master-Detail obrazovka pro správu a nastavení organizace (tenanta).
- *       - Administrátor organizace ('A') zde upravuje identifikační, fakturační,
- *         adresní, regionální a CRMM výpočtové parametry své vlastní organizace.
- *       - Sysadmin ('S') a Developer ('D') v systémové organizaci (0x00) vidí
- *         a mohou upravovat všechny organizace v systému.
- *       - Zakládání nových organizací je zde zakázáno ($this->allow_insert = false),
- *         protože organizace vznikají výhradně aktivací licence v modulu
- *         page_organization_licence.
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z routeru `index.php` při `?page=page_organization`.
- * - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou `'organization'`.
- * - Využívá `entity_manager`, který u tabulky `organization` zohledňuje, že každý
- *   záznam organizace vlastní sám sebe (`object_owner = original`), a pro sloupec
- *   `preferred_language` vykresluje roletku z tabulky `language`.
- * - Využívá `abstract_button` a `$this->phrase()` pro plnou lokalizaci UI.
+ * 1. Role souboru v celém systému:
+ *    Master-Detail obrazovka pro správu a nastavení organizace (tenanta):
+ *    - Administrátor organizace ('A') zde upravuje identifikační, fakturační,
+ *      adresní, regionální a CRMM výpočtové parametry své vlastní organizace.
+ *    - Sysadmin ('S') a Developer ('D') v systémové organizaci (0x00) vidí
+ *      a mohou upravovat všechny organizace v systému.
+ *    - Zakládání nových organizací je zde zakázáno ($this->allow_insert = false),
+ *      protože organizace vznikají výhradně aktivací licence v modulu
+ *      page_organization_licence.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z routeru `index.php` při `?page=page_organization`.
+ *    - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou
+ *      `'organization'` (`table_organization.sql`).
+ *    - Využívá `entity_manager`, který pro `preferred_language` vykresluje
+ *      roletku z tabulky `language` a pro `default_impact_scale_uuid` filtrovanou
+ *      roletku ze `scale` (`scale_type = 'IMPACT' AND is_area_guideline = 0`)
+ *      přes `dbo.p_em_get_select_options`.
+ *    - Využívá `abstract_button` a `$this->phrase()` pro plnou lokalizaci UI.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole `$dbsession` (`active_role`, `licence_level`,
+ *      `organization`) naplněné z tabulky `dbsession` pro aktuální `@@SPID`.
  *
  * Změny:
+ * 2026-11-21 11:20 - Ve skupině CRMM parametrů nahrazeny odstraněné sloupce
+ *                    max_threat_score, max_vulnerability_score, max_impact_score
+ *                    a max_risk_score novým sloupcem default_impact_scale_uuid.
  * 2026-10-29 16:40 - Zpřístupnění stránky pro roli OrgAdmin ('A') nad vlastní
  *                    organizací (s automatickým předvýběrem organizace v detailu).
  *                  - Odstraněny vyčleněné licenční sloupce licence_level a login_disabled.
@@ -68,7 +79,7 @@ class page_organization extends abstract_page_master_detail {
 
 		$grp_basic = $this->phrase('grp_basic_info', [], 'Základní identifikace organizace'); // Sekce základních údajů
 		$grp_reg   = $this->phrase('grp_regional_settings', [], 'Regionální a formátovací nastavení'); // Sekce formátování
-		$grp_crmm  = $this->phrase('grp_crmm_parameters', [], 'Metodické a výpočtové parametry CRMM'); // Sekce CRMM limitů
+		$grp_crmm  = $this->phrase('grp_crmm_parameters', [], 'Metodické a výpočtové parametry CRMM'); // Sekce CRMM parametrů
 		$grp_bill  = $this->phrase('grp_billing_info', [], 'Registrační, daňové a fakturační údaje'); // Sekce fakturace
 		$grp_addr  = $this->phrase('grp_address_info', [], 'Sídlo a kontaktní údaje'); // Sekce adresy
 		$grp_texts = $this->phrase('grp_texts_notes', [], 'Popis, nápověda a interní poznámky'); // Sekce textů
@@ -76,7 +87,7 @@ class page_organization extends abstract_page_master_detail {
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_basic => ['caption', 'shortname', 'external_code', 'login_domain', 'inactive', 'valid_from', 'valid_to'], // Identifikace
 			$grp_reg   => ['preferred_language', 'currency_unit', 'currency_digits', 'currency_before', 'format_date', 'format_time', 'time_zone', 'thousand_separator', 'decimal_separator', 'export_delimiter'], // Regionální volby
-			$grp_crmm  => ['evaluation_method', 'max_threat_score', 'max_vulnerability_score', 'max_impact_score', 'max_risk_score', 'max_impact_financial', 'residual_risk_min_financial'], // Parametry CRMM
+			$grp_crmm  => ['evaluation_method', 'default_impact_scale_uuid', 'max_impact_financial', 'residual_risk_min_financial'], // Parametry CRMM
 			$grp_bill  => ['register_id', 'tax_id', 'invoice_info'],         // IČO, DIČ a fakturační informace
 			$grp_addr  => ['address_name', 'address_street', 'address_city', 'address_zip', 'address_state', 'www_address'], // Adresa a web
 			$grp_texts => ['description_text', 'help_text', 'note']          // Překládané popisy a poznámka

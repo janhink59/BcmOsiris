@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-20 23:45
+ * Verze: 2026-11-21 10:50
  * Soubor: entity_manager.php
  * Třída: entity_manager
  *
@@ -26,6 +26,8 @@
  *      zejména aktivní organizaci (`organization`) a jazyk (`language`).
  *
  * Změny:
+ * 2026-11-21 10:50 - Vyčištění chybějících mezer před znakem $ v metodách __construct(),
+ *                    phrase(), is_key_column_mandatory() a load_metadata().
  * 2026-11-20 23:45 - Doplněna metoda set_column_computed() pro bezpečné uzamčení
  *                    počítaných sloupců v UI i na serveru (extract_post_data).
  * 2026-11-06 13:30 - Vyčlenění SSC metod do samostatného traitu entity_manager_ssc.php
@@ -79,7 +81,7 @@ class entity_manager {
 
 	/**
 	 * Pomocná metoda pro překlad interních textů třídy entity_manager.
-	 * Podporuje jak pořadí ($code, $default_caption,$vars), tak pořadí ($code, $vars,$default_caption).
+	 * Podporuje jak pořadí (kód, výchozí text, proměnné), tak (kód, proměnné, výchozí text).
 	 */
 	private function phrase(string $builtin_code, mixed $default_caption = '', mixed$vars = []): string { // Překlad interní fráze
 		if (is_array($default_caption)) {                                    // Pokud bylo pole proměnných předáno jako 2. argument
@@ -247,15 +249,15 @@ class entity_manager {
 				$col['is_mandatory'] = 1;                                    // Vynucení příznaku povinného sloupce
 			}
 
-			foreach ($trans_col_fields as$tf) {                             // Průchod překládanými vlastmi sloupce
-				$col[$tf] = $this->resolve_field_from_arrays($orig, $tf,$col_a_map, $col_anc_map,$col_l_map, $curr_lang,$lang_chain, 'ancestor'); // Překlad
+			foreach ($trans_col_fields as $tf) {                             // Průchod překládanými vlastmi sloupce
+				$col[$tf] = $this->resolve_field_from_arrays($orig, $tf, $col_a_map, $col_anc_map, $col_l_map, $curr_lang, $lang_chain, 'ancestor'); // Překlad
 			}
 
-			$this->columns_meta[$c_name] =$col;                             // Uložení kompletních metadat sloupce
+			$this->columns_meta[$c_name] = $col;                             // Uložení kompletních metadat sloupce
 
 			if ($col['list_order'] !== null) {                               // Pokud má sloupec pořadí v Master panelu
-				$header_val = $col['header'] ?:$col['caption'];             // Záhlaví sloupce v seznamu
-				$list_cols_temp[(int)$col['list_order']] = [                // Uložení sloupce pod klíčem pořadí
+				$header_val = $col['header'] ?: $col['caption'];             // Záhlaví sloupce v seznamu
+				$list_cols_temp[(int) $col['list_order']] = [                // Uložení sloupce pod klíčem pořadí
 					'name'   => $c_name,                                     // Technický název sloupce
 					'header' => $header_val ?: $c_name                       // Zobrazované záhlaví sloupce
 				];                                                           // Konec položky seznamu
@@ -264,15 +266,15 @@ class entity_manager {
 
 		if (! empty($list_cols_temp)) {                                      // Seřazení sloupců levého panelu dle list_order
 			ksort($list_cols_temp);                                          // Seřazení podle klíče pořadí
-			foreach ($list_cols_temp as$lc) {                               // Přepis do finálního pole
-				$this->list_columns[$lc['name']] =$lc['header'];            // Naplnění finálního seznamu
+			foreach ($list_cols_temp as $lc) {                               // Přepis do finálního pole
+				$this->list_columns[$lc['name']] = $lc['header'];            // Naplnění finálního seznamu
 			}
 		} else {
 			$fallback_candidates = ['caption', 'name', 'code', 'builtin_code']; // Kandidáti na náhradní sloupec
-			foreach ($fallback_candidates as$fc) {                          // Hledání vhodného sloupce
+			foreach ($fallback_candidates as $fc) {                          // Hledání vhodného sloupce
 				if (isset($this->columns_meta[$fc])) {                       // Pokud kandidát v tabulce existuje
 					$col = $this->columns_meta[$fc];                         // Vybraný náhradní sloupec
-					$header_val = $col['header'] ?:$col['caption'];         // Záhlaví náhradního sloupce
+					$header_val = $col['header'] ?: $col['caption'];         // Záhlaví náhradního sloupce
 					$this->list_columns[$fc] = $header_val ?: $col['column_name']; // Nastavení náhradního sloupce
 					break;                                                   // Ukončení hledání
 				}

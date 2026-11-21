@@ -2,7 +2,7 @@ EXECUTE dropni 'page_link', 'P';
 GO
 
 /* =============================================================================
- * Verze: 2026-11-16 15:25
+ * Verze: 2026-11-21 10:50
  * Soubor: page_link.sql
  * Procedura: dbo.page_link
  *
@@ -19,13 +19,17 @@ GO
  *    - Volána z PHP třídy page_link (page_link.php).
  *    - Automaticky zařazena do buildu databáze maskou page_*.sql v BuildListDb.txt.
  *    - Čte tabulky dbsession, meta_link_def, meta_class, asset, asset_class,
- *      threat, impact, scenario, countermeasure, hierarchy_item,
- *      organization_unit a link_diagram.
+ *      threat, impact_type, impact_area, scenario, countermeasure,
+ *      hierarchy_item, organization_unit a link_diagram.
  *    - Využívá funkci dbo.f_language_list (f_language_list.sql).
  *
  * 3. Očekávaná kontextová data:
  *    - Načítá aktivní organizaci (organization) a jazyk relace (language)
  *      z tabulky dbsession pro aktuální @@SPID.
+ *
+ * Změny:
+ * - 2026-11-21 10:50: Ve větvích 'lookups' i 'endpoints' nahrazena zrušená
+ *   tabulka impact dvojicí impact_type a impact_area.
  * ============================================================================= */
 CREATE PROCEDURE dbo.page_link
 	@subpage varchar(30)
@@ -108,7 +112,9 @@ BEGIN
 			UNION ALL
 			SELECT original, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM threat WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
 			UNION ALL
-			SELECT original, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM impact WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
+			SELECT original, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM impact_type WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
+			UNION ALL
+			SELECT original, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM impact_area WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
 			UNION ALL
 			SELECT original, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM scenario WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
 			UNION ALL
@@ -241,7 +247,7 @@ BEGIN
 			WHERE rc.storage_table = 'asset';
 		END
 
-		-- 2b. Ostatní katalogové tabulky (asset_class, threat, impact, scenario, countermeasure, organization_unit, link_diagram, meta_link_def)
+		-- 2b. Ostatní katalogové tabulky (asset_class, threat, impact_type, impact_area, scenario, countermeasure, organization_unit, link_diagram, meta_link_def)
 		INSERT INTO @all_opts (class_uuid, original, sort_code, code_col, caption)
 		SELECT rc.class_uuid, x.original, x.sort_code, x.code_col, x.caption
 		FROM @ref_classes rc
@@ -250,7 +256,9 @@ BEGIN
 			UNION ALL
 			SELECT 'threat', original, sort_code, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM threat WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
 			UNION ALL
-			SELECT 'impact', original, sort_code, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM impact WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
+			SELECT 'impact_type', original, sort_code, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM impact_type WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
+			UNION ALL
+			SELECT 'impact_area', original, sort_code, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM impact_area WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
 			UNION ALL
 			SELECT 'scenario', original, sort_code, builtin_code, COALESCE(NULLIF(caption, ''), builtin_code) FROM scenario WHERE object_owner IN (@org_sql, 0x00) AND record_type = 'A' AND removed = 0
 			UNION ALL

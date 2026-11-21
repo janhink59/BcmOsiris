@@ -1,9 +1,21 @@
 /* =============================================================================
- * Verze: 2026-11-15 19:55
+ * Verze: 2026-11-21 11:30
  * Soubor: abstract_page_master_detail#phrase.sql
- * Účel:   Registrace šablony abstract_page_master_detail do sysinit_object
- *         a naplnění jejích českých a anglických frází do sysinit_phrase.
- * Vazby:  Zpracováváno procedurou dbo.p_sysinit_process (p_sysinit_process.sql).
+ *
+ * 1. Role souboru v celém systému:
+ *    Registrace šablony abstract_page_master_detail do sysinit_object a
+ *    naplnění jejích českých a anglických frází do sysinit_phrase.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Odpovídá voláním $this->phrase() v abstract_page_master_detail.php.
+ *    - Zpracováváno procedurou dbo.p_sysinit_process (p_sysinit_process.sql).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Běží jako součást sestavovací dávky databáze (maska *#phrase.sql) nad
+ *      staging tabulkami sysinit_* bez závislosti na relaci v dbsession.
+ *
+ * Změny:
+ * - 2026-11-21 11:30: Doplněna fráze msg_record_readonly_save_denied pro cs i en.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -40,6 +52,7 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('abstract_page_master_detail','msg_insert_not_allowed','cs','Zakládání nových záznamů není v této úloze povoleno.','',''),
 ('abstract_page_master_detail','msg_no_list_columns','cs','Master panel nemá v metadatech (list_order) definované žádné sloupce.','',''),
 ('abstract_page_master_detail','msg_record_not_found','cs','Záznam nebyl nalezen.','',''),
+('abstract_page_master_detail','msg_record_readonly_save_denied','cs','Tento záznam je uzamčen pouze pro čtení a nelze jej upravovat ani mazat.','',''),
 ('abstract_page_master_detail','msg_select_from_left','cs','Vyberte záznam z levého panelu.','',''),
 ('abstract_page_master_detail','msg_ssc_status_draft','cs','Pracujete s rozpracovaným konceptem, který je viditelný pouze pro vás.','',''),
 ('abstract_page_master_detail','msg_ssc_status_forwarded','cs','Tento záznam je postoupen ke schválení. Do doby schválení jej můžete dále upravit nebo stáhnout zpět do konceptu.','',''),
@@ -74,6 +87,7 @@ INSERT INTO sysinit_phrase (source_code, builtin_code, [language], caption, help
 ('abstract_page_master_detail','msg_insert_not_allowed','en','Creating new records is not allowed in this agenda.',''),
 ('abstract_page_master_detail','msg_no_list_columns','en','Master panel has no columns defined in metadata (list_order).',''),
 ('abstract_page_master_detail','msg_record_not_found','en','Record was not found.',''),
+('abstract_page_master_detail','msg_record_readonly_save_denied','en','This record is locked as read-only and cannot be edited or deleted.',''),
 ('abstract_page_master_detail','msg_select_from_left','en','Select a record from the left panel.',''),
 ('abstract_page_master_detail','msg_ssc_status_draft','en','You are working on a private draft visible only to you.',''),
 ('abstract_page_master_detail','msg_ssc_status_forwarded','en','This record is submitted for approval. Until approved, you may continue editing it or revert it to a draft.',''),

@@ -2,22 +2,36 @@ EXECUTE dropni 'p_sync_derived_links', 'P';
 GO
 
 /* =============================================================================
- * Verze:     2026-11-12 17:10
+ * Verze:     2026-11-21 10:50
  * Soubor:    p_sync_derived_links.sql
  * Procedura: dbo.p_sync_derived_links
- * Účel:      1. Normalizuje ručně zadané vazby uložené pod zpětným vztahem ('R')
- *               na kanonický primární vztah ('P') s otočením
- *               from_object <-> to_object, link_weight <-> reverse_link_weight
- *               a link_def -> reverse_link_def.
- *            2. Zrcadlí exkluzivní stromové vazby parent_uuid do tabulky link
- *               pod primárním vztahem parent_to_child ('P', is_derived = 1).
- *            3. Provádí materializaci (a výmaz) zděděných vazeb v tabulce link
- *               pomocí sloupce ancestor_link.
- * Vazby:     - Čte a modifikuje tabulku link.
- *            - Čte tabulky meta_link_def, meta_class, meta_object, v_syscolumns
- *              a stromové tabulky asset, asset_class, threat, impact, scenario,
- *              countermeasure, hierarchy, hierarchy_item a organization_unit.
- *            - Využívá funkce dbo.f_generate_original a dbo.f_link_original.
+ *
+ * 1. Role souboru v celém systému:
+ *    - Normalizuje ručně zadané vazby uložené pod zpětným vztahem ('R') na
+ *      kanonický primární vztah ('P') s otočením from_object <-> to_object,
+ *      link_weight <-> reverse_link_weight a link_def -> reverse_link_def.
+ *    - Zrcadlí exkluzivní stromové vazby parent_uuid ze všech stromových
+ *      tabulek do tabulky link pod primárním vztahem parent_to_child ('P',
+ *      is_derived = 1).
+ *    - Provádí materializaci (a výmaz) zděděných vazeb v tabulce link pomocí
+ *      sloupce ancestor_link.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Čte a modifikuje tabulku link.
+ *    - Čte tabulky meta_link_def, meta_class, meta_object, v_syscolumns
+ *      a stromové tabulky asset, asset_class, threat, impact_type, impact_area,
+ *      scenario, countermeasure, hierarchy, hierarchy_item a organization_unit.
+ *    - Využívá funkce dbo.f_generate_original a dbo.f_link_original.
+ *    - Volána z fillup_*.sql, p_crmm_recalculate.sql, p_rebuild_link_diagram.sql,
+ *      p_split_hierarchy_node_to_folder.sql a entity_manager_ssc.php.
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Pracuje nad tabulkami bez závislosti na dbsession či SESSION_CONTEXT
+ *      (vlastnictví bere přímo z object_owner jednotlivých záznamů).
+ *
+ * Změny:
+ * - 2026-11-21 10:50: V tabulkové proměnné @tree_tabs nahrazena zrušená
+ *   tabulka 'impact' dvojicí 'impact_type' a 'impact_area'.
  * ============================================================================= */
 CREATE PROCEDURE dbo.p_sync_derived_links
 	@root_link_original uniqueidentifier = NULL
@@ -86,7 +100,7 @@ BEGIN
 	BEGIN
 		DECLARE @tree_tabs TABLE (tabname varchar(80) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY);
 		INSERT INTO @tree_tabs (tabname) VALUES
-			('asset'), ('asset_class'), ('threat'), ('impact'),
+			('asset'), ('asset_class'), ('threat'), ('impact_type'), ('impact_area'),
 			('scenario'), ('countermeasure'), ('hierarchy'), ('hierarchy_item'), ('organization_unit');
 
 		DECLARE @tt varchar(80);

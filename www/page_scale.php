@@ -1,20 +1,32 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-04 15:15
+ * Verze: 2026-11-21 11:20
  * Soubor: page_scale.php
  * Třída: page_scale
- * Účel: Správa definic hodnotících škál CRMM (tabulka scale) pro veličiny
- *       THREAT, VULNERABILITY, IMPACT a RISK.
- *       Při prvním uložení nové škály se podle sloupce initial_levels (výchozí 4)
- *       automaticky vygeneruje n rovnoměrných stupňů v tabulce scale_value
- *       v procentuálním intervalu 0 až 100 %.
  *
- * ARCHITEKTONICKÉ VAZBY:
- * - Instancována dynamicky z routeru `index.php` při `?page=page_scale`.
- * - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou `'scale'`.
- * - V hlavičce detailu (`render_detail_header_buttons`) zobrazuje tlačítko pro
- *   přechod do správy stupňů vybrané škály (`page_scale_value.php&scale=<original>`).
+ * 1. Role souboru v celém systému:
+ *    Správa definic hodnotících škál CRMM (tabulka scale) pro veličiny
+ *    THREAT, VULNERABILITY, IMPACT a RISK včetně příznaku oblastní škály
+ *    vodítek (is_area_guideline) odkazované z katalogu impact_area.
+ *    Při prvním uložení nové škály se podle sloupce initial_levels (výchozí 4)
+ *    automaticky vygeneruje n rovnoměrných stupňů v tabulce scale_value
+ *    v procentuálním intervalu 0 až 100 %.
+ *
+ * 2. Návaznosti na další soubory, DB tabulky, views nebo procedury:
+ *    - Instancována dynamicky z routeru `index.php` při `?page=page_scale`.
+ *    - Dědí z `abstract_page_master_detail` a pracuje s logickou třídou
+ *      `'scale'` (`table_scale.sql`).
+ *    - V hlavičce detailu (`render_detail_header_buttons`) zobrazuje tlačítko pro
+ *      přechod do správy stupňů vybrané škály (`page_scale_value.php&scale=<original>`).
+ *
+ * 3. Očekávaná kontextová data:
+ *    - Čte globální pole `$dbsession` (`organization`, `language`) naplněné
+ *      z tabulky `dbsession` pro aktuální `@@SPID`.
+ *
+ * Změny:
+ * 2026-11-21 11:20 - Do sekce metodického zařazení ($grp_meth) doplněn nový
+ *                    sloupec is_area_guideline (škála vodítek pro impact_area).
  * =============================================================================
  */
 
@@ -45,7 +57,7 @@ class page_scale extends abstract_page_master_detail {
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_pres => ['caption', 'shortname', 'description_text', 'help_text'], // Lokalizované názvy a popisy
-			$grp_meth => ['builtin_code', 'scale_type', 'priority', 'initial_levels', 'is_default', 'sort_code', 'external_code'], // Řídicí atributy škály
+			$grp_meth => ['builtin_code', 'scale_type', 'is_area_guideline', 'priority', 'initial_levels', 'is_default', 'sort_code', 'external_code'], // Řídicí atributy škály
 			$grp_perm => ['svg_icon', 'valid_from', 'valid_to', 'is_final', 'is_protected', 'inactive'] // Ikona, platnost a ochrana
 		];                                                                   // Konec definice skupin formuláře
 	}
