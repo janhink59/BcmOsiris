@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-16 14:40
+ * Verze: 2026-11-27 15:40
  * Soubor: fillup_meta_original_keys.sql
  *
  * 1. Role souboru v celém systému:
@@ -17,6 +17,8 @@
  *      závislosti na uživatelské relaci.
  *
  * Změny:
+ * - 2026-11-27 15:40: Doplněn složený klíč (diagram_uuid, link_def_uuid) pro
+ *   novou tabulku link_diagram_edge.
  * - 2026-11-16 14:40: Odstraněna klauzule NOT IN (SELECT ...) a korelovaný
  *   poddotaz (SELECT COUNT(DISTINCT r.colname) ...) nad pohledem v_syscolumns;
  *   nahrazeno jedním agregačním průchodem do indexované tabulkové proměnné
@@ -56,6 +58,7 @@ VALUES
 	('hierarchy', 'builtin_code', NULL),                                    -- Hierarchie je unikátní svým kódem
 	('hierarchy_item', 'hierarchy', 'builtin_code'),                        -- Uzel hierarchie je unikátní v rámci dané hierarchie
 	('scale_value', 'scale', 'builtin_code'),                               -- Stupeň škály je unikátní v rámci dané škály
+	('link_diagram_edge', 'diagram_uuid', 'link_def_uuid'),                 -- Hrana schématu sítě je unikátní pro diagram a vztah
 	('scenario_assessment', 'asset_uuid', 'scenario_uuid'),                 -- Hodnocení scénáře je unikátní pro aktivum a scénář
 	('countermeasure_implementation', 'asset_uuid', 'countermeasure_uuid'); -- Implementace opatření je unikátní pro aktivum a opatření
 

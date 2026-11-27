@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-20 23:30
+ * Verze: 2026-11-27 15:40
  * Soubor: page_link.php
  * Třída: page_link
  *
@@ -24,6 +24,10 @@
  *      parametry link_def_filter, from_object a diagram_uuid.
  *
  * Změny:
+ * 2026-11-27 15:40 - Odstraněno předvyplňování zrušeného vztahu
+ *                    diagram_includes_link_def (hrany schémat sítí jsou vyčleněny
+ *                    do tabulky link_diagram_edge a spravovány v page_link_diagram.php);
+ *                    filtr diagram_uuid nyní zobrazuje pouze odvozené vazby diagramu.
  * 2026-11-20 23:30 - Implementován hook is_record_readonly() pro spolehlivé uzamčení
  *                    zděděných a odvozených vazeb (is_derived = 1) v hlavičce i při POST.
  * 2026-11-16 15:25 - Odstraněn N+1 cyklus dotazů v render_detail_top() a
@@ -47,8 +51,8 @@ class page_link extends abstract_page_master_detail {
 		parent::__construct();                                               // Inicializace správce frází a kontroly přístupu
 
 		$this->class_name = 'link';                                          // Logická třída pro entity_manager
-		$this->allow_insert = ! $this->is_readonly;                          // Povolení zakládání nových vazeb
-		$this->page_title = $this->phrase('page_title', [], 'Vazby a závislosti aktiv (CRMM)'); // Titulek stránky
+		$this->allow_insert = !$this->is_readonly;                          // Povolení zakládání nových vazeb
+		$this->page_title =$this->phrase('page_title', [], 'Vazby a závislosti aktiv (CRMM)'); // Titulek stránky
 
 		if ($this->access_denied) {                                          // Pokud předek zamítl přístup
 			return;                                                          // Ukončení inicializace
@@ -66,25 +70,23 @@ class page_link extends abstract_page_master_detail {
 			$obj_lit = guidliteral($this->filter_from_object);               // SQL literál objektu
 			$where_parts[] = "(m.from_object = {$obj_lit} OR m.to_object = {$obj_lit})"; // Všechny vazby daného objektu
 			$a_row = sqlfirstrow("SELECT TOP 1 caption, builtin_code FROM asset WHERE original = {$obj_lit} AND record_type = 'A' AND removed = 0"); // Název aktiva
-			if (! empty($a_row)) {                                           // Pokud aktivum existuje
-				$this->from_object_caption = (string) ($a_row['caption'] ?: $a_row['builtin_code']); // Uložení názvu aktiva
+			if (! empty($a_row)) {                                           // Pokud aktivum existuje$this->from_object_caption = (string) ($a_row['caption'] ?:$a_row['builtin_code']); // Uložení názvu aktiva
 			}
 		}
 		if ($this->filter_diagram_uuid !== '' AND is_guid($this->filter_diagram_uuid)) { // Filtr na schéma heterogenní sítě
 			$dg_lit = guidliteral($this->filter_diagram_uuid);               // SQL literál diagramu
-			$where_parts[] = "(m.diagram_uuid = {$dg_lit} OR m.from_object = {$dg_lit})"; // Přímé spojnice i odvozené vazby diagramu
+			$where_parts[] = "m.diagram_uuid = {$dg_lit}";                   // Odvozené nepřímé vazby vygenerované diagramem
 			$d_row = sqlfirstrow("SELECT TOP 1 caption, builtin_code FROM link_diagram WHERE original = {$dg_lit} AND record_type = 'A' AND removed = 0"); // Název diagramu
-			if (! empty($d_row)) {                                           // Pokud diagram existuje
-				$this->diagram_caption = (string) ($d_row['caption'] ?: $d_row['builtin_code']); // Uložení názvu diagramu
+			if (! empty($d_row)) {                                           // Pokud diagram existuje$this->diagram_caption = (string) ($d_row['caption'] ?:$d_row['builtin_code']); // Uložení názvu diagramu
 			}
 		}
 
 		if (! empty($where_parts)) {                                         // Sestavení výsledné podmínky pro levý panel
-			$this->master_where = implode(' AND ', $where_parts);            // Spojení podmínek přes AND
+			$this->master_where = implode(' AND ',$where_parts);            // Spojení podmínek přes AND
 		}
 
-		$grp_rel  = $this->phrase('grp_link_endpoints', [], 'Typ vazby, zdrojový a cílový objekt'); // Sekce koncových bodů vazby
-		$grp_meta = $this->phrase('grp_weight_note', [], 'Váha přenosu rizika, původ, poznámka a platnost'); // Sekce váhy a poznámky
+		$grp_rel  =$this->phrase('grp_link_endpoints', [], 'Typ vazby, zdrojový a cílový objekt'); // Sekce koncových bodů vazby
+		$grp_meta =$this->phrase('grp_weight_note', [], 'Váha přenosu rizika, původ, poznámka a platnost'); // Sekce váhy a poznámky
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_rel  => ['link_def', 'from_object', 'to_object'],           // Klíčové složky vazby
@@ -123,23 +125,21 @@ class page_link extends abstract_page_master_detail {
 	 * @return array{defs: array<string, string>, objs: array<string, string>}
 	 */
 	private function load_lookup_captions(): array {
-		$defs = [];                                                          // Mapa [link_def_orig => caption_forward]
-		$objs = [];                                                          // Mapa [object_orig => caption]
+		$defs = [];                                                          // Mapa [link_def_orig => caption_forward]$objs = [];                                                          // Mapa [object_orig => caption]
 
 		$rows = sqlarray_simple("EXEC dbo.page_link @subpage = 'lookups'");  // Hromadné načtení přes uloženou proceduru
 		if (is_array($rows)) {                                               // Naplnění map definic a objektů v paměti
-			foreach ($rows as $r) {                                          // Průchod vrácenými záznamy
-				$orig_k = strtolower((string) $r['original']);               // Klíč original malými písmeny
-				$cap_v = (string) ($r['caption'] ?: $r['code_col']);         // Zobrazovaný popisek
-				if ((string) $r['row_kind'] === 'DEF') {                     // Definice typu vazby
-					$defs[$orig_k] = $cap_v;                                 // Uložení názvu vazby
+			foreach ($rows as$r) {                                          // Průchod vrácenými záznamy
+				$orig_k = strtolower((string)$r['original']);               // Klíč original malými písmeny
+				$cap_v = (string) ($r['caption'] ?:$r['code_col']);         // Zobrazovaný popisek
+				if ((string) $r['row_kind'] === 'DEF') {                     // Definice typu vazby$defs[$orig_k] =$cap_v;                                 // Uložení názvu vazby
 				} else {
-					$objs[$orig_k] = $cap_v;                                 // Uložení názvu objektu
+					$objs[$orig_k] =$cap_v;                                 // Uložení názvu objektu
 				}
 			}
 		}
 
-		return ['defs' => $defs, 'objs' => $objs];                           // Vrácení vyhledávacích map
+		return ['defs' => $defs, 'objs' =>$objs];                           // Vrácení vyhledávacích map
 	}
 
 	/**
@@ -147,8 +147,7 @@ class page_link extends abstract_page_master_detail {
 	 */
 	protected function render_master_top(): void {
 		if ($this->filter_diagram_uuid !== '') {                             // Návratové tlačítko při příchodu z page_link_diagram
-			$back_dg_url = "index.php?page=page_link_diagram&update_guid=" . urlencode($this->filter_diagram_uuid); // URL diagramu
-			$btn_back_dg = new abstract_button('btn_back_to_diagram', '← Zpět na schéma sítě: {' . chr(36) . 'diagram}', 'page_link', '', 'btn-secondary'); // Tlačítko
+			$back_dg_url = "index.php?page=page_link_diagram&update_guid=" . urlencode($this->filter_diagram_uuid); // URL diagramu$btn_back_dg = new abstract_button('btn_back_to_diagram', '← Zpět na schéma sítě: {' . chr(36) . 'diagram}', 'page_link', '', 'btn-secondary'); // Tlačítko
 			$btn_back_dg->set_href($back_dg_url)                             // Nastavení cílové URL
 				->set_vars(['diagram' => $this->diagram_caption ?: $this->filter_diagram_uuid]) // Název diagramu
 				->set_style('width: 100%; justify-content: center; margin-bottom: 8px;'); // Stylování
@@ -156,8 +155,7 @@ class page_link extends abstract_page_master_detail {
 		}
 
 		if ($this->filter_from_object !== '') {                              // Návratové tlačítko při příchodu z page_asset
-			$back_url = "index.php?page=page_asset&update_guid=" . urlencode($this->filter_from_object); // URL aktiva
-			$btn_back = new abstract_button('btn_back_to_asset', '← Zpět na aktivum: {' . chr(36) . 'asset}', 'page_link', '', 'btn-secondary'); // Tlačítko
+			$back_url = "index.php?page=page_asset&update_guid=" . urlencode($this->filter_from_object); // URL aktiva$btn_back = new abstract_button('btn_back_to_asset', '← Zpět na aktivum: {' . chr(36) . 'asset}', 'page_link', '', 'btn-secondary'); // Tlačítko
 			$btn_back->set_href($back_url)                                   // Nastavení cílové URL
 				->set_vars(['asset' => $this->from_object_caption ?: $this->filter_from_object]) // Název aktiva
 				->set_style('width: 100%; justify-content: center; margin-bottom: 8px;'); // Stylování
@@ -165,7 +163,7 @@ class page_link extends abstract_page_master_detail {
 		}
 
 		if ($this->allow_insert) {                                           // Tlačítko pro založení nové vazby
-			$url_suffix = $this->get_context_url_suffix();                   // Přívažek URL s kontextem
+			$url_suffix =$this->get_context_url_suffix();                   // Přívažek URL s kontextem
 			$new_url = "index.php?page=page_link{$url_suffix}&update_guid=NEW"; // URL nové vazby
 			$btn_new = new abstract_button('btn_new_link', '+ Nová vazba objektů', 'page_link'); // Tlačítko
 			$btn_new->set_href($new_url)                                     // Nastavení cílové URL
@@ -176,24 +174,22 @@ class page_link extends abstract_page_master_detail {
 
 		$lbl_all = htmlspecialchars($this->phrase('opt_all_link_defs', [], '--- Všechny typy vazeb ---')); // Volba všech typů vazeb
 		$options_html = "<option value=\"\">{$lbl_all}</option>";            // První položka roletky
-		$ld_meta = ($this->em !== null) ? $this->em->get_column_meta('link_def') : []; // Metadata sloupce link_def
+		$ld_meta = ($this->em !== null) ?$this->em->get_column_meta('link_def') : []; // Metadata sloupce link_def
 		$ref_cls = guidliteral((string) ($ld_meta['referenced_class'] ?? '')); // UUID třídy meta_link_def
 		if ($ref_cls !== 'NULL') {                                           // Načtení typů vazeb přes p_em_get_select_options
 			$ld_rows = sqlarray_simple("EXEC dbo.p_em_get_select_options @mode = 'ref_class', @param_code = 'link_def', @ref_class_uuid = {$ref_cls}"); // Dotaz
 			if (is_array($ld_rows)) {                                        // Průchod typy vazeb
-				foreach ($ld_rows as $lr) {                                  // Zpracování typu vazby
-					$u = (string) $lr['original'];                           // UUID typu vazby
-					$c = (string) $lr['code_col'];                           // Kód typu vazby
-					$cp = (string) $lr['caption'];                           // Název typu vazby
-					$sel = (strcasecmp($u, $this->filter_link_def) === 0) ? 'selected' : ''; // Označení vybraného typu
-					$lbl = ($cp !== '' AND $cp !== $c) ? "{$cp} ({$c})" : $c; // Popisek volby
-					$options_html .= '<option value="' . htmlspecialchars($u) . '" ' . $sel . '>' . htmlspecialchars($lbl) . '</option>'; // Volba
+				foreach ($ld_rows as$lr) {                                  // Zpracování typu vazby
+					$u = (string)$lr['original'];                           // UUID typu vazby
+					$c = (string)$lr['code_col'];                           // Kód typu vazby
+					$cp = (string)$lr['caption'];                           // Název typu vazby
+					$sel = (strcasecmp($u,$this->filter_link_def) === 0) ? 'selected' : ''; // Označení vybraného typu
+					$lbl = ($cp !== '' AND $cp !==$c) ? "{$cp} ({$c})" : $c; // Popisek volby$options_html .= '<option value="' . htmlspecialchars($u) . '" ' . $sel . '>' . htmlspecialchars($lbl) . '</option>'; // Volba
 				}
 			}
 		}
 
-		$lbl_flt = htmlspecialchars($this->phrase('lbl_filter_link_def', [], 'Typ vazby (link_def):')); // Popisek roletky
-		$from_part = ($this->filter_from_object !== '') ? ('&from_object=' . urlencode($this->filter_from_object)) : ''; // Zachování from_object
+		$lbl_flt = htmlspecialchars($this->phrase('lbl_filter_link_def', [], 'Typ vazby (link_def):')); // Popisek roletky$from_part = ($this->filter_from_object !== '') ? ('&from_object=' . urlencode($this->filter_from_object)) : ''; // Zachování from_object
 		$diag_part = ($this->filter_diagram_uuid !== '') ? ('&diagram_uuid=' . urlencode($this->filter_diagram_uuid)) : ''; // Zachování diagram_uuid
 
 		echo <<<HTML
@@ -217,7 +213,7 @@ HTML;
 		$this->init_filter_manager();                                        // Inicializace správce filtrů
 		$update_guid = (string) getinput('update_guid');                     // Aktuálně vybraná vazba
 		$show_removed = ((string) getinput('show_removed') === '1');         // Příznak zobrazení zrušených vazeb
-		$chk_show_rem = $show_removed ? 'checked' : '';                      // Stav zaškrtnutí
+		$chk_show_rem =$show_removed ? 'checked' : '';                      // Stav zaškrtnutí
 
 		$heading = htmlspecialchars($this->phrase('master_heading', [], 'Seznam vazeb a závislostí')); // Nadpis seznamu
 		$lbl_show_rem = htmlspecialchars($this->phrase('lbl_show_removed', [], 'Zobrazit i zrušené')); // Popisek zrušených
@@ -253,29 +249,29 @@ HTML;
 				<tbody id="master-list">
 HTML;
 
-		$lookups = $this->load_lookup_captions();                            // Načtení čitelných názvů typů vazeb a objektů
-		$raw_rows = $this->em->fetch_rows($this->master_where, 'is_derived ASC, date_modified DESC', false, $show_removed); // Načtení vazeb
+		$lookups =$this->load_lookup_captions();                            // Načtení čitelných názvů typů vazeb a objektů
+		$raw_rows =$this->em->fetch_rows($this->master_where, 'is_derived ASC, date_modified DESC', false,$show_removed); // Načtení vazeb
 		$rows = $this->apply_active_filters_to_rows($raw_rows);              // Aplikace rozšířeného filtru
-		$url_suffix = $this->get_context_url_suffix();                       // Kontextové parametry URL
+		$url_suffix =$this->get_context_url_suffix();                       // Kontextové parametry URL
 
 		if (is_array($rows)) {                                               // Průchod načtenými vazbami
-			foreach ($rows as $row) {                                        // Zpracování řádku vazby
-				$uuid = (string) $row['original'];                           // Originální UUID vazby
+			foreach ($rows as$row) {                                        // Zpracování řádku vazby
+				$uuid = (string)$row['original'];                           // Originální UUID vazby
 				$safe_uuid = htmlspecialchars($uuid);                        // Ošetřené UUID
-				$is_act = (strcasecmp($uuid, $update_guid) === 0);           // Zda je řádek vybrán
+				$is_act = (strcasecmp($uuid,$update_guid) === 0);           // Zda je řádek vybrán
 				$is_rem = ! empty($row['removed']);                          // Zda je vazba v koši
 				$is_der = ! empty($row['is_derived']);                       // Zda jde o zděděnou vazbu
-				$rowClass = $is_act ? 'md-row-active' : ($is_rem ? 'md-row-removed' : ($is_der ? 'md-row-inactive' : '')); // Třída
-				$rowIdAttr = $is_act ? 'id="active-row"' : '';               // ID aktivního řádku
+				$rowClass =$is_act ? 'md-row-active' : ($is_rem ? 'md-row-removed' : ($is_der ? 'md-row-inactive' : '')); // Třída
+				$rowIdAttr =$is_act ? 'id="active-row"' : '';               // ID aktivního řádku
 
 				$ld_key = strtolower((string) ($row['link_def'] ?? ''));     // Klíč typu vazby
 				$fr_key = strtolower((string) ($row['from_object'] ?? ''));  // Klíč zdrojového objektu
 				$to_key = strtolower((string) ($row['to_object'] ?? ''));    // Klíč cílového objektu
 
-				$ld_cap = htmlspecialchars($lookups['defs'][$ld_key] ?? (string) $row['link_def']); // Název typu vazby
-				$fr_cap = htmlspecialchars($lookups['objs'][$fr_key] ?? (string) $row['from_object']); // Název zdroje
-				$to_cap = htmlspecialchars($lookups['objs'][$to_key] ?? (string) $row['to_object']); // Název cíle
-				$der_html = $is_der ? "<span class=\"ssc-badge ssc-badge-d\">{$badge_der}</span>" : ''; // Štítek Zděděno
+				$ld_cap = htmlspecialchars($lookups['defs'][$ld_key] ?? (string)$row['link_def']); // Název typu vazby
+				$fr_cap = htmlspecialchars($lookups['objs'][$fr_key] ?? (string)$row['from_object']); // Název zdroje
+				$to_cap = htmlspecialchars($lookups['objs'][$to_key] ?? (string)$row['to_object']); // Název cíle
+				$der_html =$is_der ? "<span class=\"ssc-badge ssc-badge-d\">{$badge_der}</span>" : ''; // Štítek Zděděno
 
 				$row_url = htmlspecialchars("index.php?page=page_link{$url_suffix}&update_guid=" . urlencode($uuid)); // URL detailu
 				echo "<tr class=\"{$rowClass}\" {$rowIdAttr} data-uuid=\"{$safe_uuid}\" style=\"cursor: pointer;\" onclick=\"loadDetailPanel('{$row_url}', this);\">";
@@ -311,12 +307,6 @@ HTML;
 		if ($update_guid === 'NEW' AND is_array($datarow) AND ($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') { // Nová vazba
 			if ($this->filter_link_def !== '') {                             // Předvyplnění typu vazby z filtru
 				$datarow['link_def'] = $this->filter_link_def;               // Nastavení link_def
-			} elseif ($this->filter_diagram_uuid !== '') {                   // Při přidávání spojnice do diagramu předvyplníme diagram_includes_link_def
-				$dg_def = sqlfirstrow("SELECT TOP 1 original FROM meta_link_def WHERE link_code = 'diagram_includes_link_def' AND record_type = 'A' AND removed = 0"); // Vztah diagramu
-				if (! empty($dg_def['original'])) {                          // Pokud vztah v DB existuje
-					$datarow['link_def'] = (string) $dg_def['original'];     // Nastavení link_def pro spojnici diagramu
-				}
-				$datarow['from_object'] = $this->filter_diagram_uuid;        // Předvyplnění diagramu jako zdroje
 			}
 			if ($this->filter_from_object !== '') {                          // Předvyplnění zdrojového objektu z filtru
 				$datarow['from_object'] = $this->filter_from_object;         // Nastavení from_object

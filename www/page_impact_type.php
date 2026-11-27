@@ -1,7 +1,7 @@
 <?php
 /**
  * =============================================================================
- * Verze: 2026-11-21 11:20
+ * Verze: 2026-11-27 15:40
  * Soubor: page_impact_type.php
  * Třída: page_impact_type
  *
@@ -23,6 +23,11 @@
  *    - Využívá kontext přihlášeného uživatele v globálním poli `$dbsession`
  *      (v databázi `dbsession` pro aktuální `@@SPID`) a stav sbalených větví
  *      stromu v klientském `sessionStorage` pod klíčem `bcm_tree_impact_type`.
+ *
+ * Změny:
+ * 2026-11-27 15:40 - Oprava sloučeného řádku skupiny $grp_perm v $this->form_groups
+ *                    (sekce Platnost, vzhled a ochrana byla v komentáři) a doplnění
+ *                    chybějících mezer před znakem $ dle Anti-LaTeX pravidla.
  * =============================================================================
  */
 
@@ -34,13 +39,13 @@ class page_impact_type extends abstract_page_tree {
 		parent::__construct();                                               // Inicializace frází, kontroly přístupu a D&D v předkovi
 
 		$this->class_name = 'impact_type';                                   // Logická třída pro entity_manager
-		$this->can_edit_structure = !$this->is_readonly;                    // Povolení úpravy stromu a D&D v editačním režimu
-		$this->allow_insert = !$this->is_readonly;                          // Povolení zakládání nových druhů dopadů
+		$this->can_edit_structure = ! $this->is_readonly;                    // Povolení úpravy stromu a D&D v editačním režimu
+		$this->allow_insert = ! $this->is_readonly;                          // Povolení zakládání nových druhů dopadů
 		$this->storage_key_prefix = 'bcm_tree_impact_type';                  // Klíč v sessionStorage pro sbalené větve
 
-		$this->page_title =$this->phrase('page_title', [], 'Druhy dopadů (Katalog CRMM)'); // Lokalizovaný titulek stránky
-		$this->tree_heading =$this->phrase('master_heading', [], 'Strom druhů dopadů (následků)'); // Nadpis levého panelu
-		$this->tree_caption_header =$this->phrase('th_impact_type_caption', [], 'Druh dopadu / Kategorie'); // Záhlaví stromového sloupce
+		$this->page_title = $this->phrase('page_title', [], 'Druhy dopadů (Katalog CRMM)'); // Lokalizovaný titulek stránky
+		$this->tree_heading = $this->phrase('master_heading', [], 'Strom druhů dopadů (následků)'); // Nadpis levého panelu
+		$this->tree_caption_header = $this->phrase('th_impact_type_caption', [], 'Druh dopadu / Kategorie'); // Záhlaví stromového sloupce
 		$this->new_button_code = 'btn_new_impact_type';                      // Kód fráze tlačítka pro nový druh dopadu
 		$this->new_button_default_caption = '+ Nový druh dopadu';            // Výchozí popisek tlačítka
 
@@ -57,13 +62,14 @@ class page_impact_type extends abstract_page_tree {
 			]
 		];                                                                   // Konec definice doplňkových sloupců
 
-		$grp_pres =$this->phrase('grp_presentation', [], 'Prezentační texty a nápověda'); // Sekce překládaných textů
-		$grp_hier =$this->phrase('grp_hierarchy_classification', [], 'Zařazení ve stromu, kategorie CIA a délka výpadku'); // Sekce klasifikace
-		$grp_perm =$this->phrase('grp_validity_protection', [], 'Platnost, vzhled a ochrana'); // Sekce platnosti
+		$grp_pres = $this->phrase('grp_presentation', [], 'Prezentační texty a nápověda'); // Sekce překládaných textů
+		$grp_hier = $this->phrase('grp_hierarchy_classification', [], 'Zařazení ve stromu, kategorie CIA a délka výpadku'); // Sekce klasifikace
+		$grp_perm = $this->phrase('grp_validity_protection', [], 'Platnost, vzhled a ochrana'); // Sekce platnosti
 
 		$this->form_groups = [                                               // Rozdělení polí do logických sekcí formuláře
 			$grp_pres => ['caption', 'shortname', 'description_text', 'help_text'], // Lokalizované názvy a popisy
-			$grp_hier => ['builtin_code', 'parent_uuid', 'sort_code', 'is_leaf', 'cia_category', 'duration_minutes', 'external_code'], // Strom a CIA$grp_perm => ['svg_icon', 'valid_from', 'valid_to', 'is_final', 'is_protected', 'inactive'] // Platnost a ochrana
+			$grp_hier => ['builtin_code', 'parent_uuid', 'sort_code', 'is_leaf', 'cia_category', 'duration_minutes', 'external_code'], // Strom a CIA
+			$grp_perm => ['svg_icon', 'valid_from', 'valid_to', 'is_final', 'is_protected', 'inactive'] // Platnost a ochrana
 		];                                                                   // Konec definice skupin formuláře
 	}
 
@@ -76,7 +82,7 @@ class page_impact_type extends abstract_page_tree {
 		if ($update_guid === 'NEW') {                                        // Pokud zakládáme nový druh dopadu
 			return htmlspecialchars($this->phrase('header_new_impact_type', [], 'Nový druh dopadu (následek)')); // Nadpis pro nový záznam
 		}
-		$title_val = (string) ($datarow['builtin_code'] ?:$datarow['caption'] ?: ''); // Kód nebo název druhu dopadu
+		$title_val = (string) ($datarow['builtin_code'] ?: $datarow['caption'] ?: ''); // Kód nebo název druhu dopadu
 		$safe_val = htmlspecialchars($title_val);                            // Ošetřený identifikátor pro nadpis
 		$lbl = htmlspecialchars($this->phrase('header_edit_impact_type', [], 'Druh dopadu')); // Lokalizované návěstí
 		return "{$lbl}: <span style=\"font-family: monospace; color: #555;\">{$safe_val}</span>"; // Výsledný HTML nadpis

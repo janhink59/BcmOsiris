@@ -1,8 +1,8 @@
 /* =============================================================================
- * Verze: 2026-11-20 17:00
+ * Verze: 2026-11-27 15:40
  * Soubor: changes_2611.sql
  * Účel:   Jednorázové změny struktury a dat databáze za období 11/2026
- *         (aktuální cílová verze '26.11.20.0').
+ *         (aktuální cílová verze '26.11.27.0').
  *         Spouští se v abecedním pořadí v rámci masky changes_*.sql.
  *
  * Pravidla pro údržbu a přidávání změn:
@@ -615,6 +615,128 @@ BEGIN
 		@version = '26.11.20.0',
 		@script_name = 'changes_2611.sql',
 		@content = 'Likvidace staré tabulky impact a jejích vazeb/metadat, odstranění max_*_score z organization a doplnění default_impact_scale_uuid a scale.is_area_guideline';
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- Verze 26.11.27.0: Vyčlenění hran schémat sítí do samostatné tabulky
+--                   link_diagram_edge, migrace případných existujících hran
+--                   diagram_includes_link_def z tabulky link a úklid
+--                   zastaralých vztahů diagram_includes_link_def / link_def_in_diagram
+-- -----------------------------------------------------------------------------
+IF OBJECT_ID('system_constant', 'U') IS NOT NULL AND EXISTS (
+	SELECT 1
+	FROM system_constant
+	WHERE database_version < '26.11.27.0'
+)
+BEGIN
+	PRINT '27.11.2026 (26.11.27.0): Vyčlenění hran diagramů do link_diagram_edge a úklid diagram_includes_link_def';
+
+	-- 1. Založení tabulky link_diagram_edge (pokud ještě neexistuje)
+	IF OBJECT_ID('link_diagram_edge', 'U') IS NULL
+	BEGIN
+		CREATE TABLE link_diagram_edge (
+			uuid uuid NOT NULL,
+			object_owner uuid NOT NULL DEFAULT 0x00,
+			original uuid NOT NULL DEFAULT 0x00,
+			record_type varchar(1) NOT NULL DEFAULT 'A',
+			approval_status varchar(1) NOT NULL DEFAULT 'A',
+			draft_author uuid NOT NULL DEFAULT 0x00,
+			approval_note varchar(max) NOT NULL DEFAULT '',
+			inactive bit NOT NULL DEFAULT 0,
+			removed bit NOT NULL DEFAULT 0,
+			language varchar(2) NOT NULL DEFAULT 'cs',
+			valid_from date NOT NULL DEFAULT '1970-01-01',
+			valid_to date NULL,
+			is_template bit NOT NULL DEFAULT 0,
+			template uuid NULL,
+			import_origin varchar(255) NULL,
+			date_created datetime NOT NULL DEFAULT getdate(),
+			who_created uuid NOT NULL DEFAULT 0x00,
+			date_modified datetime NOT NULL DEFAULT getdate(),
+			who_modified uuid NOT NULL DEFAULT 0x00,
+			diagram_uuid uuid NOT NULL,
+			link_def_uuid uuid NOT NULL,
+			sort_code varchar(20) NOT NULL DEFAULT '',
+			edge_weight decimal(16,4) NULL,
+			note varchar(max) NOT NULL DEFAULT '',
+			CONSTRAINT pk_link_diagram_edge PRIMARY KEY (uuid)
+		);
+	END
+
+	-- 2. Migrace případných existujících hran z tabulky link (vztah diagram_includes_link_def) do link_diagram_edge
+	IF OBJECT_ID('link', 'U') IS NOT NULL AND OBJECT_ID('meta_link_def', 'U') IS NOT NULL AND OBJECT_ID('f_generate_original', 'FN') IS NOT NULL
+	BEGIN
+		EXEC(N'
+			DECLARE @dg_inc_defs TABLE (original uniqueidentifier NOT NULL PRIMARY KEY);
+
+			INSERT INTO @dg_inc_defs (original)
+			SELECT DISTINCT original
+			FROM meta_link_def
+			WHERE link_code IN (''diagram_includes_link_def'', ''link_def_in_diagram'');
+
+			IF EXISTS (SELECT 1 FROM @dg_inc_defs)
+			BEGIN
+				INSERT INTO link_diagram_edge (
+					uuid, object_owner, original, record_type, approval_status, [language],
+					inactive, removed, valid_from, valid_to,
+					date_created, who_created, date_modified, who_modified,
+					diagram_uuid, link_def_uuid, edge_weight, note
+				)
+				SELECT
+					CASE WHEN EXISTS (SELECT 1 FROM link_diagram_edge ex WHERE ex.uuid = x.calc_orig) THEN NEWID() ELSE x.calc_orig END,
+					l.object_owner, x.calc_orig, ''A'', ''A'', l.[language],
+					l.inactive, l.removed, l.valid_from, l.valid_to,
+					l.date_created, l.who_created, l.date_modified, l.who_modified,
+					l.from_object, l.to_object, l.link_weight, l.note
+				FROM link l
+				JOIN meta_link_def mld
+					ON mld.original = l.link_def
+					AND mld.link_code = ''diagram_includes_link_def''
+					AND mld.record_type = ''A''
+				CROSS APPLY (
+					SELECT dbo.f_generate_original(
+						''link_diagram_edge'',
+						l.object_owner,
+						CAST(l.from_object AS varchar(36)),
+						CAST(l.to_object AS varchar(36))
+					) AS calc_orig
+				) x
+				WHERE l.record_type = ''A''
+				  AND l.removed = 0
+				  AND NOT EXISTS (
+					SELECT 1 FROM link_diagram_edge ex
+					WHERE ex.object_owner = l.object_owner
+					  AND ex.diagram_uuid = l.from_object
+					  AND ex.link_def_uuid = l.to_object
+					  AND ex.record_type = ''A''
+				  );
+
+				DELETE l
+				FROM link l
+				JOIN @dg_inc_defs d ON d.original = l.link_def;
+
+				DELETE mld
+				FROM meta_link_def mld
+				JOIN @dg_inc_defs d ON d.original = mld.original;
+			END
+		');
+	END
+
+	-- 3. Úklid zastaralých frází stránky page_link_diagram
+	IF OBJECT_ID('meta_phrase', 'U') IS NOT NULL
+	BEGIN
+		DELETE FROM meta_phrase
+		WHERE object_owner = 0x00
+		  AND who_modified = 0x00
+		  AND source_code = 'page_link_diagram'
+		  AND builtin_code = 'btn_diagram_edges';
+	END
+
+	EXEC dbo.p_update_database_version
+		@version = '26.11.27.0',
+		@script_name = 'changes_2611.sql',
+		@content = 'Vyčlenění hran schémat sítí do tabulky link_diagram_edge, migrace z link a úklid diagram_includes_link_def / link_def_in_diagram';
 
 	-- !!! Při ladění nanečisto zakomentuj následující COMMIT; při přidání dalšího bloku jej přesuň na konec nového bloku !!!
 	COMMIT;
@@ -630,7 +752,7 @@ GO
 
 IF OBJECT_ID('system_constant', 'U') IS NOT NULL
 BEGIN
-	DECLARE @expected_version varchar(20) = '26.11.20.0';                      -- Požadovaná cílová verze tohoto skriptu
+	DECLARE @expected_version varchar(20) = '26.11.27.0';                      -- Požadovaná cílová verze tohoto skriptu
 	DECLARE @current_version varchar(20) = '';                                 -- Skutečná verze zjištěná v system_constant
 
 	SELECT TOP 1 @current_version = ISNULL(database_version, '')

@@ -1,5 +1,5 @@
 /* =============================================================================
- * Verze: 2026-11-21 11:05
+ * Verze: 2026-11-27 15:40
  * Soubor: fillup_meta_link_def.sql
  *
  * 1. Role souboru v celém systému:
@@ -7,7 +7,7 @@
  *       17 odvozených STI logických tříd aktiv, třídy 'link_diagram' a nových
  *       katalogových tříd 'impact_type' a 'impact_area'.
  *    2. Idempotentně naplní tabulku meta_link_def (object_owner = 0x00,
- *       jazyk 'cs', záznamy 'A' a symetrické 'L') všemi 104 předdefinovanými
+ *       jazyk 'cs', záznamy 'A' a symetrické 'L') všemi 102 předdefinovanými
  *       primárními ('P') i zpětnými ('R') vztahy, vnitrotřídními vztahy
  *       a exkluzivními stromovými vztahy parent_to_child ('P') /
  *       child_to_parent ('R'), včetně vztahů pro impact_type a impact_area.
@@ -27,9 +27,12 @@
  *      či SESSION_CONTEXT.
  *
  * Změny:
+ * - 2026-11-27 15:40: Odstraněn pár diagram_includes_link_def / link_def_in_diagram
+ *   (hrany schémat sítí jsou vyčleněny do samostatné tabulky link_diagram_edge;
+ *   celkem 102 definic).
  * - 2026-11-21 11:05: Zrušeno 8 vztahů pro odstraněnou tabulku impact a nahrazeno
- *   14 vztahy pro novou dvojici impact_type a impact_area (celkem 104 definic);
- *   doplněno idempotentní zajištění meta_object / meta_class pro impact_type a impact_area.
+ *   14 vztahy pro novou dvojici impact_type a impact_area; doplněno idempotentní
+ *   zajištění meta_object / meta_class pro impact_type a impact_area.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -297,8 +300,6 @@ INSERT INTO @links_cs (
 ('impact_type','impact_type_evaluates_data','asset_data','data_evaluated_by_impact_type','R',0,0,1,0,1,1,'Je druhem dopadu pro datové aktivum','Má hodnocen druh dopadu (prozrazení / chyby / ztráta)','Zpětný vztah od druhu dopadu (následku) k hodnoceným datovým aktivům.','Datová aktiva hodnocená pro tento druh následku.'),
 ('impact_type','impact_type_evaluates_service','asset_service','service_evaluated_by_impact_type','R',0,0,1,0,1,1,'Je druhem dopadu pro službu','Má hodnocen druh dopadu (délka výpadku / následek)','Zpětný vztah od druhu dopadu (následku) k hodnoceným službám.','Služby hodnocené pro tento druh následku.'),
 ('impact_type','parent_to_child','impact_type','child_to_parent','P',1,1,1,0,0,0,'Obsahuje podřízený druh dopadu (parent_uuid)','Patří pod nadřízenou kategorii druhů dopadů (parent_uuid)','Primární řídící směr exkluzivní stromové vazby parent_uuid v katalogu druhů dopadů.','Podřízené druhy dopadů ve stromu.'),
-('link_diagram','diagram_includes_link_def','meta_link_def','link_def_in_diagram','P',0,0,1,1,0,1,'Zahrnuje orientovaný vztah (spojnici sítě)','Je součástí schématu sítě (diagramu)','Zařazení orientovaného vztahu z meta_link_def do schématu heterogenní sítě (link_diagram) pro výpočet cest přenosu rizik.','Vyberte orientované vztahy tvořící spojnice tohoto diagramu sítě.'),
-('meta_link_def','link_def_in_diagram','link_diagram','diagram_includes_link_def','R',0,0,1,0,0,0,'Je součástí schématu sítě (diagramu)','Zahrnuje orientovaný vztah (spojnici sítě)','Zpětný vztah od definice vztahu ke schématům sítě, v nichž je vztah použit.','Diagramy sítě obsahující tento vztah.'),
 ('organization_unit','child_to_parent','organization_unit','parent_to_child','R',1,1,0,0,0,1,'Podléhá nadřízené organizační jednotce (parent_uuid)','Řídí podřízenou organizační jednotku (parent_uuid)','Zpětný směr exkluzivní stromové vazby parent_uuid mezi organizačními útvary.','Nadřízený útvar v organizační struktuře.'),
 ('organization_unit','ou_employs_personnel','asset_personnel','personnel_in_ou','R',0,0,1,0,1,0,'Zahrnuje personál / pracovní role','Je zařazen v organizační jednotce','Zpětný vztah od organizační jednotky k zařazenému personálu.','Pracovníci a role patřící do tohoto útvaru.'),
 ('organization_unit','ou_manages_asset','asset','asset_managed_by_ou','R',0,0,1,0,1,1,'Spravuje / odpovídá za aktivum','Je spravováno organizační jednotkou (útvarem)','Zpětný vztah od organizační jednotky ke spravovaným aktivům.','Aktiva spravovaná touto organizační jednotkou.'),

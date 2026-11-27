@@ -1,10 +1,10 @@
 /* =============================================================================
- * Verze: 2026-11-21 11:05
+ * Verze: 2026-11-27 15:40
  * Soubor: fillup_meta_link_def_en.sql
  *
  * 1. Role souboru v celém systému:
  *    Idempotentní nastavení výchozích anglických překladů (jazyk 'en',
- *    record_type = 'L') pro všechny 104 primárních, zpětných, vnitrotřídních
+ *    record_type = 'L') pro všechny 102 primárních, zpětných, vnitrotřídních
  *    i exkluzivních stromových vztahů (parent_to_child / child_to_parent)
  *    v tabulce meta_link_def (object_owner = 0x00), včetně vztahů pro
  *    impact_type a impact_area a úklidu osiřelých 'L' záznamů s who_modified = 0x00.
@@ -20,8 +20,11 @@
  *      či SESSION_CONTEXT.
  *
  * Změny:
+ * - 2026-11-27 15:40: Odstraněn pár diagram_includes_link_def / link_def_in_diagram
+ *   (hrany schémat sítí přesunuty do samostatné tabulky link_diagram_edge;
+ *   celkem 102 definic).
  * - 2026-11-21 11:05: Zrušeno 8 vztahů pro odstraněnou tabulku impact a nahrazeno
- *   14 anglickými překlady vztahů pro impact_type a impact_area (celkem 104 definic).
+ *   14 anglickými překlady vztahů pro impact_type a impact_area.
  * ============================================================================= */
 
 SET NOCOUNT ON;
@@ -130,8 +133,6 @@ INSERT INTO @links_en (from_class_code, link_code, caption_forward, caption_back
 ('impact_type','impact_type_evaluates_data','Is an impact type for data asset','Is evaluated for impact type (disclosure / errors / loss)','Reverse relationship from an impact type (consequence) to evaluated data assets.','Data assets evaluated for this consequence type.'),
 ('impact_type','impact_type_evaluates_service','Is an impact type for service','Is evaluated for impact type (outage duration / consequence)','Reverse relationship from an impact type (consequence) to evaluated services.','Services evaluated for this consequence type.'),
 ('impact_type','parent_to_child','Contains child impact type (parent_uuid)','Belongs under parent impact type category (parent_uuid)','Primary governing direction of the exclusive parent_uuid tree link in the impact type catalog.','Child impact types in the tree.'),
-('link_diagram','diagram_includes_link_def','Includes directed relationship (network edge)','Is part of network diagram (schema)','Assignment of a directed relationship from meta_link_def into a heterogeneous network diagram (link_diagram) for risk propagation path calculation.','Select directed relationships forming the edges of this network diagram.'),
-('meta_link_def','link_def_in_diagram','Is part of network diagram (schema)','Includes directed relationship (network edge)','Reverse relationship from a link definition to network diagrams using it.','Network diagrams containing this relationship.'),
 ('organization_unit','child_to_parent','Reports to parent organizational unit (parent_uuid)','Governs child organizational unit (parent_uuid)','Reverse direction of the exclusive parent_uuid tree link between organizational units.','Parent department in the organizational structure.'),
 ('organization_unit','ou_employs_personnel','Includes personnel / job roles','Is assigned to organizational unit','Reverse relationship from an organizational unit to assigned personnel.','Staff members and roles belonging to this department.'),
 ('organization_unit','ou_manages_asset','Manages / is responsible for asset','Is managed by organizational unit (department)','Reverse relationship from an organizational unit to managed assets.','Assets managed by this organizational unit.'),
